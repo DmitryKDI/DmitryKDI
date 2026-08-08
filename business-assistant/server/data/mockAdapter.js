@@ -1,10 +1,32 @@
 import { deals, tasks, callHistory, STAGES, nextTaskId } from './mockData.js';
+import { GENERATED_DOC_TYPES, FILE_DOC_TYPES, computeSmetaBreakdown, generateSmetaContent } from '../documents/generators.js';
 
 /**
  * Мок-реализация единого интерфейса адаптера данных (см. data/adapter.js).
  * Хранит состояние в памяти процесса — меняется по мере CRUD-операций из чата,
  * сбрасывается при перезапуске сервера. Подходит для демо, не для продакшена.
  */
+
+// Документы тоже в памяти — намеренно ничего не пишем на диск в mock-режиме.
+// Для реального сохранения файлов используйте DATA_ADAPTER_MODE=sqlite.
+const documentsByDeal = {};
+let docSeq = 0;
+function nextDocId() {
+  docSeq += 1;
+  return `doc-${docSeq}`;
+}
+function getDocsFor(dealId) {
+  if (!documentsByDeal[dealId]) documentsByDeal[dealId] = [];
+  return documentsByDeal[dealId];
+}
+function findDocById(id) {
+  for (const dealId of Object.keys(documentsByDeal)) {
+    const doc = documentsByDeal[dealId].find((d) => d.id === id);
+    if (doc) return doc;
+  }
+  return null;
+}
+
 export function createMockAdapter() {
   return {
     async listDeals({ stage, type, manager, ids } = {}) {
@@ -152,6 +174,102 @@ export function createMockAdapter() {
         stage: d.stage,
         budget: d.budget,
       }));
+    },
+
+    // --- Документы объекта (в памяти, без записи на диск — см. dbAdapter.js для реального хранения) ---
+
+    async listDocuments(dealId) {
+      const deal = deals.find((d) => d.id === dealId);
+      if (!deal) throw new Error(`Сделка ${dealId} не найдена`);
+      return getDocsFor(dealId);
+    },
+
+    async createGeneratedDocument({ dealId, type }) {
+      const deal = deals.find((d) => d.id === dealId);
+      if (!deal) throw new Error(`Сделка ${dealId} не найдена`);
+      const config = GENERATED_DOC_TYPES[type];
+      if (!config) throw new Error(`Неизвестный тип документа "${type}"`);
+      const doc = {
+        id: nextDocId(),
+        dealId,
+        type,
+        title: config.title,
+        status: 'готово',
+        downloadable: true,
+        content: config.generate(deal),
+        filename: `${type}-${deal.id}.${config.ext}`,
+        createdDate: new Date().toISOString(),
+        meta: null,
+        files: [],
+      };
+      getDocsFor(dealId).unshift(doc);
+      return doc;
+    },
+
+    async createSmetaDocument({ dealId, area, level }) {
+      const deal = deals.find((d) => d.id === dealId);
+      if (!deal) throw new Error(`Сделка ${dealId} не найдена`);
+      const areaNum = Number(area);
+      if (!areaNum || areaNum <= 0) throw new Error('Укажите площадь объекта (м²), больше нуля');
+      const breakdown = computeSmetaBreakdown(areaNum, level);
+      const doc = {
+        id: nextDocId(),
+        dealId,
+        type: 'smeta',
+        title: 'Смета',
+        status: 'готово',
+        downloadable: true,
+        content: generateSmetaContent(deal, areaNum, breakdown),
+        filename: `smeta-${deal.id}.csv`,
+        createdDate: new Date().toISOString(),
+        meta: { area: areaNum, levelLabel: breakdown.level.label, total: breakdown.total },
+        files: [],
+      };
+      getDocsFor(dealId).unshift(doc);
+      return doc;
+    },
+
+    async createFileDocument({ dealId, type, files }) {
+      const deal = deals.find((d) => d.id === dealId);
+      if (!deal) throw new Error(`Сделка ${dealId} не найдена`);
+      const config = FILE_DOC_TYPES[type];
+      if (!config) throw new Error(`Неизвестный тип документа "${type}"`);
+      if (!files || !files.length) throw new Error('Нужен хотя бы один файл');
+      const doc = {
+        id: nextDocId(),
+        dealId,
+        type,
+        title: config.title,
+        status: config.status,
+        downloadable: false,
+        files: files.map((f) => ({ name: f.originalname, size: f.size })),
+        createdDate: new Date().toISOString(),
+        meta: null,
+      };
+      getDocsFor(dealId).unshift(doc);
+      return doc;
+    },
+
+    async deleteDocument(id) {
+      for (const dealId of Object.keys(documentsByDeal)) {
+        const docs = documentsByDeal[dealId];
+        const idx = docs.findIndex((d) => d.id === id);
+        if (idx !== -1) return docs.splice(idx, 1)[0];
+      }
+      throw new Error(`Документ ${id} не найден`);
+    },
+
+    async getDocumentContent(id) {
+      const doc = findDocById(id);
+      if (!doc || !doc.content) throw new Error(`Документ ${id} не найден или не является сгенерированным файлом`);
+      return { filename: doc.filename, data: doc.content };
+    },
+
+    async getDocumentFile() {
+      throw new Error(
+        'Скачивание вложенных файлов недоступно в демо-режиме (mock) — файлы там не сохраняются на диск. ' +
+          'Переключитесь на DATA_ADAPTER_MODE=sqlite, чтобы файлы реально хранились и скачивались.',
+      );
     },
   };
 }

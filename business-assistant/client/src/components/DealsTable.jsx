@@ -3,7 +3,7 @@ function formatMoney(n) {
   return new Intl.NumberFormat('ru-RU').format(n) + ' ₽';
 }
 
-export default function DealsTable({ deals }) {
+export default function DealsTable({ deals, onSelect }) {
   return (
     <div className="table-scroll">
       <div className="card">
@@ -20,7 +20,7 @@ export default function DealsTable({ deals }) {
           </thead>
           <tbody>
             {deals.map((d) => (
-              <tr key={d.id}>
+              <tr key={d.id} className={onSelect ? 'row-clickable' : ''} onClick={() => onSelect && onSelect(d)}>
                 <td>{d.address}</td>
                 <td>{d.clientName}</td>
                 <td>{d.type}</td>
@@ -34,6 +34,7 @@ export default function DealsTable({ deals }) {
           </tbody>
         </table>
       </div>
+      {onSelect && <p className="hint">Нажмите на объект, чтобы открыть карточку и документы.</p>}
     </div>
   );
 }

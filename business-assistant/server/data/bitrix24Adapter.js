@@ -180,5 +180,34 @@ export function createBitrix24Adapter() {
         'getManagerContacts не реализован для Битрикс24 — см. TODO в bitrix24Adapter.js',
       );
     },
+
+    // --- Документы объекта ---
+    // TODO: не реализовано. В Битрикс24 файлы сделки обычно хранятся через
+    // crm.deal.update (поле UF_CRM_*_FILES) или отдельным модулем «Диск»
+    // (disk.folder.*, disk.file.*) — привязка сделки к папке на Диске делается
+    // вручную/через доп. интеграцию, единого стандартного способа нет. Пока
+    // используйте DATA_ADAPTER_MODE=sqlite для реального хранения документов —
+    // см. README → «Хранение документов и база данных».
+    async listDocuments() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
+    async createGeneratedDocument() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
+    async createSmetaDocument() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
+    async createFileDocument() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
+    async deleteDocument() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
+    async getDocumentContent() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
+    async getDocumentFile() {
+      throw new Error('Документы для Битрикс24 не реализованы — см. TODO в bitrix24Adapter.js');
+    },
   };
 }

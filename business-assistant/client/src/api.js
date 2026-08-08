@@ -18,4 +18,30 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ history, message }),
     }),
+
+  getDocuments: (dealId) => request(`/api/deals/${encodeURIComponent(dealId)}/documents`),
+  generateDocument: (dealId, type) =>
+    request(`/api/deals/${encodeURIComponent(dealId)}/documents/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type }),
+    }),
+  generateSmeta: (dealId, area, level) =>
+    request(`/api/deals/${encodeURIComponent(dealId)}/documents/smeta`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ area, level }),
+    }),
+  uploadDocument: (dealId, type, files) => {
+    const formData = new FormData();
+    formData.append('type', type);
+    for (const file of files) formData.append('files', file);
+    return request(`/api/deals/${encodeURIComponent(dealId)}/documents/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+  },
+  deleteDocument: (id) => request(`/api/documents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  documentDownloadUrl: (id) => `/api/documents/${encodeURIComponent(id)}/download`,
+  documentFileDownloadUrl: (fileId) => `/api/documents/files/${encodeURIComponent(fileId)}/download`,
 };

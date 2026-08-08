@@ -3,3 +3,7 @@ dist/
 .env
 *.log
 server/generated-reports/*.xlsx
+server/data/app.db
+server/data/app.db-shm
+server/data/app.db-wal
+server/uploads/

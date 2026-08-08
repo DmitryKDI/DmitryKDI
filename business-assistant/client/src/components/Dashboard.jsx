@@ -4,10 +4,12 @@ import MetricCard from './MetricCard.jsx';
 import StageChart from './StageChart.jsx';
 import DealsTable from './DealsTable.jsx';
 import CallHistoryPanel from './CallHistoryPanel.jsx';
+import DealDetail from './DealDetail.jsx';
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [selectedDeal, setSelectedDeal] = useState(null);
 
   useEffect(() => {
     api
@@ -35,10 +37,12 @@ export default function Dashboard() {
       <StageChart data={metrics.dealsByStage} />
 
       <h2>Сделки (объекты)</h2>
-      <DealsTable deals={deals} />
+      <DealsTable deals={deals} onSelect={setSelectedDeal} />
 
       <h2>История звонков</h2>
       <CallHistoryPanel calls={callHistory} />
+
+      {selectedDeal && <DealDetail deal={selectedDeal} onClose={() => setSelectedDeal(null)} />}
     </>
   );
 }

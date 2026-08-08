@@ -9,6 +9,7 @@ import { createDashboardRouter } from './routes/dashboard.js';
 import { createChatRouter } from './routes/chat.js';
 import { createSalesRouter } from './routes/sales.js';
 import { createReportsRouter } from './routes/reports.js';
+import { createDocumentsRouter } from './routes/documents.js';
 import { REPORTS_DIR } from './reports/excelReport.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,7 @@ app.use('/api/dashboard', createDashboardRouter(adapter));
 app.use('/api/chat', createChatRouter(adapter));
 app.use('/api/sales', createSalesRouter(adapter));
 app.use('/api/reports', createReportsRouter());
+app.use('/api', createDocumentsRouter(adapter));
 
 // В проде (после `npm run build` в client/) отдаём собранный React-бандл с того
 // же порта. В dev-режиме (npm run dev) фронтенд крутится отдельно на Vite dev

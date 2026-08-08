@@ -468,3 +468,272 @@ th {
   font-size: 0.85rem;
   margin-bottom: 16px;
 }
+
+/* --- Карточка объекта (документы) --- */
+
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-clickable:hover td {
+  background: rgba(109, 91, 255, 0.06);
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 5, 9, 0.6);
+}
+
+.overlay-panel {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .overlay-panel {
+    animation: overlay-slide-up 0.22s ease;
+  }
+}
+
+@keyframes overlay-slide-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.overlay-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.overlay-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.overlay-sub {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.overlay-close {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.overlay-body {
+  padding: 16px 20px 24px;
+}
+
+.overlay-body h2:first-child {
+  margin-top: 0;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+
+.detail-row:last-child {
+  border-bottom: none;
+}
+
+.detail-row span:first-child {
+  color: var(--text-muted);
+}
+
+.doc-list-card {
+  padding: 6px 18px;
+}
+
+.doc-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-card:last-child {
+  border-bottom: none;
+}
+
+.doc-card-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.doc-sub {
+  margin-top: 2px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.doc-icon-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.doc-icon-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.doc-icon-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.doc-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.doc-add-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.doc-add-menu button {
+  font-size: 0.82rem;
+  font-weight: 600;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.doc-add-menu button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.doc-add-menu button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.design-form {
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+}
+
+.design-form input[type='file'] {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  max-width: 100%;
+}
+
+.measure-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.measure-row input[type='number'],
+.measure-row select {
+  flex: 1 1 140px;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 16px;
+}
+
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.file-chip {
+  font-size: 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.design-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.design-form-actions .send-btn {
+  width: auto;
+  padding: 0 16px;
+}
+
+.design-form-actions .icon-btn {
+  width: auto;
+  height: 42px;
+  padding: 0 14px;
+  font-size: 0.82rem;
+}
