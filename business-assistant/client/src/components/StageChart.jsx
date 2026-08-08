@@ -4,7 +4,7 @@ export default function StageChart({ data }) {
   return (
     <div className="card chart-card">
       <ResponsiveContainer width="100%" height={240}>
-        <BarChart data={data} margin={{ top: 8, right: 8, left: -20, bottom: 8 }}>
+        <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#262b3a" vertical={false} />
           <XAxis
             dataKey="stage"
