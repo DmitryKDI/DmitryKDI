@@ -1,0 +1,17 @@
+{
+  "name": "meeting-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stage 1 MVP: record a call, transcribe it, summarize with Claude, deliver to Telegram",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.0"
+  }
+}

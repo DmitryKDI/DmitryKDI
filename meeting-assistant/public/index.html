@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ИИ-ассистент встреч — MVP</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>ИИ-ассистент деловых встреч</h1>
+    <p class="subtitle">Этап 1: запись → расшифровка → резюме → Telegram</p>
+
+    <section class="card">
+      <h2>1. Запись</h2>
+      <div class="controls">
+        <button id="startBtn">🔴 Начать запись</button>
+        <button id="stopBtn" disabled>⏹ Остановить</button>
+        <span id="timer">00:00</span>
+      </div>
+      <audio id="playback" controls style="display:none"></audio>
+    </section>
+
+    <section class="card">
+      <h2>2. Транскрипт</h2>
+      <button id="transcribeBtn" disabled>Распознать речь</button>
+      <textarea id="transcript" placeholder="Здесь появится текст встречи..." rows="8"></textarea>
+    </section>
+
+    <section class="card">
+      <h2>3. Резюме</h2>
+      <button id="summarizeBtn" disabled>Сделать резюме</button>
+      <textarea id="summary" placeholder="Здесь появится резюме встречи..." rows="10"></textarea>
+    </section>
+
+    <section class="card">
+      <h2>4. Отправка в Telegram</h2>
+      <button id="sendBtn" disabled>Отправить резюме в Telegram</button>
+      <p id="status"></p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
