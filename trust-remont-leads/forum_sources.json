@@ -1,0 +1,11 @@
+[
+  {
+    "_comment": "Пример конфигурации источника. Скопируйте блок и настройте под конкретный форум: message_selector — CSS-селектор блока с одним сообщением/постом на странице листинга, author_selector — селектор автора ВНУТРИ этого блока (необязательно), link_selector — селектор ссылки на сообщение ВНУТРИ блока (необязательно).",
+    "name": "Пример: форум о ремонте (отключено)",
+    "url": "https://example-forum.invalid/remont/otdelka",
+    "message_selector": ".post, .message",
+    "author_selector": ".post-author, .username",
+    "link_selector": "a.post-link",
+    "enabled": false
+  }
+]
