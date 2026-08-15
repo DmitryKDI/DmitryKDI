@@ -1,0 +1,21 @@
+# Секреты и сессии — никогда не коммитить
+.env
+*.session
+*.session-journal
+
+# Данные и база дедупликации
+leads.db
+leads.csv
+leads.xlsx
+discovered_chats.csv
+active_members_*.csv
+active_members_*.xlsx
+
+# Логи
+logs/*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
