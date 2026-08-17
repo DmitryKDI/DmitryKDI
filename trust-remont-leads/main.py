@@ -7,6 +7,7 @@ import time
 
 from dotenv import load_dotenv
 
+import account_health
 import filter as filter_module
 import forum_collector
 import storage
@@ -65,6 +66,15 @@ async def run_telegram(lead_filter, conn):
         logger.info("Telegram: список TG_MONITOR_CHATS пуст, пропускаю")
         return
 
+    health = await account_health.check_telegram(session_name, int(api_id), api_hash)
+    if health["status"] != "ok":
+        logger.warning(
+            "Telegram: пропускаю сбор, аккаунт не в порядке (%s: %s)",
+            health["status"],
+            health["detail"],
+        )
+        return
+
     client = telegram_collector.build_client(session_name, int(api_id), api_hash)
     try:
         await client.start()
@@ -97,6 +107,13 @@ def run_vk(lead_filter, conn):
         return
     if not groups:
         logger.info("VK: список VK_GROUPS пуст, пропускаю")
+        return
+
+    health = account_health.check_vk(token)
+    if health["status"] != "ok":
+        logger.warning(
+            "VK: пропускаю сбор, токен не в порядке (%s: %s)", health["status"], health["detail"]
+        )
         return
 
     try:
