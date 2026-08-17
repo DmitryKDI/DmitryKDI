@@ -13,6 +13,7 @@ import forum_collector
 import storage
 import telegram_collector
 import vk_collector
+import web_discovery
 
 load_dotenv()
 
@@ -133,8 +134,23 @@ def run_forums(lead_filter, conn):
     urls = _split_env_list("FORUM_URLS")
     selector = os.getenv("FORUM_SELECTOR") or None
 
+    search_api_key = os.getenv("SEARCH_API_KEY")
+    search_cx = os.getenv("SEARCH_CX")
+    search_queries = _split_env_list("FORUM_SEARCH_QUERIES")
+    max_discovered = int(os.getenv("MAX_DISCOVERED_URLS_PER_RUN", "20"))
+
+    if search_api_key and search_cx and search_queries:
+        try:
+            discovered = web_discovery.discover_urls(
+                search_api_key, search_cx, search_queries, max_urls=max_discovered
+            )
+            logger.info("Веб-поиск: найдено %d новых URL по запросам", len(discovered))
+            urls = list(dict.fromkeys(urls + discovered))  # объединяем, сохраняя порядок, без дублей
+        except Exception as exc:
+            logger.error("Ошибка веб-поиска форумов: %s", exc)
+
     if not urls:
-        logger.info("Форумы: список FORUM_URLS пуст, пропускаю")
+        logger.info("Форумы: список FORUM_URLS пуст и веб-поиск не настроен/ничего не нашёл, пропускаю")
         return
 
     try:
