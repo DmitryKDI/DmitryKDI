@@ -1,0 +1,53 @@
+# Конфигурация провайдеров языковых моделей.
+# Переключение провайдера выполняется правкой поля default и не требует пересборки.
+default: mock            # gigachat | yandexgpt | local_vllm | claude | mock
+verifier: mock           # провайдер перепроверки; обязан отличаться от default в продуктиве
+
+providers:
+  gigachat:
+    enabled: false
+    model: GigaChat-Pro
+    base_url: https://gigachat.devices.sberbank.ru/api/v1
+    credentials_env: GIGACHAT_CREDENTIALS
+    max_context_tokens: 32000
+    is_sovereign: true
+
+  yandexgpt:
+    enabled: false
+    model: yandexgpt/latest
+    base_url: https://llm.api.cloud.yandex.net/foundationModels/v1
+    api_key_env: YANDEX_GPT_API_KEY
+    folder_id_env: YANDEX_GPT_FOLDER_ID
+    max_context_tokens: 32000
+    is_sovereign: true
+
+  local_vllm:
+    enabled: false
+    model: t-tech/T-lite-it-1.0
+    base_url: http://vllm:8000/v1
+    max_context_tokens: 32000
+    is_sovereign: true
+
+  claude:
+    # Только разработка и офлайн-демо на синтетических данных.
+    # Не является отечественным ПО, для продуктивного контура запрещён.
+    enabled: false
+    model: claude-sonnet-5
+    api_key_env: ANTHROPIC_API_KEY
+    max_context_tokens: 200000
+    is_sovereign: false
+
+  mock:
+    enabled: true
+    model: mock-detector-1
+    max_context_tokens: 32000
+    is_sovereign: true
+
+policy:
+  # Объекты с повышенным уровнем защиты обслуживаются только отечественными моделями.
+  require_sovereign_for_protected_objects: true
+  # Порог уверенности, ниже которого гипотеза помечается как требующая внимания эксперта.
+  low_confidence_threshold: 0.55
+  # Число попыток получить валидный JSON по схеме, после — отказ с записью в аудит.
+  schema_retries: 2
+  request_timeout_seconds: 60

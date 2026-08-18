@@ -1,0 +1,41 @@
+# Детерминированные правила детектора. Отключаются администратором без пересборки.
+rules:
+  chronology_aosr_vs_passport:
+    enabled: true
+    severity: major
+    description: Дата акта освидетельствования раньше даты поставки материала
+  chronology_work_before_permit:
+    enabled: true
+    severity: critical
+    description: Работы выполнены до даты выдачи разрешения на строительство
+  completeness_test_reports:
+    enabled: true
+    severity: major
+    description: Отсутствует протокол испытаний для захватки бетонирования
+  completeness_required_fields:
+    enabled: true
+    severity: minor
+    description: Не заполнены обязательные реквизиты формы РД-11-02-2006
+  arithmetic_volume_mismatch:
+    enabled: true
+    severity: major
+    tolerance_percent: 10
+    description: Объём в акте расходится с расчётным по геометрии
+  sro_membership_expired:
+    enabled: true
+    severity: critical
+    description: Свидетельство СРО недействительно на дату выполнения работ
+  material_class_downgrade:
+    enabled: true
+    severity: critical
+    description: Класс или марка материала в ИД ниже проектного
+  injection_attempt:
+    enabled: true
+    severity: major
+    description: В документе обнаружена попытка воздействия на модель
+
+llm_layer:
+  enabled: true
+  # LLM работает только с извлечёнными фактами, свободная генерация запрещена
+  facts_only: true
+  verification_enabled: true
