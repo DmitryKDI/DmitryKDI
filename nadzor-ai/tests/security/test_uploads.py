@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from documents.intake import detect_type, new_file_id, storage_key
 from documents.schemas import IntakeError
 

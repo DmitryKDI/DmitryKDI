@@ -1,0 +1,57 @@
+name: nadzor-ai
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql+asyncpg://nadzor:${POSTGRES_PASSWORD:-nadzor}@db:5432/nadzor
+  APP_ROOT: /app
+  IDENTITY_PROVIDER: ${IDENTITY_PROVIDER:-mock}
+  URBAN_DATA_PROVIDER: ${URBAN_DATA_PROVIDER:-mock}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+  PYTHONPATH: /app/packages:/app
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: nadzor
+      POSTGRES_USER: nadzor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nadzor}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nadzor -d nadzor"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment: *api-env
+    volumes:
+      # Эталон нужен скрипту метрик; конфигурация и демо-комплект лежат внутри
+      # образа и принадлежат непривилегированному пользователю, иначе экран
+      # администратора не смог бы сохранить переключение провайдера.
+      - ./data/ground_truth.json:/app/data/ground_truth.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python scripts/gen_dataset.py --out data/demo/generated &&
+             alembic -c db/alembic.ini upgrade head &&
+             uvicorn api.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "5173:5173"
+
+volumes:
+  pgdata:

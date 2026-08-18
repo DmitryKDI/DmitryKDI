@@ -4,12 +4,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, Header, HTTPException, status
+from integrations.identity.ports import IdentityToken, Principal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db import get_session
-from api.rbac import AccessDenied, require
+from api.rbac import AccessDeniedError, require
 from api.state import state
-from integrations.identity.ports import IdentityToken, Principal
 
 
 async def session_dep() -> AsyncIterator[AsyncSession]:
@@ -34,7 +34,7 @@ def permission(action: str):
     async def _check(principal: Principal = Depends(current_principal)) -> Principal:
         try:
             require(principal, action)
-        except AccessDenied as exc:
+        except AccessDeniedError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         return principal
     return _check

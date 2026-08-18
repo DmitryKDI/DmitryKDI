@@ -1,8 +1,9 @@
 """Модель состояний объекта и определение доступных переходов."""
 from __future__ import annotations
 
-from analysis.models import TRANSITIONS, DocumentSet
 from documents.schemas import StateKind
+
+from analysis.models import TRANSITIONS, DocumentSet
 
 # Какие состояния нужны переходу: (состояние «до», состояние «после»).
 REQUIREMENTS: dict[str, tuple[StateKind | None, StateKind]] = {

@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from documents.schemas import DocKind
+
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.collect import act_element, elements_index
 from analysis.rules.common import (
@@ -15,7 +17,6 @@ from analysis.rules.common import (
     rebar_class,
     rule_enabled,
 )
-from documents.schemas import DocKind
 
 # Поле ведомости → (код расхождения, название параметра, пункт норматива)
 FIELD_RULES = [

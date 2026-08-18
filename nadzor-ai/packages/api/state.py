@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 import yaml
-
 from audit.chain import AuditChain
 from integrations.identity.mock import MockIdentityProvider
 from integrations.identity.sudir import SudirIdentityProvider

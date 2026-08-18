@@ -1,10 +1,11 @@
 """Правила хронологии: даты документов и последовательность событий."""
 from __future__ import annotations
 
+from documents.schemas import DocKind
+
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.collect import act_element, passport_index
 from analysis.rules.common import parse_ru_date, rule_enabled
-from documents.schemas import DocKind
 
 
 def check_material_chronology(project: DocumentSet | None, as_built: DocumentSet | None,

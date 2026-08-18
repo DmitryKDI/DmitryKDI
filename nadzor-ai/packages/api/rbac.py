@@ -6,10 +6,10 @@
 """
 from __future__ import annotations
 
+from integrations.identity.ports import Principal
 from sqlalchemy import Select
 
 from api.models import ConstructionObject
-from integrations.identity.ports import Principal
 
 # Действие → роли, которым оно разрешено.
 PERMISSIONS: dict[str, set[str]] = {
@@ -27,7 +27,7 @@ PERMISSIONS: dict[str, set[str]] = {
 }
 
 
-class AccessDenied(Exception):
+class AccessDeniedError(Exception):
     """Отказ в доступе. Причина пользователю не раскрывается детально."""
 
 
@@ -38,7 +38,7 @@ def can(principal: Principal, action: str) -> bool:
 
 def require(principal: Principal, action: str) -> None:
     if not can(principal, action):
-        raise AccessDenied(f"Недостаточно прав для действия «{action}».")
+        raise AccessDeniedError(f"Недостаточно прав для действия «{action}».")
 
 
 def scope_objects(stmt: Select, principal: Principal) -> Select:

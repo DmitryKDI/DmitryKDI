@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import re
 
+from documents.schemas import DocKind
+
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.collect import act_element, report_index
 from analysis.rules.common import rule_enabled
-from documents.schemas import DocKind
 
 # Обязательные реквизиты акта по форме РД-11-02-2006.
 REQUIRED_FIELDS = {

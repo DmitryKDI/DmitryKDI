@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 import yaml  # noqa: E402
-
 from analysis.runner import object_card_for_rules, parse_documents, run_analysis  # noqa: E402
 from llm_core.router import ProviderRouter  # noqa: E402
 from norms import load_norms  # noqa: E402

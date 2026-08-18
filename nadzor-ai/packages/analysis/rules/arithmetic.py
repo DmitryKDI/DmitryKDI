@@ -1,10 +1,11 @@
 """Правила арифметики объёмов: заявленное против расчётного по геометрии."""
 from __future__ import annotations
 
+from documents.schemas import DocKind
+
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.collect import act_element
 from analysis.rules.common import deviation_percent, parse_amount, parse_geometry, rule_enabled
-from documents.schemas import DocKind
 
 
 def check_volumes(project: DocumentSet | None, as_built: DocumentSet | None,

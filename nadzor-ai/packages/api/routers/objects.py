@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from documents.pdf import render_png
 from fastapi import APIRouter, Depends, HTTPException, Response
+from integrations.identity.ports import Principal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,8 +13,6 @@ from api.deps import permission, session_dep
 from api.models import ConstructionObject, DocumentRow
 from api.rbac import scope_objects
 from api.state import state
-from documents.pdf import render_png
-from integrations.identity.ports import Principal
 
 router = APIRouter(prefix="/api", tags=["Объекты"])
 

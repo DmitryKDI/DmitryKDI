@@ -1,9 +1,9 @@
 """Нормативная база, актуальность редакций и приоритизация."""
 from __future__ import annotations
 
-import yaml
 from pathlib import Path
 
+import yaml
 from analysis import scoring
 
 ROOT = Path(__file__).resolve().parents[2]

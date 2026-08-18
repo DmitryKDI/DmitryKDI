@@ -4,15 +4,16 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta
 
+from analysis import scoring
 from fastapi import APIRouter, Depends, HTTPException
+from integrations.identity.ports import ROLES, Principal
+from integrations.stubs import catalog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from analysis import scoring
 from api.audit_store import record as audit_record
 from api.deps import permission, session_dep
 from api.models import (
-    AnalysisRun,
     Assessment,
     AuditRow,
     ConstructionObject,
@@ -22,9 +23,6 @@ from api.models import (
 )
 from api.rbac import scope_objects, visible_object_ids
 from api.state import state
-from integrations.identity.ports import ROLES
-from integrations.identity.ports import Principal
-from integrations.stubs import catalog
 
 router = APIRouter(prefix="/api", tags=["Администрирование"])
 

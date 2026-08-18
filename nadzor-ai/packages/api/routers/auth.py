@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from integrations.identity.ports import ROLES, IdentityToken, Principal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.audit_store import record
 from api.deps import current_principal, session_dep
 from api.rbac import PERMISSIONS
 from api.state import state
-from integrations.identity.ports import ROLES, IdentityToken, Principal
 
 router = APIRouter(prefix="/api/auth", tags=["Идентификация"])
 
@@ -35,7 +35,8 @@ async def login(payload: dict, session: AsyncSession = Depends(session_dep)) -> 
     record(session, principal.subject, principal.roles[0] if principal.roles else "",
            "auth.login", "user", principal.subject, {"provider": state.identity.name})
     await session.commit()
-    return {"access_token": token.value, "token_type": "Bearer",
+    # Значение «Bearer» — название схемы передачи токена, а не секрет.
+    return {"access_token": token.value, "token_type": "Bearer",  # nosec B105
             "principal": principal.__dict__, "permissions": _permissions(principal)}
 
 

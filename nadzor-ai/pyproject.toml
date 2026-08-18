@@ -19,7 +19,11 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "S", "A", "C4", "RET", "SIM"]
-ignore = ["S101"]
+ignore = [
+    "S101",   # assert в тестах допустим
+    "B008",   # Depends(...) в значении по умолчанию — штатный приём FastAPI
+    "UP042",  # str + Enum выбран осознанно: предсказуемая сериализация в JSON
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S", "E501"]

@@ -5,10 +5,6 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from analysis.attention import build_attention_map
 from analysis.diff.raster import RasterDiffEngine
 from analysis.lifecycle import available_transitions
@@ -16,12 +12,16 @@ from analysis.models import Finding
 from analysis.pipeline import build_states
 from analysis.reporting import build_inspection_act, build_prescription
 from analysis.runner import STAGES, object_card_for_rules, parse_documents, run_analysis
+from fastapi import APIRouter, Depends, HTTPException, Response
+from integrations.identity.ports import Principal
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from api.audit_store import record
 from api.deps import permission, session_dep
 from api.models import AnalysisRun, Assessment, ConstructionObject, DocumentRow, FindingRow
 from api.routers.objects import _object_or_denied
 from api.state import state
-from integrations.identity.ports import Principal
 
 router = APIRouter(prefix="/api", tags=["Анализ"])
 

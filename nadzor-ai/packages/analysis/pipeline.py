@@ -4,11 +4,12 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from analysis.models import DocumentSet, ParsedDoc
 from documents.extract import extract_facts
 from documents.pdf import has_text_layer, parse
 from documents.schemas import DocKind, StateKind
 from documents.stamp import detect_kind, fallback_date, parse_stamp
+
+from analysis.models import DocumentSet, ParsedDoc
 
 STATE_LABELS = {
     StateKind.PD: "Проектная документация",
@@ -56,7 +57,8 @@ def build_states(docs: list[ParsedDoc], object_id: str) -> list[DocumentSet]:
         groups.setdefault((doc.state_kind, revision), []).append(doc)
 
     states = []
-    for (state_kind, revision), items in sorted(groups.items(), key=lambda p: (p[0][0].value, p[0][1])):
+    ordered = sorted(groups.items(), key=lambda pair: (pair[0][0].value, pair[0][1]))
+    for (state_kind, revision), items in ordered:
         label = STATE_LABELS.get(state_kind, state_kind.value)
         if state_kind in (StateKind.PD, StateKind.RD):
             label = f"{label}, редакция {revision}"

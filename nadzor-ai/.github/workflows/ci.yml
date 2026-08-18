@@ -1,0 +1,51 @@
+name: Проверки качества
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    name: Тесты и границы модулей
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Установка зависимостей
+        run: pip install -r requirements-dev.txt
+      - name: Формирование демонстрационного комплекта
+        run: PYTHONPATH=. python scripts/gen_dataset.py
+      - name: Стиль кода
+        run: ruff check packages scripts tests
+      - name: Границы модулей
+        run: PYTHONPATH=packages lint-imports --config .importlinter
+      - name: Тесты и покрытие
+        run: python -m pytest tests -q --cov=packages --cov-report=term --cov-fail-under=70
+      - name: Метрики детектора по эталону
+        run: PYTHONPATH=. python scripts/evaluate.py --json metrics.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metrics
+          path: nadzor-ai/metrics.json
+
+  frontend:
+    name: Сборка интерфейса
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nadzor-ai/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

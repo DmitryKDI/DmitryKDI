@@ -163,9 +163,10 @@ class YandexGPTProvider(_Base):
             r.raise_for_status()
             data = r.json()
         result = data["result"]
+        usage = result.get("usage", {})
         return self._response(result["alternatives"][0]["message"]["text"], req, started,
-                              {"prompt_tokens": result.get("usage", {}).get("inputTextTokens", 0),
-                               "completion_tokens": result.get("usage", {}).get("completionTokens", 0)})
+                              {"prompt_tokens": usage.get("inputTextTokens", 0),
+                               "completion_tokens": usage.get("completionTokens", 0)})
 
 
 class ClaudeProvider(_Base):
@@ -189,8 +190,8 @@ class ClaudeProvider(_Base):
                    "temperature": req.temperature, "system": system,
                    "messages": [{"role": "user", "content": user}]}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            r = await client.post(self.cfg.get("base_url", "https://api.anthropic.com") + "/v1/messages",
-                                  json=payload,
+            base = self.cfg.get("base_url", "https://api.anthropic.com")
+            r = await client.post(f"{base}/v1/messages", json=payload,
                                   headers={"x-api-key": api_key,
                                            "anthropic-version": "2023-06-01"})
             r.raise_for_status()

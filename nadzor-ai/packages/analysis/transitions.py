@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from analysis import scoring
-from analysis.llm_layer import run_llm_layer
 from analysis.lifecycle import pick_states
+from analysis.llm_layer import run_llm_layer
 from analysis.models import AnalysisContext, Detection, DocumentSet, Finding
 from analysis.rules import (
     arithmetic,
@@ -93,7 +93,8 @@ def _enrich(detection: Detection, transition: str, verification: dict,
     Находка без пункта норматива или без координат не создаётся (мера Б.6).
     """
     klass = ctx.norms.klass(detection.code)
-    norm_keys = detection.norm_refs or [f"{r['doc']}:{r['clause']}" for r in klass.get("norm_refs", [])]
+    norm_keys = detection.norm_refs or [
+        f"{r['doc']}:{r['clause']}" for r in klass.get("norm_refs", [])]
     norm_refs = ctx.norms.norm_refs(norm_keys)
     legal_keys = detection.legal_refs or [
         f"{r['article']}/{r.get('part', '')}" for r in klass.get("legal_refs", [])]
@@ -110,7 +111,8 @@ def _enrich(detection: Detection, transition: str, verification: dict,
     priority = scoring.score(severity, confidence, detection.element, legal_refs,
                              detection.title, ctx.scoring_config,
                              ctx.object_card.get("contractor_history", 0.5))
-    public_id = f"H-{ctx.object_card.get('seq_prefix', '1')}{len(ctx.object_card.get('_issued', [])) + 1:03d}"
+    prefix = ctx.object_card.get("seq_prefix", "1")
+    public_id = f"H-{prefix}{len(ctx.object_card.get('_issued', [])) + 1:03d}"
     ctx.object_card.setdefault("_issued", []).append(public_id)
 
     try:
@@ -131,7 +133,7 @@ def _enrich(detection: Detection, transition: str, verification: dict,
                 "prompt_version": "2.3" if detection.detector == "llm" else "—",
                 "detector": detection.detector,
                 "run_id": ctx.run_id,
-                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             },
         )
     except ValueError:

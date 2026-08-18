@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 GENESIS = "0" * 64
@@ -70,7 +70,7 @@ class AuditChain:
         prev = self._records[-1].record_hash if self._records else GENESIS
         record = AuditRecord(
             seq=len(self._records) + 1,
-            occurred_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            occurred_at=datetime.now(UTC).isoformat(timespec="seconds"),
             actor_id=actor_id, actor_role=actor_role, action=action,
             entity_type=entity_type, entity_id=entity_id,
             payload=mask_personal_data(payload or {}), prev_hash=prev,

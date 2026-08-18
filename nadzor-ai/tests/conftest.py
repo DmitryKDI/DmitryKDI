@@ -32,9 +32,8 @@ def client(tmp_path_factory):
     """Приложение с отдельной базой на время тестов."""
     db = tmp_path_factory.mktemp("db") / "test.db"
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db}"
-    from fastapi.testclient import TestClient
-
     import api.main as main
+    from fastapi.testclient import TestClient
     with TestClient(main.app) as test_client:
         yield test_client
 

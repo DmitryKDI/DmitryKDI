@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-class SchemaViolation(Exception):
+class SchemaViolationError(Exception):
     """Ответ модели не соответствует схеме."""
 
 
@@ -63,12 +63,13 @@ def parse_strict(raw_text: str, model: type[BaseModel]) -> BaseModel:
     except json.JSONDecodeError:
         match = _JSON_RE.search(text)
         if not match:
-            raise SchemaViolation("Ответ модели не содержит объекта JSON.") from None
+            raise SchemaViolationError("Ответ модели не содержит объекта JSON.") from None
         try:
             payload = json.loads(match.group(0))
         except json.JSONDecodeError as exc:
-            raise SchemaViolation("Ответ модели не разбирается как JSON.") from exc
+            raise SchemaViolationError("Ответ модели не разбирается как JSON.") from exc
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
-        raise SchemaViolation(f"Ответ модели не соответствует схеме: {exc.error_count()} ошибок") from exc
+        raise SchemaViolationError(
+            f"Ответ модели не соответствует схеме: {exc.error_count()} ошибок") from exc

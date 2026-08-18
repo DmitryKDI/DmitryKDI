@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from llm_core.envelope import SYSTEM_RULES
 from llm_core.ports import CompletionRequest
-from llm_core.schemas import LLMVerdict, SchemaViolation, parse_strict
+from llm_core.schemas import LLMVerdict, SchemaViolationError, parse_strict
 
 INSTRUCTION = ("Проверь обоснованность вывода. Ответь JSON с полями agreement (bool), "
                "confidence (0..1) и comment. Согласие возможно только при наличии "
@@ -37,7 +37,7 @@ async def verify_detection(detection, ctx) -> dict:
     try:
         response = await ctx.verifier.complete(req)
         verdict = parse_strict(response.raw_text, LLMVerdict)
-    except (SchemaViolation, Exception):      # noqa: B014 — любая ошибка означает «не проверено»
+    except (SchemaViolationError, Exception):      # noqa: B014 — любая ошибка означает «не проверено»
         return {"status": "failed", "provider": getattr(ctx.verifier, "name", ""),
                 "agreement": None, "comment": "Перепроверка не выполнена."}
     return {"status": "confirmed" if verdict.agreement else "disputed",

@@ -9,10 +9,10 @@ import json
 import uuid
 from datetime import datetime
 
+from analysis.runner import object_card_for_rules, parse_documents, run_analysis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from analysis.runner import object_card_for_rules, parse_documents, run_analysis
 from api.audit_store import record as audit_record
 from api.models import AnalysisRun, ConstructionObject, DocumentRow, FindingRow, User
 from api.state import MANIFEST, ROOT, state

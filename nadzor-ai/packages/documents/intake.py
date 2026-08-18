@@ -19,9 +19,10 @@ SIGNATURES: list[tuple[bytes, str, str]] = [
     (b"AutoCAD Binary DXF", "dxf", "image/vnd.dxf"),
 ]
 
+_OOXML = "application/vnd.openxmlformats-officedocument"
 OOXML_MARKERS = {
-    "word/document.xml": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-    "xl/workbook.xml": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    "word/document.xml": ("docx", f"{_OOXML}.wordprocessingml.document"),
+    "xl/workbook.xml": ("xlsx", f"{_OOXML}.spreadsheetml.sheet"),
 }
 
 

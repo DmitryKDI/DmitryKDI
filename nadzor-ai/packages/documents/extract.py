@@ -156,8 +156,8 @@ def _table_facts(table: TableData, doc_id: str, file_id: str, start: int) -> lis
         return _facts_rows(table, doc_id, file_id, start, "journal_entry", "журнал работ",
                            ["date", "work", "volume", "responsible", "act"])
     if "замечание" in sig:
-        return _facts_rows(table, doc_id, file_id, start, "expertise_remark", "замечания экспертизы",
-                           ["n", "text", "resolution"])
+        return _facts_rows(table, doc_id, file_id, start, "expertise_remark",
+                           "замечания экспертизы", ["n", "text", "resolution"])
     if "фамилия, инициалы" in sig:
         return _facts_rows(table, doc_id, file_id, start, "signatory", "подписи",
                            ["role", "organization", "person", "signature"])

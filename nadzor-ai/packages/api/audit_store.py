@@ -5,12 +5,12 @@
 """
 from __future__ import annotations
 
+from audit.chain import AuditChain, AuditRecord
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models import AuditRow
 from api.state import state
-from audit.chain import AuditChain, AuditRecord
 
 
 def _to_record(row: AuditRow) -> AuditRecord:

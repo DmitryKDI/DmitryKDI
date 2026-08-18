@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 
+from llm_core.guard import scan_facts
+
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.common import rule_enabled
-from llm_core.guard import scan_facts
 
 
 def check_injection(before: DocumentSet | None, after: DocumentSet | None,

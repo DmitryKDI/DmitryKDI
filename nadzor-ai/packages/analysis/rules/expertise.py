@@ -1,9 +1,10 @@
 """Правила по заключению экспертизы: повторная экспертиза и учёт замечаний."""
 from __future__ import annotations
 
+from documents.schemas import DocKind
+
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.common import parse_ru_date
-from documents.schemas import DocKind
 
 UNRESOLVED_MARKERS = ("не представлен", "не устранен", "не устранён", "отсутств", "—", "-")
 
@@ -27,11 +28,10 @@ def check_repeat_expertise(before: DocumentSet | None, after: DocumentSet | None
     doc_date = next((d.doc_date for d in after.of_kind(DocKind.PD) if d.doc_date), None)
     if doc_date is None or doc_date <= expertise_date:
         return []
-    significant = [(f, d) for f, d in changes if _is_significant(str((f.value or {}).get("content", "")))]
+    significant = [(f, d) for f, d in changes
+                   if _is_significant(str((f.value or {}).get("content", "")))]
     if not significant:
         return []
-    fact, doc = significant[0]
-    titles = [str((f.value or {}).get("content", ""))[:80] for f, _ in significant[:3]]
     return [Detection(
         code="D-13",
         title=f"В проектную документацию после положительного заключения экспертизы от "
@@ -71,6 +71,7 @@ def check_remarks_addressed(before: DocumentSet | None, after: DocumentSet | Non
         return []
     project_text = " ".join(str(f.value) for d in project.of_kind(DocKind.PD)
                             for f in d.facts).lower()
+
     found: list[Detection] = []
     for fact, doc in remarks:
         value = fact.value or {}

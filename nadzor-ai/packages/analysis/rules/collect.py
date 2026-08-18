@@ -1,8 +1,9 @@
 """Выборки документов и фактов из комплекта для правил детектора."""
 from __future__ import annotations
 
-from analysis.models import DocumentSet, ParsedDoc
 from documents.schemas import DocKind, Fact
+
+from analysis.models import DocumentSet, ParsedDoc
 
 
 def elements_index(state: DocumentSet | None) -> dict[str, tuple[Fact, ParsedDoc]]:

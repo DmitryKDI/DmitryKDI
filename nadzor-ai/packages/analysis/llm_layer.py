@@ -6,11 +6,12 @@
 """
 from __future__ import annotations
 
-from analysis.models import Detection, DocumentSet, Evidence
 from documents.schemas import Fact
 from llm_core.envelope import SYSTEM_RULES
 from llm_core.ports import CompletionRequest
-from llm_core.schemas import LLMFindings, SchemaViolation, parse_strict
+from llm_core.schemas import LLMFindings, SchemaViolationError, parse_strict
+
+from analysis.models import Detection, DocumentSet, Evidence
 
 MAX_TEXT_BLOCKS = 24
 MAX_STRUCTURED_FACTS = 120
@@ -80,7 +81,7 @@ async def _complete_with_schema(provider, req: CompletionRequest, retries: int):
         try:
             response = await provider.complete(req)
             return parse_strict(response.raw_text, LLMFindings)
-        except SchemaViolation:
+        except SchemaViolationError:
             continue
         except Exception:      # noqa: BLE001 — недоступность провайдера не роняет анализ
             return None

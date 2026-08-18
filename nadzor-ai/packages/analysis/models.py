@@ -8,9 +8,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
-
 from documents.schemas import DocKind, Fact, StateKind
+from pydantic import BaseModel, Field, model_validator
 
 Severity = Literal["critical", "major", "minor"]
 
