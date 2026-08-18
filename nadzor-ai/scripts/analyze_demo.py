@@ -14,10 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 import yaml  # noqa: E402
 
-from analysis.attention import build_attention_map  # noqa: E402
-from analysis.models import AnalysisContext  # noqa: E402
-from analysis.pipeline import build_states, load_document  # noqa: E402
-from analysis.transitions import analyze_all  # noqa: E402
+from analysis.runner import object_card_for_rules, parse_documents, run_analysis  # noqa: E402
 from llm_core.router import ProviderRouter  # noqa: E402
 from norms import load_norms  # noqa: E402
 
@@ -29,21 +26,6 @@ def _load_yaml(name: str) -> dict:
     return yaml.safe_load((ROOT / "config" / name).read_text(encoding="utf-8"))
 
 
-def _object_card(obj: dict) -> dict:
-    """Карточка объекта для правил: даты в формате документов."""
-    def ru(iso: str) -> str:
-        y, m, d = iso.split("-")
-        return f"{d}.{m}.{y}"
-    return {
-        "permit_date_ru": ru(obj["permit_date"]),
-        "expertise_date_ru": ru(obj["expertise"]["date"]),
-        "contractor": obj["contractor"],
-        "contractor_history": 0.6,
-        "seq_prefix": obj["id"][-1],
-        "protected": obj.get("protected", False),
-    }
-
-
 async def run_object(object_id: str, manifest_path: Path | None = None) -> dict:
     """Разобрать комплект объекта и выполнить все доступные переходы."""
     manifest_path = manifest_path or ROOT / "data/demo/generated/manifest.json"
@@ -51,25 +33,18 @@ async def run_object(object_id: str, manifest_path: Path | None = None) -> dict:
     obj = next(o for o in manifest["objects"] if o["id"] == object_id)
     entries = [m for m in manifest["documents"] if m["object_id"] == object_id]
 
-    docs = []
-    for entry in entries:
-        path = ROOT / entry["file"] if not Path(entry["file"]).is_absolute() else Path(entry["file"])
-        docs.append(load_document(path, object_id, entry["title"]))
-    states = build_states(docs, object_id)
+    entries_paths = [(ROOT / e["file"], e["title"]) for e in entries]
+    docs = parse_documents(entries_paths, object_id)
 
     router = ProviderRouter.from_file(ROOT / "config/providers.yaml")
     provider = router.select(protected_object=obj.get("protected", False))
-    ctx = AnalysisContext(
-        object_id=object_id, run_id=f"run-{object_id}", norms=load_norms(
-            ROOT / "data/norms/norms.json", ROOT / "data/norms/classifier.json"),
-        rules_config=_load_yaml("rules.yaml"), scoring_config=_load_yaml("scoring.yaml"),
-        object_card=_object_card(obj), provider=provider,
-        verifier=router.verifier(provider, obj.get("protected", False)),
-        protected=obj.get("protected", False),
-    )
-    findings = await analyze_all(states, ALL_TRANSITIONS, ctx)
-    return {"object": obj, "states": states, "findings": findings,
-            "attention": build_attention_map(findings)}
+    result = await run_analysis(
+        object_id, docs, object_card_for_rules(obj),
+        load_norms(ROOT / "data/norms/norms.json", ROOT / "data/norms/classifier.json"),
+        _load_yaml("rules.yaml"), _load_yaml("scoring.yaml"), provider,
+        router.verifier(provider, obj.get("protected", False)),
+        run_id=f"run-{object_id}", transitions=ALL_TRANSITIONS)
+    return {"object": obj, **result}
 
 
 def main() -> None:
