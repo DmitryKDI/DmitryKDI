@@ -18,6 +18,7 @@ import Integrations from './pages/Integrations'
 import Classifier from './pages/Classifier'
 import Users from './pages/Users'
 import ContractorAnalytics from './pages/ContractorAnalytics'
+import Workload from './pages/Workload'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const principal = useApp((s) => s.principal)
@@ -48,6 +49,7 @@ export default function App() {
       <Route path="/admin/users" element={<Protected><Users /></Protected>} />
       <Route path="/classifier" element={<Protected><Classifier /></Protected>} />
       <Route path="/analytics" element={<Protected><ContractorAnalytics /></Protected>} />
+      <Route path="/workload" element={<Protected><Workload /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

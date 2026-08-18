@@ -19,6 +19,7 @@ const MENU: MenuGroup[] = [
       { to: '/discrepancies', label: 'Журнал расхождений' },
       { to: '/findings', label: 'Журнал гипотез нарушений' },
       { to: '/attention', label: 'Карта внимания' },
+      { to: '/workload', label: 'Нагрузка инспекторов', permission: 'analytics:read' },
     ],
   },
   {
@@ -43,7 +44,7 @@ const MENU: MenuGroup[] = [
 const TITLES: Record<string, string> = {
   '/': 'Дашборд', '/analysis/new': 'Новый анализ', '/analysis': 'Журнал анализа документации',
   '/discrepancies': 'Журнал расхождений', '/findings': 'Журнал гипотез нарушений',
-  '/attention': 'Карта внимания', '/objects': 'Объекты надзора',
+  '/attention': 'Карта внимания', '/workload': 'Нагрузка инспекторов', '/objects': 'Объекты надзора',
   '/classifier': 'Классификатор расхождений', '/analytics': 'Аналитика по подрядчикам',
   '/admin': 'Настройки моделей и правил', '/admin/integrations': 'Внешние интеграции',
   '/admin/users': 'Пользователи и роли', '/audit': 'Журнал аудита',

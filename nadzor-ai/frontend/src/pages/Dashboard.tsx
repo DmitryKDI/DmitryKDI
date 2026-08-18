@@ -4,8 +4,9 @@ import { api } from '../api'
 import { ErrorState, Hint, SectionCard, Skeleton, StatTile, Table } from '../components/ui'
 
 interface DashboardData {
+  objects_total: number
+  objects_analysed: number
   saved_hours: number
-  saved_money_rub: number
   formula: string
   documents_total: number
   documents_processed: number
@@ -34,13 +35,14 @@ export default function Dashboard() {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatTile label="Сэкономлено человеко-часов" value={data.saved_hours.toLocaleString('ru-RU')}
-          unit="ч" tone="accent" hint={data.formula} />
-        <StatTile label="Обработано документов"
-          value={`${data.documents_processed} / ${data.documents_total.toLocaleString('ru-RU')}`}
-          hint="Слева — разобрано системой полностью, справа — всего в контуре объектов." />
-        <StatTile label="Гипотез нарушений" value={data.findings_total} />
+        <StatTile label="Объектов под надзором" value={data.objects_total}
+          hint="Показаны объекты, доступные вашей роли."
+          />
+        <StatTile label="Комплектов проанализировано"
+          value={`${data.objects_analysed} / ${data.objects_total}`}
+          hint="По остальным объектам документация ещё не загружена." />
         <StatTile label="Критических расхождений" value={data.findings_critical} tone="critical" />
+        <StatTile label="Всего гипотез нарушений" value={data.findings_total} tone="accent" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -88,6 +90,25 @@ export default function Dashboard() {
           </div>
         </SectionCard>
       </div>
+
+      <SectionCard title="Полнота проверки"
+        subtitle="Комплект сверяется целиком, а не выборочно: формальные нарушения находятся полностью">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <p className="text-xs text-ink-faint">Документов в контуре объектов</p>
+            <p className="text-2xl font-semibold tabular-nums">{data.documents_total.toLocaleString('ru-RU')}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-faint">Разобрано системой полностью</p>
+            <p className="text-2xl font-semibold tabular-nums">{data.documents_processed}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-faint">Высвобождено времени подготовки, ч</p>
+            <p className="text-2xl font-semibold tabular-nums text-ink-muted">{data.saved_hours.toLocaleString('ru-RU')}</p>
+            <p className="mt-1 text-xs text-ink-faint">{data.formula}</p>
+          </div>
+        </div>
+      </SectionCard>
 
       <SectionCard title="Динамика выявленных расхождений за 6 месяцев"
         right={<Hint text="Показывает нагрузку на отдел и результативность анализа." />}>

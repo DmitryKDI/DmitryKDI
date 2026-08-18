@@ -45,7 +45,6 @@ async def dashboard(session: AsyncSession = Depends(session_dep),
 
     economics = state.region_config.get("economics", {})
     hours_per_doc = float(economics.get("manual_review_hours_per_document", 0.35))
-    hour_cost = float(economics.get("inspector_hour_cost_rub", 1450))
     total_documents = sum(DOCUMENT_VOLUME.get(o.id, 0) for o in objects)
     saved_hours = round(total_documents * hours_per_doc, 1)
 
@@ -64,10 +63,13 @@ async def dashboard(session: AsyncSession = Depends(session_dep),
         })
 
     return {
+        # Основные показатели — надзорные: полнота проверки и то, что требует выезда.
+        "objects_total": len(objects),
+        "objects_analysed": len({f.object_id for f in findings}),
         "saved_hours": saved_hours,
-        "saved_money_rub": round(saved_hours * hour_cost),
         "formula": (f"обработано документов × {hours_per_doc} ч нормативного времени ручной "
-                    f"проверки × {hour_cost:.0f} ₽ за час работы инспектора"),
+                    "сверки одного документа. Вспомогательный показатель: главный результат — "
+                    "полнота проверки комплекта, а не сэкономленное время"),
         "documents_total": total_documents,
         "documents_processed": processed,
         "findings_total": len(findings),
@@ -95,6 +97,44 @@ def _dynamics(findings: list[FindingRow]) -> list[dict]:
     base = max(len(findings) // 6, 1)
     return [{"month": m, "findings": counter.get(m, base + (i % 3))}
             for i, m in enumerate(months)]
+
+
+@router.get("/workload", summary="Нагрузка инспекторов отдела")
+async def workload(session: AsyncSession = Depends(session_dep),
+                   principal: Principal = Depends(permission("analytics:read"))) -> dict:
+    """Сводка для начальника отдела: у кого сколько объектов и что найдено."""
+    objects = (await session.execute(scope_objects(select(ConstructionObject),
+                                                   principal))).scalars().all()
+    users = {u.id: u for u in (await session.execute(select(User))).scalars().all()}
+    findings = (await session.execute(select(FindingRow))).scalars().all()
+    by_object: dict[str, list] = {}
+    for finding in findings:
+        by_object.setdefault(finding.object_id, []).append(finding)
+
+    rows: dict[str, dict] = {}
+    for obj in objects:
+        row = rows.setdefault(obj.assigned_to, {
+            "user_id": obj.assigned_to,
+            "full_name": users[obj.assigned_to].full_name if obj.assigned_to in users else obj.assigned_to,
+            "department": users[obj.assigned_to].department if obj.assigned_to in users else "",
+            "objects": 0, "analysed": 0, "findings": 0, "critical": 0, "assessed": 0,
+        })
+        row["objects"] += 1
+        own = by_object.get(obj.id, [])
+        if own:
+            row["analysed"] += 1
+        row["findings"] += len(own)
+        row["critical"] += sum(1 for f in own if f.severity == "critical")
+
+    assessments = (await session.execute(select(Assessment))).scalars().all()
+    for a in assessments:
+        if a.user_id in rows:
+            rows[a.user_id]["assessed"] += 1
+
+    items = sorted(rows.values(), key=lambda r: (-r["critical"], -r["objects"]))
+    return {"items": items,
+            "totals": {key: sum(r[key] for r in items)
+                       for key in ("objects", "analysed", "findings", "critical", "assessed")}}
 
 
 @router.get("/audit", summary="Журнал аудита")

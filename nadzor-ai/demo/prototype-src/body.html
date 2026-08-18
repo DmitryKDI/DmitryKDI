@@ -1,0 +1,32 @@
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#3D3DA8"/>
+        <path d="M32 12 50 20v14c0 11-7.5 16.7-18 20-10.5-3.3-18-9-18-20V20l18-8Z" fill="#fff" opacity=".93"/>
+        <path d="m24 32 6 6 12-12" stroke="#3D3DA8" stroke-width="4.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <b>НАДЗОР.ИИ</b>
+        <span>Предиктивный строительный надзор</span>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="demo-chip" title="Прототип на подготовленном комплекте документации. Все организации и лица вымышлены.">Демонстрационный прототип</span>
+      <div style="margin-left:auto; display:flex; align-items:center; gap:10px">
+        <button class="btn sm" id="themeBtn" title="Сменить тему">Тема</button>
+        <button class="role" id="roleBtn">
+          <div class="who"><b id="roleName"></b><span id="rolePos"></span></div>
+          <div class="avatar" id="roleAv"></div>
+        </button>
+      </div>
+    </div>
+    <div class="content" id="view"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div id="modalHost"></div>

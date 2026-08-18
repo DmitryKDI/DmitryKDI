@@ -12,6 +12,23 @@ import type { Finding, ObjectBrief } from '../types'
 const SEVERITIES = [['', 'Все'], ['critical', 'Критические'], ['major', 'Существенные'],
   ['minor', 'Незначительные']]
 
+/** Документ и лист, на котором находится расхождение: инспектор проверяет вывод сам. */
+function docCell(f: Finding, which: 0 | 1) {
+  const reqIndex = Math.max(f.evidence.findIndex((e) => e.role === 'требование'), 0)
+  const index = which === 0 ? reqIndex : f.evidence.findIndex((_, i) => i !== reqIndex)
+  const ev = f.evidence[index >= 0 ? index : reqIndex]
+  if (!ev) return <span className="text-ink-faint">—</span>
+  return (
+    <span className="block max-w-[15rem]">
+      <span className="block text-xs">{ev.doc_title}</span>
+      <Link to={`/findings/${f.id}`}
+        className="mt-0.5 inline-block rounded border border-accent-line bg-accent-soft px-1.5
+                   text-[11px] tabular-nums text-accent">лист {ev.page}</Link>
+      <span className="mt-0.5 block truncate text-xs text-ink-muted">{ev.extracted}</span>
+    </span>
+  )
+}
+
 export default function HypothesisLog() {
   const [params, setParams] = useSearchParams()
   const { filters, setFilter, density, setDensity } = useApp()
@@ -91,7 +108,8 @@ export default function HypothesisLog() {
       )}
 
       {query.data && query.data.total > 0 && (
-        <Table head={['Гипотеза', 'Конструктив', 'Переход', 'Критичность', 'Уверенность', 'Балл', 'Оценка']}>
+        <Table head={['Гипотеза', 'Конструктив', 'Требование: документ и лист',
+          'Факт: документ и лист', 'Критичность', 'Уверенность', 'Балл', 'Оценка']}>
           {query.data.items.map((f) => (
             <tr key={f.id} className="hover:bg-surface-muted/60">
               <td className="td">
@@ -104,7 +122,8 @@ export default function HypothesisLog() {
                 )}
               </td>
               <td className="td text-ink-muted">{elementLocation(f.structural_element) || '—'}</td>
-              <td className="td whitespace-nowrap" title={theme.transitions[f.transition]}>{f.transition}</td>
+              <td className="td">{docCell(f, 0)}</td>
+              <td className="td">{docCell(f, 1)}</td>
               <td className="td"><SeverityChip value={f.severity} /></td>
               <td className="td"><Confidence value={f.confidence} /></td>
               <td className="td tabular-nums font-semibold">{f.priority_score}</td>

@@ -93,12 +93,15 @@ def _to_detections(parsed: LLMFindings, index: dict, ctx) -> list[Detection]:
     out: list[Detection] = []
     for item in parsed.findings:
         evidence = []
-        for fact_id in item.fact_ids:
+        for position, fact_id in enumerate(item.fact_ids):
             pair = index.get(fact_id)
             if pair is None:
                 continue                      # модель сослалась на несуществующий факт
             fact, doc = pair
-            evidence.append(Evidence.from_fact(fact, doc, "факт"))
+            # Первая ссылка — проектное требование, последующие — фактическое состояние:
+            # без разделения ролей интерфейс не сможет показать «было» и «стало».
+            role = "требование" if position == 0 else "факт"
+            evidence.append(Evidence.from_fact(fact, doc, role))
         if not evidence:
             continue                          # вывод без доказательной базы не сохраняется
         if ctx.norms.get(item.norm_clause) is None:
