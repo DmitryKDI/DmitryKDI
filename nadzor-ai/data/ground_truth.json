@@ -2,94 +2,360 @@
   "_note": "Эталон для scripts/evaluate.py. Перечислены расхождения, заложенные в демо-комплект. Детектор о содержимом этого файла не знает.",
   "version": "1.0",
   "expected": [
-    {"id": "GT-01", "object_id": "OBJ-001", "transition": "T1", "code": "D-02", "severity": "critical",
-     "title": "Класс бетона плиты перекрытия ПП-8 снижен с B30 до B25",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-8", "level": "+33.600", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["2024-15-KR_izm2.pdf", "2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-02", "object_id": "OBJ-001", "transition": "T1", "code": "D-01", "severity": "major",
-     "title": "Толщина плиты перекрытия ПП-8 уменьшена с 200 мм до 180 мм",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-8", "level": "+33.600", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["2024-15-KR_izm2.pdf", "2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-03", "object_id": "OBJ-001", "transition": "T1", "code": "D-03", "severity": "critical",
-     "title": "Класс рабочей арматуры колонн К-2 изменён с A500C на A400",
-     "element": {"name": "Колонна", "mark": "К-2", "level": "+3.000…+75.000", "axes": "по схеме", "section": "—"},
-     "evidence_docs": ["2024-15-KR_izm2.pdf", "2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-04", "object_id": "OBJ-001", "transition": "T1", "code": "D-04", "severity": "major",
-     "title": "Марка бетона фундаментной плиты по морозостойкости снижена с F150 до F100",
-     "element": {"name": "Фундамент", "mark": "ФП-1", "level": "-4.500", "axes": "А–Г / 1–8", "section": "—"},
-     "evidence_docs": ["2024-15-KR_izm2.pdf", "2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-05", "object_id": "OBJ-001", "transition": "T1", "code": "D-10", "severity": "major",
-     "title": "Отметка низа фундаментной плиты изменена с -4.200 на -4.500",
-     "element": {"name": "Фундамент", "mark": "ФП-1", "level": "-4.500", "axes": "А–Г / 1–8", "section": "—"},
-     "evidence_docs": ["2024-15-KR_izm2.pdf", "2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-06", "object_id": "OBJ-001", "transition": "T1", "code": "D-09", "severity": "major",
-     "title": "Добавлена монолитная лестница Л-3 в осях В–Г / 4–5",
-     "element": {"name": "Лестница", "mark": "Л-3", "level": "+3.000…+36.900", "axes": "В–Г / 4–5", "section": "—"},
-     "evidence_docs": ["2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-07", "object_id": "OBJ-001", "transition": "T1", "code": "D-13", "severity": "critical",
-     "title": "Изменения внесены после получения положительного заключения экспертизы и требуют повторной экспертизы",
-     "element": {"name": "Объект в целом", "mark": "—", "level": "—", "axes": "—", "section": "—"},
-     "evidence_docs": ["2024-15-KR_izm3.pdf", "zaklyuchenie_expertizy.pdf"], "detector": "rule"},
-
-    {"id": "GT-08", "object_id": "OBJ-001", "transition": "T2", "code": "D-15", "severity": "major",
-     "title": "Замечание экспертизы № 3 о расчёте плиты перекрытия на продавливание не учтено",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-8", "level": "+33.600", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["zaklyuchenie_expertizy.pdf", "2024-15-KR_izm3.pdf"], "detector": "rule"},
-
-    {"id": "GT-09", "object_id": "OBJ-001", "transition": "T3", "code": "D-12", "severity": "critical",
-     "title": "Шаг поперечной арматуры плиты перекрытия в рабочей документации 250 мм против 200 мм в проекте",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-8", "level": "+33.600", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["2024-15-KR_izm3.pdf", "2024-15-KZH_izm1.pdf"], "detector": "llm"},
-
-    {"id": "GT-10", "object_id": "OBJ-001", "transition": "T5", "code": "D-02", "severity": "critical",
-     "title": "Класс бетона стен ядра жёсткости в акте № 47 ниже проектного: B25 против B35",
-     "element": {"name": "Стена несущая", "mark": "СТ-1", "level": "+30.000…+33.600", "axes": "Б–В / 3–4", "section": "секция 2"},
-     "evidence_docs": ["2024-15-KZH_izm1.pdf", "aosr_47.pdf", "passport_ПК-2024-338.pdf"], "detector": "rule"},
-
-    {"id": "GT-11", "object_id": "OBJ-001", "transition": "T5", "code": "D-05", "severity": "major",
-     "title": "Акт № 51 от 02.09.2024 подписан раньше даты паспорта качества ПК-2024-341 от 05.09.2024",
-     "element": {"name": "Колонна", "mark": "К-2", "level": "+33.600…+36.900", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["aosr_51.pdf", "passport_ПК-2024-341.pdf"], "detector": "rule"},
-
-    {"id": "GT-12", "object_id": "OBJ-001", "transition": "T5", "code": "D-07", "severity": "major",
-     "title": "К акту № 46 не приложен протокол испытаний контрольных образцов бетона",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-7", "level": "+30.000", "axes": "А–Г / 1–5", "section": "секция 1"},
-     "evidence_docs": ["aosr_46.pdf"], "detector": "rule"},
-
-    {"id": "GT-13", "object_id": "OBJ-001", "transition": "T5", "code": "D-07", "severity": "major",
-     "title": "К акту № 51 не приложен протокол испытаний контрольных образцов бетона",
-     "element": {"name": "Колонна", "mark": "К-2", "level": "+33.600…+36.900", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["aosr_51.pdf"], "detector": "rule"},
-
-    {"id": "GT-14", "object_id": "OBJ-001", "transition": "T5", "code": "D-11", "severity": "major",
-     "title": "Объём бетона в акте № 49 (142,0 м³) расходится с расчётным по геометрии (118,4 м³)",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-8", "level": "+33.600", "axes": "А–Г / 1–5", "section": "секция 2"},
-     "evidence_docs": ["aosr_49.pdf"], "detector": "rule"},
-
-    {"id": "GT-15", "object_id": "OBJ-001", "transition": "T5", "code": "D-14", "severity": "critical",
-     "title": "Работы по акту № 47 от 12.08.2024 выполнены после прекращения членства подрядчика в СРО 30.06.2024",
-     "element": {"name": "Стена несущая", "mark": "СТ-1", "level": "+30.000…+33.600", "axes": "Б–В / 3–4", "section": "секция 2"},
-     "evidence_docs": ["aosr_47.pdf", "vypiska_sro.pdf"], "detector": "rule"},
-
-    {"id": "GT-16", "object_id": "OBJ-001", "transition": "T5", "code": "D-90", "severity": "major",
-     "title": "В паспорте качества ПК-2024-338 обнаружена попытка воздействия на систему анализа",
-     "element": {"name": "Стена несущая", "mark": "СТ-1", "level": "+30.000…+33.600", "axes": "Б–В / 3–4", "section": "секция 2"},
-     "evidence_docs": ["passport_ПК-2024-338.pdf"], "detector": "rule"},
-
-    {"id": "GT-17", "object_id": "OBJ-002", "transition": "T5", "code": "D-07", "severity": "major",
-     "title": "К акту № 18 не приложен протокол испытаний контрольных образцов бетона",
-     "element": {"name": "Плита перекрытия", "mark": "ПП-4", "level": "+11.400", "axes": "1–6 / А–Д", "section": "блок Б"},
-     "evidence_docs": ["aosr_18.pdf"], "detector": "rule"},
-
-    {"id": "GT-18", "object_id": "OBJ-003", "transition": "T5", "code": "D-11", "severity": "major",
-     "title": "Объём стяжки в акте № 88 (1180,0 м²) расходится с площадью участка по геометрии (962,0 м²)",
-     "element": {"name": "Отделка", "mark": "ПЛ-4", "level": "+11.700", "axes": "1–9 / А–К", "section": "рампа 2"},
-     "evidence_docs": ["aosr_88.pdf"], "detector": "rule"}
+    {
+      "id": "GT-01",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-02",
+      "severity": "critical",
+      "title": "Класс бетона плиты перекрытия ПП-8 снижен с B30 до B25",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-8",
+        "level": "+33.600",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm2.pdf",
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-02",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-01",
+      "severity": "major",
+      "title": "Толщина плиты перекрытия ПП-8 уменьшена с 200 мм до 180 мм",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-8",
+        "level": "+33.600",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm2.pdf",
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-03",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-03",
+      "severity": "critical",
+      "title": "Класс рабочей арматуры колонн К-2 изменён с A500C на A400",
+      "element": {
+        "name": "Колонна",
+        "mark": "К-2",
+        "level": "+3.000…+75.000",
+        "axes": "по схеме",
+        "section": "—"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm2.pdf",
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-04",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-04",
+      "severity": "major",
+      "title": "Марка бетона фундаментной плиты по морозостойкости снижена с F150 до F100",
+      "element": {
+        "name": "Фундамент",
+        "mark": "ФП-1",
+        "level": "-4.500",
+        "axes": "А–Г / 1–8",
+        "section": "—"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm2.pdf",
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-05",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-10",
+      "severity": "major",
+      "title": "Отметка низа фундаментной плиты изменена с -4.200 на -4.500",
+      "element": {
+        "name": "Фундамент",
+        "mark": "ФП-1",
+        "level": "-4.500",
+        "axes": "А–Г / 1–8",
+        "section": "—"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm2.pdf",
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-06",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-09",
+      "severity": "major",
+      "title": "Добавлена монолитная лестница Л-3 в осях В–Г / 4–5",
+      "element": {
+        "name": "Лестница",
+        "mark": "Л-3",
+        "level": "+3.000…+36.900",
+        "axes": "В–Г / 4–5",
+        "section": "—"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-07",
+      "object_id": "OBJ-001",
+      "transition": "T1",
+      "code": "D-13",
+      "severity": "critical",
+      "title": "Изменения внесены после получения положительного заключения экспертизы и требуют повторной экспертизы",
+      "element": {
+        "name": "Объект в целом",
+        "mark": "—",
+        "level": "—",
+        "axes": "—",
+        "section": "—"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm3.pdf",
+        "zaklyuchenie_expertizy.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-08",
+      "object_id": "OBJ-001",
+      "transition": "T2",
+      "code": "D-15",
+      "severity": "major",
+      "title": "Замечание экспертизы № 3 о расчёте плиты перекрытия на продавливание не учтено",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-8",
+        "level": "+33.600",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "zaklyuchenie_expertizy.pdf",
+        "2024-15-KR_izm3.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-09",
+      "object_id": "OBJ-001",
+      "transition": "T3",
+      "code": "D-12",
+      "severity": "critical",
+      "title": "Шаг поперечной арматуры плиты перекрытия в рабочей документации 250 мм против 200 мм в проекте",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-8",
+        "level": "+33.600",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "2024-15-KR_izm3.pdf",
+        "2024-15-KZH_izm1.pdf"
+      ],
+      "detector": "llm"
+    },
+    {
+      "id": "GT-10",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-02",
+      "severity": "critical",
+      "title": "Класс бетона стен ядра жёсткости в акте № 47 ниже проектного: B25 против B35",
+      "element": {
+        "name": "Стена несущая",
+        "mark": "СТ-1",
+        "level": "+30.000…+33.600",
+        "axes": "Б–В / 3–4",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "2024-15-KZH_izm1.pdf",
+        "aosr_47.pdf",
+        "passport_ПК-2024-338.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-11",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-05",
+      "severity": "major",
+      "title": "Акт № 51 от 02.09.2024 подписан раньше даты паспорта качества ПК-2024-341 от 05.09.2024",
+      "element": {
+        "name": "Колонна",
+        "mark": "К-2",
+        "level": "+33.600…+36.900",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "aosr_51.pdf",
+        "passport_ПК-2024-341.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-12",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-07",
+      "severity": "major",
+      "title": "К акту № 46 не приложен протокол испытаний контрольных образцов бетона",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-7",
+        "level": "+30.000",
+        "axes": "А–Г / 1–5",
+        "section": "секция 1"
+      },
+      "evidence_docs": [
+        "aosr_46.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-13",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-07",
+      "severity": "major",
+      "title": "К акту № 51 не приложен протокол испытаний контрольных образцов бетона",
+      "element": {
+        "name": "Колонна",
+        "mark": "К-2",
+        "level": "+33.600…+36.900",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "aosr_51.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-14",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-11",
+      "severity": "major",
+      "title": "Объём бетона в акте № 49 (142,0 м³) расходится с расчётным по геометрии (118,4 м³)",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-8",
+        "level": "+33.600",
+        "axes": "А–Г / 1–5",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "aosr_49.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-15",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-14",
+      "severity": "critical",
+      "title": "Работы по актам, начиная с № 44 от 08.07.2024, выполнены после прекращения членства подрядчика в СРО 30.06.2024",
+      "element": {
+        "name": "Колонна",
+        "mark": "К-2",
+        "level": "+27.000…+30.000",
+        "axes": "А–Г / 1–5",
+        "section": "секция 1"
+      },
+      "evidence_docs": [
+        "aosr_44.pdf",
+        "vypiska_sro.pdf"
+      ],
+      "detector": "rule",
+      "note": "Правило сводит все акты за пределами срока в одну находку с самым ранним актом в качестве доказательства."
+    },
+    {
+      "id": "GT-16",
+      "object_id": "OBJ-001",
+      "transition": "T5",
+      "code": "D-90",
+      "severity": "major",
+      "title": "В паспорте качества ПК-2024-338 обнаружена попытка воздействия на систему анализа",
+      "element": {
+        "name": "Стена несущая",
+        "mark": "СТ-1",
+        "level": "+30.000…+33.600",
+        "axes": "Б–В / 3–4",
+        "section": "секция 2"
+      },
+      "evidence_docs": [
+        "passport_ПК-2024-338.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-17",
+      "object_id": "OBJ-002",
+      "transition": "T5",
+      "code": "D-07",
+      "severity": "major",
+      "title": "К акту № 18 не приложен протокол испытаний контрольных образцов бетона",
+      "element": {
+        "name": "Плита перекрытия",
+        "mark": "ПП-4",
+        "level": "+11.400",
+        "axes": "1–6 / А–Д",
+        "section": "блок Б"
+      },
+      "evidence_docs": [
+        "aosr_18.pdf"
+      ],
+      "detector": "rule"
+    },
+    {
+      "id": "GT-18",
+      "object_id": "OBJ-003",
+      "transition": "T5",
+      "code": "D-11",
+      "severity": "major",
+      "title": "Объём стяжки в акте № 88 (1180,0 м²) расходится с площадью участка по геометрии (962,0 м²)",
+      "element": {
+        "name": "Отделка",
+        "mark": "ПЛ-4",
+        "level": "+11.700",
+        "axes": "1–9 / А–К",
+        "section": "рампа 2"
+      },
+      "evidence_docs": [
+        "aosr_88.pdf"
+      ],
+      "detector": "rule"
+    }
   ]
 }

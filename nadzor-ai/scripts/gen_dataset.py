@@ -77,7 +77,7 @@ def build_object_1(out: Path, manifest: list) -> None:
     _doc(manifest, obj["id"], p, "expertise", "EXPERTISE",
          "Заключение государственной экспертизы", "1", obj["expertise"]["date"])
 
-    p = build_pdf(d / "rd" / "2024-15-KZH_izm1.pdf", B.rd_blocks(obj, RD_ROWS, "2024-07-05"),
+    p = build_pdf(d / "rd" / "2024-15-KZH_izm1.pdf", B.rd_blocks(obj, RD_ROWS, "2024-07-05", rebar_step="250"),
                   B.stamp_for(obj, "2024-15-КЖ", "Конструкции железобетонные", "Р", "1", "2024-07-05"),
                   wide=True)
     _doc(manifest, obj["id"], p, "rd", "RD", "Рабочая документация, марка КЖ", "1", "2024-07-05", "КЖ")

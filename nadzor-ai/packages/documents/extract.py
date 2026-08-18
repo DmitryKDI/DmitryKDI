@@ -58,8 +58,27 @@ COLUMN_ALIASES = {
 }
 
 
+def join_wrapped(text: str) -> str:
+    """Склеить строки внутри ячейки.
+
+    Перенос внутри числа или обозначения («+3.000…+75.00» + «0») склеивается
+    без пробела, перенос между словами — с пробелом.
+    """
+    if not text:
+        return ""
+    parts = text.split("\n")
+    out = parts[0].rstrip()
+    for part in parts[1:]:
+        nxt = part.lstrip()
+        if not nxt:
+            continue
+        glue = "" if out[-1:].isdigit() or nxt[:1].isdigit() else " "
+        out = f"{out}{glue}{nxt}"
+    return " ".join(out.split())
+
+
 def _norm(text: str) -> str:
-    return " ".join(text.replace("\n", " ").split()).strip().lower()
+    return join_wrapped(text).strip().lower()
 
 
 def _ref(file_id: str, page: int, bbox) -> SourceRef:
@@ -75,7 +94,7 @@ def _facts_kv(table: TableData, doc_id: str, file_id: str, start: int) -> list[F
         raw = _norm(row[0].text)
         facts.append(Fact(
             id=f"{doc_id}:{start + i}", doc_id=doc_id, fact_type="kv",
-            key=KV_ALIASES.get(raw, raw), value=row[1].text.replace("\n", " ").strip(),
+            key=KV_ALIASES.get(raw, raw), value=join_wrapped(row[1].text),
             section="реквизиты", source=_ref(file_id, table.page, row[1].bbox)))
     return facts
 
@@ -95,7 +114,7 @@ def _facts_elements(table: TableData, doc_id: str, file_id: str, start: int) -> 
         bbox = row[0].bbox
         for key, idx in mapping.items():
             if idx < len(row):
-                value[key] = row[idx].text.replace("\n", " ").strip()
+                value[key] = join_wrapped(row[idx].text)
                 if key == "concrete_class":
                     bbox = row[idx].bbox
         facts.append(Fact(
@@ -112,7 +131,7 @@ def _facts_rows(table: TableData, doc_id: str, file_id: str, start: int,
     for i, row in enumerate(table.rows):
         if not row or not any(c.text for c in row):
             continue
-        value = {columns[j]: row[j].text.replace("\n", " ").strip()
+        value = {columns[j]: join_wrapped(row[j].text)
                  for j in range(min(len(columns), len(row)))}
         facts.append(Fact(
             id=f"{doc_id}:{start + i}", doc_id=doc_id, fact_type=fact_type,

@@ -14,8 +14,8 @@ import time
 
 from llm_core.ports import CompletionRequest, CompletionResponse, ProviderHealth, Vector
 
-RE_REBAR_STEP = re.compile(r"шаг\s+поперечной\s+арматуры[^.]{0,120}?(\d{2,4})\s*мм", re.IGNORECASE)
-RE_PROTECT_LAYER = re.compile(r"защитный\s+слой[^.]{0,120}?(\d{2,3})\s*мм", re.IGNORECASE)
+RE_REBAR_STEP = re.compile(r"шаг\s+поперечной\s+арматуры.{0,160}?(\d{2,4})\s*мм", re.IGNORECASE)
+RE_PROTECT_LAYER = re.compile(r"защитный\s+слой.{0,160}?(\d{2,3})\s*мм", re.IGNORECASE)
 
 SEMANTIC_RULES = [
     ("шаг поперечной арматуры", RE_REBAR_STEP, "D-12", "СП 63.13330.2018:10.3.9",
@@ -47,9 +47,18 @@ class MockProvider:
             latency_ms=int((time.monotonic() - started) * 1000))
 
     def _semantic_diff(self, req: CompletionRequest) -> dict:
-        """Сопоставление текстовых указаний двух состояний."""
-        before = {f["id"]: f for f in req.facts if f.get("side") == "before"}
-        after = {f["id"]: f for f in req.facts if f.get("side") == "after"}
+        """Сопоставление текстовых указаний двух состояний.
+
+        Разбираются блоки недоверенного контейнера вида
+        «[факт D1:12 | сторона: after | документ: …]» — так же, как их увидит
+        продуктивная модель.
+        """
+        before, after = {}, {}
+        for block in req.untrusted_blocks:
+            fact_id, side, text = self._split_block(block)
+            if not fact_id:
+                continue
+            (before if side == "before" else after)[fact_id] = text
         findings = []
         for label, regex, code, clause, template in SEMANTIC_RULES:
             b_val, b_fact = self._first_match(before, regex)
@@ -60,7 +69,7 @@ class MockProvider:
                     "title": template.format(before=b_val, after=a_val),
                     "severity": "critical" if code == "D-12" else "major",
                     "confidence": 0.88,
-                    "element": req.context.get("element", {}) or {
+                    "element": req.context.get("element") or {
                         "name": "Плита перекрытия", "mark": "ПП-8", "level": "+33.600",
                         "axes": "А–Г / 1–5", "section": "секция 2"},
                     "fact_ids": [b_fact, a_fact],
@@ -72,10 +81,16 @@ class MockProvider:
         return {"findings": findings}
 
     @staticmethod
-    def _first_match(facts: dict, regex: re.Pattern) -> tuple[str, str]:
-        for fact_id, fact in facts.items():
-            value = fact.get("value")
-            if isinstance(value, str) and (m := regex.search(value)):
+    def _split_block(block: str) -> tuple[str, str, str]:
+        """Разобрать заголовок недоверенного блока: идентификатор факта и сторона."""
+        m = re.match(r"\[факт\s+([^\s|\]]+)\s*\|\s*сторона:\s*(\w+)[^\]]*\]\s*(.*)",
+                     block, re.DOTALL)
+        return (m.group(1), m.group(2), m.group(3)) if m else ("", "", block)
+
+    @staticmethod
+    def _first_match(blocks: dict, regex: re.Pattern) -> tuple[str, str]:
+        for fact_id, text in blocks.items():
+            if m := regex.search(text):
                 return m.group(1), fact_id
         return "", ""
 
