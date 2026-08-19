@@ -157,7 +157,7 @@ function wire() {
   if (fTr) fTr.onchange = () => { S.filters.tr = fTr.value; render(); };
 
   const csv = $('#csvBtn');
-  if (csv) csv.onclick = async () => {
+  if (csv) csv.onclick = () => {
     const head = ['Идентификатор','Код','Переход','Критичность','Уверенность','Приоритет','Описание','Документ','Лист'];
     const rows = visibleFindings().map(f => {
       const e = f.evidence[f.evidence.length-1];
@@ -165,17 +165,17 @@ function wire() {
               f.title.replace(/;/g, ','), e.doc_title, e.page];
     });
     const text = '\ufeff' + [head, ...rows].map(r => r.join(';')).join('\n');
-    // Опубликованная страница отдаёт файл только через подтверждение у зрителя.
-    const dl = (typeof claude !== 'undefined' && claude.use) ? await claude.use('downloads') : null;
-    if (dl) {
-      try { await dl.save({ filename:'rashozhdeniya.csv', data:text }); toast('Выгрузка сохранена'); return; }
-      catch (err) {
-        if (err && err.code === 'declined') return;
-        if (err && err.code === 'extension_not_enabled') {
-          try { await dl.save({ filename:'rashozhdeniya.txt', data:text }); toast('Выгрузка сохранена'); return; }
-          catch (e2) { if (e2 && e2.code === 'declined') return; }
-        }
-      }
+    // Страница открыта из файла — сохраняем сразу; во встроенном просмотре
+    // сохранение недоступно, поэтому показываем данные для копирования.
+    const standalone = (() => { try { return window.self === window.top; } catch { return false; } })();
+    if (standalone) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type:'text/csv;charset=utf-8' }));
+      a.download = 'rashozhdeniya.csv';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('Выгрузка сохранена');
+      return;
     }
     showExport(text);
   };
