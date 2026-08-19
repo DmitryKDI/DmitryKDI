@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from documents.pdf import PageData, TableData
 from documents.schemas import Fact, SourceRef
 
@@ -188,11 +190,21 @@ def _text_facts(pages: list[PageData], doc_id: str, file_id: str, start: int) ->
     return facts
 
 
-def extract_facts(pages: list[PageData], doc_id: str, file_id: str) -> list[Fact]:
-    """Извлечь все факты документа. Каждый факт несёт лист и координаты."""
+def extract_page_facts(page: PageData, doc_id: str, file_id: str, start: int) -> list[Fact]:
+    """Факты одного листа: таблицы и абзацы вне таблиц."""
+    facts: list[Fact] = []
+    for table in page.tables:
+        facts.extend(_table_facts(table, doc_id, file_id, start + len(facts)))
+    facts.extend(_text_facts([page], doc_id, file_id, start + len(facts)))
+    return facts
+
+
+def extract_facts(pages: Iterable[PageData], doc_id: str, file_id: str) -> list[Fact]:
+    """Извлечь факты документа. Принимает и список листов, и поток листов.
+
+    Каждый факт несёт лист и координаты области.
+    """
     facts: list[Fact] = []
     for page in pages:
-        for table in page.tables:
-            facts.extend(_table_facts(table, doc_id, file_id, len(facts) + 1))
-    facts.extend(_text_facts(pages, doc_id, file_id, len(facts) + 1))
+        facts.extend(extract_page_facts(page, doc_id, file_id, len(facts) + 1))
     return facts

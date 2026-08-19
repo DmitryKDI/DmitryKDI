@@ -113,10 +113,11 @@ async def workload(session: AsyncSession = Depends(session_dep),
 
     rows: dict[str, dict] = {}
     for obj in objects:
+        user = users.get(obj.assigned_to)
         row = rows.setdefault(obj.assigned_to, {
             "user_id": obj.assigned_to,
-            "full_name": users[obj.assigned_to].full_name if obj.assigned_to in users else obj.assigned_to,
-            "department": users[obj.assigned_to].department if obj.assigned_to in users else "",
+            "full_name": user.full_name if user else obj.assigned_to,
+            "department": user.department if user else "",
             "objects": 0, "analysed": 0, "findings": 0, "critical": 0, "assessed": 0,
         })
         row["objects"] += 1

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import pymupdf
@@ -96,22 +97,49 @@ def _read_blocks(page, page_no: int) -> list[Block]:
     return blocks
 
 
-def parse(data: bytes, max_pages: int = 1500) -> list[PageData]:
-    """Разобрать PDF в страницы с блоками и таблицами."""
+def _open(data: bytes, max_pages: int):
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
     except Exception as exc:      # noqa: BLE001
         raise IntakeError("Файл не читается как PDF. Возможно, он повреждён.") from exc
     if doc.needs_pass:
+        doc.close()
         raise IntakeError("PDF защищён паролем. Загрузите документ без защиты.")
     if doc.page_count > max_pages:
-        raise IntakeError(f"В документе {doc.page_count} листов, допускается не более {max_pages}.")
-    pages: list[PageData] = []
-    for i, page in enumerate(doc, start=1):
-        pages.append(PageData(page=i, width=float(page.rect.width), height=float(page.rect.height),
-                              blocks=_read_blocks(page, i), tables=_read_tables(page, i)))
-    doc.close()
-    return pages
+        count = doc.page_count
+        doc.close()
+        raise IntakeError(f"В документе {count} листов, допускается не более {max_pages}.")
+    return doc
+
+
+def iter_pages(data: bytes, max_pages: int = 1500) -> Iterator[PageData]:
+    """Разбирать документ лист за листом.
+
+    Потребление памяти не зависит от объёма документа: в каждый момент времени
+    в памяти находится один лист. Комплект на сотни мегабайт разбирается так же,
+    как один акт.
+    """
+    doc = _open(data, max_pages)
+    try:
+        for i, page in enumerate(doc, start=1):
+            yield PageData(page=i, width=float(page.rect.width), height=float(page.rect.height),
+                           blocks=_read_blocks(page, i), tables=_read_tables(page, i))
+    finally:
+        doc.close()
+
+
+def parse(data: bytes, max_pages: int = 1500) -> list[PageData]:
+    """Разобрать PDF целиком. Для больших комплектов используйте iter_pages."""
+    return list(iter_pages(data, max_pages))
+
+
+def page_count(data: bytes) -> int:
+    """Число листов без разбора содержимого — для проверки лимитов до обработки."""
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
 
 
 def has_text_layer(pages: list[PageData]) -> bool:
