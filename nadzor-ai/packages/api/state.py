@@ -15,6 +15,7 @@ from norms import load_norms
 
 ROOT = Path(os.environ.get("APP_ROOT", Path(__file__).resolve().parents[2]))
 MANIFEST = ROOT / "data/demo/generated/manifest.json"
+STORAGE_ROOT = Path(os.environ.get("STORAGE_ROOT", ROOT / "data/storage"))
 
 
 def _yaml(name: str) -> dict:
@@ -26,6 +27,8 @@ class AppState:
 
     def __init__(self) -> None:
         self.root = ROOT
+        self.storage_root = STORAGE_ROOT
+        self.storage_root.mkdir(parents=True, exist_ok=True)
         self.providers_config = _yaml("providers.yaml")
         self.rules_config = _yaml("rules.yaml")
         self.scoring_config = _yaml("scoring.yaml")

@@ -41,6 +41,23 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) }),
+  async upload<T>(path: string, form: FormData): Promise<T> {
+    const token = getToken()
+    const response = await fetch(`/api${path}`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    })
+    if (response.status === 401) {
+      setToken('')
+      throw new ApiError(401, 'Сессия завершена. Войдите заново.')
+    }
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({ detail: 'Не удалось загрузить файл.' }))
+      throw new ApiError(response.status, detail.detail || 'Не удалось загрузить файл.')
+    }
+    return response.json() as Promise<T>
+  },
   async download(path: string, body: unknown, filename: string) {
     const response = await fetch(`/api${path}`, {
       method: 'POST',

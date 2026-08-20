@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from analysis.pipeline import load_document
+from documents.intake import check_limits, detect_type, new_file_id, sha256_of, storage_key
 from documents.pdf import render_png
-from fastapi import APIRouter, Depends, HTTPException, Response
+from documents.schemas import IntakeError, StateKind
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from integrations.identity.ports import Principal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.audit_store import record
 from api.deps import permission, session_dep
 from api.models import ConstructionObject, DocumentRow
 from api.rbac import scope_objects
@@ -64,6 +68,57 @@ async def get_object(object_id: str, session: AsyncSession = Depends(session_dep
     history = await state.urban_data.inspection_history(obj.permit_number)
     return {"object": _full(obj), "documents": [_doc(d) for d in docs],
             "inspections": [h.__dict__ for h in history]}
+
+
+@router.post("/objects/{object_id}/documents", summary="Загрузить документ комплекта")
+async def upload_document(object_id: str, file: UploadFile = File(...), state_hint: str = Form(""),
+                          session: AsyncSession = Depends(session_dep),
+                          principal: Principal = Depends(permission("objects:create"))) -> dict:
+    """Приём файла: тип по сигнатуре, лимиты, сохранение, разбор и извлечение фактов.
+
+    Имя файла, присланное пользователем, не участвует в формировании путей.
+    Инспектор сам указывает состояние (ПД/РД/ИД и т.д.), если оно не определяется
+    по заголовку листа.
+    """
+    obj = await _object_or_denied(session, object_id, principal)
+    data = await file.read()
+    check_limits(len(data), state.limits_config["upload"])
+    kind, _mime = detect_type(data[:512], data)
+    allowed = set(state.limits_config["upload"]["allowed_signatures"])
+    if kind not in allowed:
+        raise IntakeError(f"Файлы типа «{kind}» не принимаются в этом контуре.")
+
+    hint = None
+    if state_hint:
+        try:
+            hint = StateKind(state_hint)
+        except ValueError as exc:
+            raise IntakeError("Неизвестный тип состояния документа.") from exc
+
+    doc_id = f"{obj.id}-{sha256_of(data)[:8]}"
+    existing = await session.get(DocumentRow, doc_id)
+    if existing is not None:
+        # Тот же файл (по содержимому) уже загружен в этот объект — повторно не сохраняем.
+        return _doc(existing)
+
+    file_id = new_file_id()
+    path = state.storage_root / storage_key(obj.id, file_id, kind)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+    parsed = load_document(path, obj.id, title=file.filename or "", hint_state=hint)
+    row = DocumentRow(
+        id=parsed.id, object_id=obj.id, state_kind=parsed.state_kind.value,
+        doc_kind=parsed.doc_kind.value, title=parsed.title, path=str(path),
+        revision=parsed.revision, doc_date=parsed.doc_date, page_count=parsed.page_count,
+        sha256=sha256_of(data), signature_status="not_checked", facts_count=len(parsed.facts))
+    session.add(row)
+    record(session, principal.subject, principal.roles[0] if principal.roles else "",
+          "document.upload", "document", parsed.id,
+          {"object_id": obj.id, "state_kind": row.state_kind, "doc_kind": row.doc_kind,
+           "size_bytes": len(data)})
+    await session.commit()
+    return _doc(row)
 
 
 @router.get("/documents/{document_id}", summary="Карточка документа")

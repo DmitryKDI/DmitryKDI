@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
+from documents.schemas import IntakeError
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -64,6 +65,12 @@ async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse
     return JSONResponse(status_code=422,
                         content={"detail": "Не удалось обработать запрос. Проверьте введённые "
                                            "данные и повторите попытку."})
+
+
+@app.exception_handler(IntakeError)
+async def intake_error_handler(request: Request, exc: IntakeError) -> JSONResponse:
+    """Отказ в приёме файла. Сообщение сформулировано для пользователя и показывается как есть."""
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 @app.get("/api/health", tags=["Служебные"], summary="Проверка работоспособности")

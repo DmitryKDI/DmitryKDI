@@ -1,11 +1,20 @@
-import { useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useApp } from '../store'
 import { Chip, Hint, SectionCard, Skeleton } from '../components/ui'
 import { theme } from '../theme'
 import type { ObjectBrief } from '../types'
+
+interface UploadedDoc {
+  id: string
+  title: string
+  state_kind: string
+  doc_kind: string
+  page_count: number
+  facts_count: number
+}
 
 interface LookupResponse {
   found: boolean
@@ -23,13 +32,27 @@ interface TransitionsResponse {
 const STAGES = ['распознавание', 'извлечение сущностей', 'сравнение', 'сверка с нормативами',
   'перепроверка', 'готово']
 
+const STATE_HINTS = [
+  ['', 'Определить по документу'],
+  ['PD', 'Проектная документация'],
+  ['RD', 'Рабочая документация'],
+  ['AS_BUILT', 'Исполнительная документация'],
+  ['EXPERTISE', 'Заключение экспертизы'],
+  ['PERMIT', 'Разрешительная документация'],
+] as const
+
 export default function NewAnalysis() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { pushToast } = useApp()
   const [permit, setPermit] = useState('')
   const [objectId, setObjectId] = useState('')
   const [chosen, setChosen] = useState<string[]>([])
   const [stage, setStage] = useState(-1)
+  const [stateHint, setStateHint] = useState('')
+  const [dragOver, setDragOver] = useState(false)
+  const [uploaded, setUploaded] = useState<UploadedDoc[]>([])
+  const fileInput = useRef<HTMLInputElement>(null)
 
   const objects = useQuery({ queryKey: ['objects'], queryFn: () => api.get<{ items: ObjectBrief[] }>('/objects') })
   const lookup = useMutation({
@@ -53,6 +76,28 @@ export default function NewAnalysis() {
       setChosen(transitions.data.transitions.filter((t) => t.available).map((t) => t.code))
     }
   }, [transitions.data])
+
+  const upload = useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData()
+      form.append('file', file)
+      if (stateHint) form.append('state_hint', stateHint)
+      return api.upload<UploadedDoc>(`/objects/${objectId}/documents`, form)
+    },
+    onSuccess: (doc) => {
+      setUploaded((prev) => [...prev, doc])
+      pushToast(`«${doc.title}» распознан как ${theme.stateKinds[doc.state_kind] ?? doc.state_kind}`)
+      queryClient.invalidateQueries({ queryKey: ['transitions', objectId] })
+    },
+    onError: (error) => {
+      pushToast(error instanceof Error ? error.message : 'Файл не принят', 'error')
+    },
+  })
+
+  const uploadFiles = (files: FileList | null) => {
+    if (!files || !objectId) return
+    Array.from(files).forEach((file) => upload.mutate(file))
+  }
 
   const run = useMutation({
     mutationFn: () => api.post<{ run_id: string; findings: number }>('/analysis/run',
@@ -129,13 +174,47 @@ export default function NewAnalysis() {
           {objectId && transitions.isLoading && <Skeleton rows={4} />}
           {transitions.data && (
             <>
-              <div className="rounded-md border border-dashed border-surface-line bg-surface-muted/60 p-4 text-center">
-                <p className="text-sm font-medium">Перетащите папку с документацией</p>
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <label className="text-xs text-ink-faint" htmlFor="state-hint">
+                  Состояние (если не определится само)
+                </label>
+                <select id="state-hint" className="input w-auto" value={stateHint}
+                  onChange={(e) => setStateHint(e.target.value)}>
+                  {STATE_HINTS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div
+                className={`rounded-md border border-dashed p-4 text-center transition-colors
+                  ${dragOver ? 'border-accent bg-accent/5' : 'border-surface-line bg-surface-muted/60'}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files) }}
+              >
+                <p className="text-sm font-medium">Перетащите файлы документации сюда</p>
                 <p className="mt-1 text-xs text-ink-muted">
                   Тип файла определяется по сигнатуре, редакция и дата — по основной надписи
-                  ГОСТ Р 21.1101. В демонстрационном контуре комплект уже загружен.
+                  ГОСТ Р 21.1101. PDF, DOCX, XLSX, изображение или DXF.
                 </p>
+                <button type="button" className="btn-ghost mt-3" disabled={upload.isPending}
+                  onClick={() => fileInput.current?.click()}>
+                  {upload.isPending ? 'Загрузка…' : 'Выбрать файлы'}
+                </button>
+                <input ref={fileInput} type="file" multiple hidden
+                  accept=".pdf,.docx,.xlsx,.png,.jpg,.jpeg,.dxf"
+                  onChange={(e) => { uploadFiles(e.target.files); e.target.value = '' }} />
               </div>
+              {uploaded.length > 0 && (
+                <ul className="mt-3 space-y-1 text-xs text-ink-muted">
+                  {uploaded.map((doc) => (
+                    <li key={doc.id}>
+                      «{doc.title}» — {theme.stateKinds[doc.state_kind] ?? doc.state_kind},
+                      {' '}листов: {doc.page_count}, фактов: {doc.facts_count}
+                    </li>
+                  ))}
+                </ul>
+              )}
               <ul className="mt-3 grid gap-2 sm:grid-cols-2">
                 {transitions.data.states.map((s) => (
                   <li key={`${s.kind}-${s.revision}`}

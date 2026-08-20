@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from api.logging import MaskingFormatter, mask
+from api.state import state
 
 
 def test_full_inspector_scenario(client, auth):
@@ -56,6 +58,48 @@ def test_full_inspector_scenario(client, auth):
     # 7. Действия зафиксированы в журнале аудита, цепочка цела
     verify = client.post("/api/audit/verify", headers=auth("sudir:77006")).json()
     assert verify["valid"] is True
+
+
+def test_upload_document_runs_through_full_pipeline(client, auth):
+    """Инспектор сам загружает файл — он проходит приём, разбор и попадает в комплект."""
+    headers = auth("sudir:77001")
+    sample = Path(state.root) / "data/demo/generated/OBJ-001/as_built/aosr_48.pdf"
+    with sample.open("rb") as fh:
+        response = client.post("/api/objects/OBJ-001/documents", headers=headers,
+                               files={"file": ("aosr_48.pdf", fh, "application/pdf")},
+                               data={"state_hint": "AS_BUILT"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state_kind"] == "AS_BUILT"
+    assert body["facts_count"] > 0
+
+    full = client.get("/api/objects/OBJ-001", headers=headers).json()
+    assert any(d["id"] == body["id"] for d in full["documents"])
+
+
+def test_upload_rejects_unrecognised_file(client, auth):
+    """Файл без распознанной сигнатуры отклоняется с понятным сообщением, не падением."""
+    headers = auth("sudir:77001")
+    response = client.post("/api/objects/OBJ-001/documents", headers=headers,
+                           files={"file": ("note.txt", b"not a real document", "text/plain")})
+    assert response.status_code == 422
+    assert "не распознан" in response.json()["detail"]
+
+
+def test_upload_denied_without_permission(client, auth):
+    """Роль без права objects:create не может загрузить документ."""
+    headers = auth("sudir:77004")      # аналитик
+    response = client.post("/api/objects/OBJ-001/documents", headers=headers,
+                           files={"file": ("aosr_48.pdf", b"%PDF-1.4 stub", "application/pdf")})
+    assert response.status_code == 403
+
+
+def test_upload_denied_for_foreign_object(client, auth):
+    """Инспектор не может загрузить документ в чужой объект — отказ на уровне данных."""
+    headers = auth("sudir:77007")      # инспектор объекта OBJ-002, не OBJ-001
+    response = client.post("/api/objects/OBJ-001/documents", headers=headers,
+                           files={"file": ("aosr_48.pdf", b"%PDF-1.4 stub", "application/pdf")})
+    assert response.status_code == 404
 
 
 def test_dashboard_metrics_are_consistent(client, auth):

@@ -29,9 +29,10 @@ def demo_result():
 
 @pytest.fixture(scope="session")
 def client(tmp_path_factory):
-    """Приложение с отдельной базой на время тестов."""
+    """Приложение с отдельной базой и хранилищем файлов на время тестов."""
     db = tmp_path_factory.mktemp("db") / "test.db"
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db}"
+    os.environ["STORAGE_ROOT"] = str(tmp_path_factory.mktemp("storage"))
     import api.main as main
     from fastapi.testclient import TestClient
     with TestClient(main.app) as test_client:
