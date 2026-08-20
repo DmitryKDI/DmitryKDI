@@ -5,10 +5,18 @@
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from documents.pdf import PageData, TableData
 from documents.schemas import Fact, SourceRef
+
+# Номер помещения — общий ключ сшивки требования (ПД) и факта (РД/ИД), не зависящий
+# от формы документа: на чертеже это подпись у контура плана, в «Экспликации
+# помещений» — строка таблицы с площадью. Обе формы читаются одним и тем же образом,
+# без разбора по имени файла.
+RE_ROOM_ROW = re.compile(
+    r"^(\d{3,4}[а-яё]?)\s+([А-Яа-яЁё][^\d]{1,90}?)(?:\s+(\d+[.,]\d+))?(?:\s+(В\d))?$")
 
 # Канонические имена реквизитов. Слева — как написано в форме документа.
 KV_ALIASES = {
@@ -166,6 +174,23 @@ def _table_facts(table: TableData, doc_id: str, file_id: str, start: int) -> lis
     return []
 
 
+def _room_facts(page: PageData, doc_id: str, file_id: str, start: int) -> list[Fact]:
+    """Номер, наименование, площадь и категория помещения по подписи на листе."""
+    facts, n = [], start
+    for block in page.blocks:
+        match = RE_ROOM_ROW.match(block.text.strip())
+        if not match:
+            continue
+        room_no, name, area, category = match.groups()
+        facts.append(Fact(
+            id=f"{doc_id}:{n}", doc_id=doc_id, fact_type="room", key=room_no,
+            value={"room_no": room_no, "name": name.strip(" -"),
+                  "area": area.replace(",", ".") if area else "", "category": category or ""},
+            section="помещение", source=_ref(file_id, page.page, block.bbox)))
+        n += 1
+    return facts
+
+
 def _text_facts(pages: list[PageData], doc_id: str, file_id: str, start: int) -> list[Fact]:
     """Абзацы вне таблиц: указания, особые отметки, выводы."""
     facts, n = [], start
@@ -195,6 +220,7 @@ def extract_page_facts(page: PageData, doc_id: str, file_id: str, start: int) ->
     facts: list[Fact] = []
     for table in page.tables:
         facts.extend(_table_facts(table, doc_id, file_id, start + len(facts)))
+    facts.extend(_room_facts(page, doc_id, file_id, start + len(facts)))
     facts.extend(_text_facts([page], doc_id, file_id, start + len(facts)))
     return facts
 
