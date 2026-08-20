@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from documents.extract import extract_facts, join_wrapped
-from documents.pdf import parse
+from documents.pdf import Block, PageData, parse
 from documents.schemas import DocKind, StateKind
 from documents.stamp import detect_kind, parse_stamp
 
@@ -50,3 +50,25 @@ def test_wrapped_cells_are_joined_correctly():
     assert join_wrapped("+3.000…+75.00\n0") == "+3.000…+75.000"
     assert join_wrapped("Многоквартирный жилой дом\nс автостоянкой") == \
         "Многоквартирный жилой дом с автостоянкой"
+
+
+def test_room_facts_from_plan_label_and_schedule_row():
+    """Номер помещения читается и с подписи на плане ПД, и со строки «Экспликации» ИД.
+
+    Форма записи разная (площадь есть только во второй), но ключ сшивки —
+    номер помещения — извлекается одним и тем же образом.
+    """
+    page = PageData(page=1, width=1000, height=1000, blocks=[
+        Block(page=1, text="140 Физического эксперимента", bbox=(10, 10, 100, 20), size=10.4),
+        Block(page=1, text="310 помещение для хранения оборудования 10.6 В3",
+             bbox=(10, 40, 200, 50), size=9.8),
+        Block(page=1, text="4500", bbox=(10, 70, 30, 80), size=8.0),      # размерная цепочка
+    ])
+    facts = extract_facts([page], "D1", "F1")
+    rooms = {f.key: f.value for f in facts if f.fact_type == "room"}
+
+    assert rooms["140"] == {"room_no": "140", "name": "Физического эксперимента",
+                            "area": "", "category": ""}
+    assert rooms["310"] == {"room_no": "310", "name": "помещение для хранения оборудования",
+                            "area": "10.6", "category": "В3"}
+    assert "4500" not in rooms

@@ -12,9 +12,12 @@ from llm_core.ports import CompletionRequest
 from llm_core.schemas import LLMFindings, SchemaViolationError, parse_strict
 
 from analysis.models import Detection, DocumentSet, Evidence
+from analysis.rules.rooms import candidate_rooms, facts_by_room
 
-MAX_TEXT_BLOCKS = 24
-MAX_STRUCTURED_FACTS = 120
+# На комплекте без общих номеров помещений (например, ведомость конструкций)
+# кандидатов для блокировки нет — предел остаётся плоским, как раньше.
+MAX_TEXT_BLOCKS = 60
+MAX_STRUCTURED_FACTS = 200
 
 INSTRUCTION = (
     "Сравни состояния «до» и «после». Найди смысловые расхождения, которые не сводятся "
@@ -25,24 +28,35 @@ INSTRUCTION = (
 )
 
 
-def _side_facts(state: DocumentSet | None, side: str) -> tuple[list[dict], list[str], dict]:
-    """Структурированные факты, недоверенные текстовые блоки и указатель на факты."""
+def _priority_ids(grouped: dict[str, list[tuple[Fact, object]]]) -> frozenset[str]:
+    return frozenset(fact.id for facts in grouped.values() for fact, _ in facts)
+
+
+def _side_facts(state: DocumentSet | None, side: str,
+                priority: frozenset[str] = frozenset()) -> tuple[list[dict], list[str], dict]:
+    """Структурированные факты, недоверенные текстовые блоки и указатель на факты.
+
+    Факты, отобранные блокировкой по номеру помещения, идут в LLM первыми —
+    иначе на комплекте в сотни листов до них просто не дойдёт очередь под лимитом.
+    """
     structured: list[dict] = []
     blocks: list[str] = []
     index: dict[str, tuple[Fact, object]] = {}
     if state is None:
         return structured, blocks, index
-    for doc in state.docs:
-        for fact in doc.facts:
-            index[fact.id] = (fact, doc)
-            if fact.fact_type == "text":
-                if len(blocks) < MAX_TEXT_BLOCKS:
-                    blocks.append(f"[факт {fact.id} | сторона: {side} | документ: {doc.title}]\n"
-                                  f"{fact.value}")
-            elif len(structured) < MAX_STRUCTURED_FACTS:
-                structured.append({"id": fact.id, "side": side, "type": fact.fact_type,
-                                   "key": fact.key, "value": fact.value,
-                                   "document": doc.title})
+    pairs = [(fact, doc) for doc in state.docs for fact in doc.facts]
+    if priority:
+        pairs.sort(key=lambda pair: pair[0].id not in priority)
+    for fact, doc in pairs:
+        index[fact.id] = (fact, doc)
+        if fact.fact_type == "text":
+            if len(blocks) < MAX_TEXT_BLOCKS:
+                blocks.append(f"[факт {fact.id} | сторона: {side} | документ: {doc.title}]\n"
+                              f"{fact.value}")
+        elif len(structured) < MAX_STRUCTURED_FACTS:
+            structured.append({"id": fact.id, "side": side, "type": fact.fact_type,
+                               "key": fact.key, "value": fact.value,
+                               "document": doc.title})
     return structured, blocks, index
 
 
@@ -51,8 +65,11 @@ async def run_llm_layer(before: DocumentSet | None, after: DocumentSet | None,
     """Запустить семантический слой. Ошибка провайдера не роняет анализ."""
     if ctx.provider is None or not ctx.rules_config.get("llm_layer", {}).get("enabled", True):
         return []
-    facts_before, blocks_before, index_before = _side_facts(before, "before")
-    facts_after, blocks_after, index_after = _side_facts(after, "after")
+    rooms = candidate_rooms(before, after)
+    priority_before = _priority_ids(facts_by_room(before, rooms))
+    priority_after = _priority_ids(facts_by_room(after, rooms))
+    facts_before, blocks_before, index_before = _side_facts(before, "before", priority_before)
+    facts_after, blocks_after, index_after = _side_facts(after, "after", priority_after)
     index = {**index_before, **index_after}
     if not blocks_before and not blocks_after:
         return []
