@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from documents.extract import extract_facts, join_wrapped
-from documents.pdf import Block, PageData, parse
+from documents.pdf import Block, Cell, PageData, TableData, parse
 from documents.schemas import DocKind, StateKind
 from documents.stamp import detect_kind, parse_stamp
 
@@ -72,3 +72,41 @@ def test_room_facts_from_plan_label_and_schedule_row():
     assert rooms["310"] == {"room_no": "310", "name": "помещение для хранения оборудования",
                             "area": "10.6", "category": "В3"}
     assert "4500" not in rooms
+
+
+def test_room_facts_from_combined_list_label():
+    """Общая подпись сразу на несколько однотипных помещений — частый случай на схемах МГН.
+
+    Найдено на реальном комплекте документов при слепой проверке: подпись
+    «267, 270 Раздевальная и санузул для МГН» без этого разбора не даёт ни
+    одного факта о помещении — при том, что оба номера реальны и совпадают
+    с исполнительной документацией.
+    """
+    page = PageData(page=1, width=1000, height=1000, blocks=[
+        Block(page=1, text="267, 270 Раздевальная и санузул для МГН",
+             bbox=(10, 10, 200, 20), size=9.0),
+    ])
+    facts = extract_facts([page], "D1", "F1")
+    rooms = {f.key: f.value for f in facts if f.fact_type == "room"}
+    assert rooms["267"]["name"] == "Раздевальная и санузул для МГН"
+    assert rooms["270"]["name"] == "Раздевальная и санузул для МГН"
+    assert rooms["267"]["room_no"] == "267" and rooms["270"]["room_no"] == "270"
+
+
+def test_narrative_text_survives_a_false_positive_whole_page_table():
+    """Найдено на реальном комплекте: на насыщенном листе общих данных поиск таблиц
+    иногда принимает за таблицу весь лист целиком, а её заголовок системе неизвестен —
+    раньше это тихо вырезало весь пояснительный текст листа вместе с таблицей.
+    Пояснительный абзац должен уцелеть, если реальных фактов таблица не дала.
+    """
+    narrative = ("В помещениях раздевальных, санузлов и душевых для МГН (пом. 267, 270) "
+                "предусмотрена система подогрева полов, совмещённая с отоплением.")
+    bogus_table = TableData(
+        page=1, bbox=(0, 0, 1000, 1000), header=["непонятный", "заголовок"],
+        rows=[[Cell(text="мусор", bbox=(0, 0, 10, 10))]])
+    page = PageData(page=1, width=1000, height=1000,
+                    blocks=[Block(page=1, text=narrative, bbox=(50, 50, 900, 70), size=10.0)],
+                    tables=[bogus_table])
+    facts = extract_facts([page], "D1", "F1")
+    texts = [f.value for f in facts if f.fact_type == "text"]
+    assert any("подогрева полов" in t for t in texts)

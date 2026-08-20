@@ -18,6 +18,13 @@ from documents.schemas import Fact, SourceRef
 RE_ROOM_ROW = re.compile(
     r"^(\d{3,4}[а-яё]?)\s+([А-Яа-яЁё][^\d]{1,90}?)(?:\s+(\d+[.,]\d+))?(?:\s+(В\d))?$")
 
+# Общая подпись на несколько однотипных помещений сразу («267, 270 Раздевальная
+# и санузул для МГН») — распространённый способ подписать группу МГН-помещений
+# на инженерных схемах. Каждому номеру из списка достаётся отдельный факт.
+RE_ROOM_LIST_ROW = re.compile(
+    r"^((?:\d{3,4}[а-яё]?\s*,\s*)+\d{3,4}[а-яё]?)\s+([А-Яа-яЁё][^\d]{1,90}?)"
+    r"(?:\s+(\d+[.,]\d+))?(?:\s+(В\d))?$")
+
 # Канонические имена реквизитов. Слева — как написано в форме документа.
 KV_ALIASES = {
     "наименование освидетельствуемых работ": "work",
@@ -174,28 +181,48 @@ def _table_facts(table: TableData, doc_id: str, file_id: str, start: int) -> lis
     return []
 
 
+def _room_fact(doc_id: str, file_id: str, n: int, page: int, bbox, room_no: str, name: str,
+              area: str | None, category: str | None) -> Fact:
+    return Fact(
+        id=f"{doc_id}:{n}", doc_id=doc_id, fact_type="room", key=room_no,
+        value={"room_no": room_no, "name": name.strip(" -"),
+              "area": area.replace(",", ".") if area else "", "category": category or ""},
+        section="помещение", source=_ref(file_id, page, bbox))
+
+
 def _room_facts(page: PageData, doc_id: str, file_id: str, start: int) -> list[Fact]:
     """Номер, наименование, площадь и категория помещения по подписи на листе."""
     facts, n = [], start
     for block in page.blocks:
-        match = RE_ROOM_ROW.match(block.text.strip())
-        if not match:
+        text = block.text.strip()
+        if match := RE_ROOM_ROW.match(text):
+            room_no, name, area, category = match.groups()
+            facts.append(_room_fact(doc_id, file_id, n, page.page, block.bbox,
+                                    room_no, name, area, category))
+            n += 1
             continue
-        room_no, name, area, category = match.groups()
-        facts.append(Fact(
-            id=f"{doc_id}:{n}", doc_id=doc_id, fact_type="room", key=room_no,
-            value={"room_no": room_no, "name": name.strip(" -"),
-                  "area": area.replace(",", ".") if area else "", "category": category or ""},
-            section="помещение", source=_ref(file_id, page.page, block.bbox)))
-        n += 1
+        if match := RE_ROOM_LIST_ROW.match(text):
+            room_list, name, area, category = match.groups()
+            for room_no in re.split(r"\s*,\s*", room_list):
+                facts.append(_room_fact(doc_id, file_id, n, page.page, block.bbox,
+                                        room_no, name, area, category))
+                n += 1
     return facts
 
 
-def _text_facts(pages: list[PageData], doc_id: str, file_id: str, start: int) -> list[Fact]:
-    """Абзацы вне таблиц: указания, особые отметки, выводы."""
+def _text_facts(pages: list[PageData], doc_id: str, file_id: str, start: int,
+                recognized_zones: list | None = None) -> list[Fact]:
+    """Абзацы вне таблиц: указания, особые отметки, выводы.
+
+    Из текста исключаются только зоны, где нашлась распознанная таблица
+    (её строки уже стали фактами): на насыщенных чертежах общего вида поиск
+    таблиц нередко ошибочно принимает за таблицу весь лист целиком — такую
+    зону как «занятую» не считаем, иначе пропадает пояснительный текст листа.
+    """
     facts, n = [], start
     for page in pages:
-        table_zones = [t.bbox for t in page.tables]
+        table_zones = recognized_zones if recognized_zones is not None else \
+            [t.bbox for t in page.tables]
         section = ""
         for block in page.blocks:
             inside = any(b[0] - 2 <= block.bbox[0] and block.bbox[2] <= b[2] + 2
@@ -218,10 +245,14 @@ def _text_facts(pages: list[PageData], doc_id: str, file_id: str, start: int) ->
 def extract_page_facts(page: PageData, doc_id: str, file_id: str, start: int) -> list[Fact]:
     """Факты одного листа: таблицы и абзацы вне таблиц."""
     facts: list[Fact] = []
+    recognized_zones = []
     for table in page.tables:
-        facts.extend(_table_facts(table, doc_id, file_id, start + len(facts)))
+        table_facts = _table_facts(table, doc_id, file_id, start + len(facts))
+        if table_facts:
+            recognized_zones.append(table.bbox)
+        facts.extend(table_facts)
     facts.extend(_room_facts(page, doc_id, file_id, start + len(facts)))
-    facts.extend(_text_facts([page], doc_id, file_id, start + len(facts)))
+    facts.extend(_text_facts([page], doc_id, file_id, start + len(facts), recognized_zones))
     return facts
 
 
