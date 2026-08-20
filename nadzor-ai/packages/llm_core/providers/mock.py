@@ -33,6 +33,7 @@ class MockProvider:
     name = "mock"
     model = "mock-detector-1"
     supports_function_calling = False
+    supports_vision = False
     max_context_tokens = 32000
     is_sovereign = True
 

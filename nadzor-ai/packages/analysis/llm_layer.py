@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from documents.schemas import Fact
 from llm_core.envelope import SYSTEM_RULES
-from llm_core.ports import CompletionRequest
+from llm_core.ports import CompletionRequest, ImageBlock
 from llm_core.schemas import LLMFindings, SchemaViolationError, parse_strict
 
 from analysis.models import Detection, DocumentSet, Evidence
 from analysis.rules.rooms import candidate_rooms, facts_by_room
+from analysis.rules.vision_escalation import needs_escalation, render_room_images
 
 # На комплекте без общих номеров помещений (например, ведомость конструкций)
 # кандидатов для блокировки нет — предел остаётся плоским, как раньше.
@@ -60,30 +61,67 @@ def _side_facts(state: DocumentSet | None, side: str,
     return structured, blocks, index
 
 
+def _vision_images(rooms: set[str], grouped_before: dict[str, list], grouped_after: dict[str, list],
+                   ctx) -> list[ImageBlock]:
+    """Листы для кандидатов, где текста рядом с помещением недостаточно.
+
+    Работает только с провайдером, заявившим поддержку зрения (Б.3, п.1: разделение
+    ролей — изображение остаётся данными документа, а не системной инструкцией) —
+    без ключа доступа к такому провайдеру эскалация не выполняется и не сбоит.
+    """
+    cfg = ctx.rules_config.get("llm_layer", {}).get("vision_escalation", {})
+    if not cfg.get("enabled", False) or not getattr(ctx.provider, "supports_vision", False):
+        return []
+    max_images = int(cfg.get("max_images", 6))
+    dpi = int(cfg.get("render_dpi", 150))
+    min_text_facts = int(cfg.get("min_text_facts", 2))
+    images: list[ImageBlock] = []
+    for room in sorted(rooms):
+        if len(images) >= max_images:
+            break
+        before_facts, after_facts = grouped_before.get(room, []), grouped_after.get(room, [])
+        if not needs_escalation(before_facts, after_facts, min_text_facts):
+            continue
+        budget = max_images - len(images)
+        images.extend(render_room_images(room, "до", before_facts, dpi, budget)[:budget])
+        budget = max_images - len(images)
+        images.extend(render_room_images(room, "после", after_facts, dpi, budget)[:budget])
+    return images
+
+
 async def run_llm_layer(before: DocumentSet | None, after: DocumentSet | None,
                         transition: str, ctx) -> list[Detection]:
     """Запустить семантический слой. Ошибка провайдера не роняет анализ."""
     if ctx.provider is None or not ctx.rules_config.get("llm_layer", {}).get("enabled", True):
         return []
     rooms = candidate_rooms(before, after)
-    priority_before = _priority_ids(facts_by_room(before, rooms))
-    priority_after = _priority_ids(facts_by_room(after, rooms))
+    grouped_before = facts_by_room(before, rooms)
+    grouped_after = facts_by_room(after, rooms)
+    priority_before = _priority_ids(grouped_before)
+    priority_after = _priority_ids(grouped_after)
     facts_before, blocks_before, index_before = _side_facts(before, "before", priority_before)
     facts_after, blocks_after, index_after = _side_facts(after, "after", priority_after)
     index = {**index_before, **index_after}
     if not blocks_before and not blocks_after:
         return []
 
+    images = _vision_images(rooms, grouped_before, grouped_after, ctx)
     clauses = ctx.norms.search("отступление рабочей документации от проектных решений "
                                "армирование класс бетона", top_k=5)
+    instruction = INSTRUCTION
+    if images:
+        instruction += (" К запросу приложены отрисованные листы для помещений, где текста "
+                        "недостаточно для сравнения — прочти их так же, как и текст, и укажи "
+                        "номер соответствующего факта о помещении в fact_ids находки.")
     req = CompletionRequest(
         task="semantic_diff",
         system=SYSTEM_RULES,
         facts=facts_before + facts_after,
         norm_clauses=[c.to_norm_ref() | {"text": c.text} for c in clauses],
         untrusted_blocks=blocks_before + blocks_after,
+        images=images,
         prompt_version="2.3",
-        context={"instruction": INSTRUCTION, "transition": transition},
+        context={"instruction": instruction, "transition": transition},
     )
     retries = int(ctx.rules_config.get("llm_layer", {}).get("schema_retries", 2))
     parsed = await _complete_with_schema(ctx.provider, req, retries)

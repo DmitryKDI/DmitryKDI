@@ -8,18 +8,31 @@ Vector = list[float]
 
 
 @dataclass
+class ImageBlock:
+    """Отрисованный лист документа, приложенный к запросу для чтения зрением.
+
+    Как и текст, изображение — данные документа, а не инструкция: провайдер
+    без поддержки зрения обязан его игнорировать, а не пытаться прочитать.
+    """
+    media_type: str                            # image/png
+    data_b64: str
+    label: str = ""                             # для журналирования: сторона, лист, документ
+
+
+@dataclass
 class CompletionRequest:
     """Запрос к модели.
 
-    Содержимое документа передаётся только в untrusted_blocks и оборачивается
-    маркерами недоверенного контейнера. Инструкции живут в system и изменению
-    из документа не подлежат.
+    Содержимое документа передаётся только в untrusted_blocks/images и
+    оборачивается маркерами недоверенного контейнера. Инструкции живут в
+    system и изменению из документа не подлежат.
     """
     task: str                                  # semantic_diff | verify | summarize
     system: str
     facts: list[dict[str, Any]] = field(default_factory=list)
     norm_clauses: list[dict[str, Any]] = field(default_factory=list)
     untrusted_blocks: list[str] = field(default_factory=list)
+    images: list[ImageBlock] = field(default_factory=list)
     prompt_version: str = "1.0"
     temperature: float = 0.0
     max_tokens: int = 2048
@@ -53,6 +66,7 @@ class LLMProvider(Protocol):
     name: str
     model: str
     supports_function_calling: bool
+    supports_vision: bool       # может читать вложенные изображения листов
     max_context_tokens: int
     is_sovereign: bool          # размещён в РФ / реестр отечественного ПО
 

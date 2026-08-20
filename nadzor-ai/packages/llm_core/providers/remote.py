@@ -14,7 +14,7 @@ import uuid
 import httpx
 
 from llm_core.envelope import SYSTEM_RULES, build_user_message
-from llm_core.ports import CompletionRequest, CompletionResponse, ProviderHealth, Vector
+from llm_core.ports import CompletionRequest, CompletionResponse, ImageBlock, ProviderHealth, Vector
 
 
 def _messages(req: CompletionRequest) -> tuple[str, str]:
@@ -25,12 +25,32 @@ def _messages(req: CompletionRequest) -> tuple[str, str]:
     return system, user
 
 
+def _content_blocks(user_text: str, images: list[ImageBlock]) -> str | list[dict]:
+    """Содержимое пользовательского сообщения для провайдера со зрением.
+
+    Изображение — те же данные документа, что и текст: оно идёт после текста
+    в пользовательском сообщении, не в системном, и подписывается как лист
+    документа, а не как инструкция. Без изображений — обычная строка, как раньше.
+    """
+    if not images:
+        return user_text
+    blocks: list[dict] = [{"type": "text", "text": user_text}]
+    for image in images:
+        if image.label:
+            blocks.append({"type": "text", "text": f"[изображение: {image.label}]"})
+        blocks.append({"type": "image",
+                       "source": {"type": "base64", "media_type": image.media_type,
+                                 "data": image.data_b64}})
+    return blocks
+
+
 class _Base:
     """Общая часть адаптеров: таймауты, замер времени, единый ответ."""
 
     name = "base"
     model = ""
     supports_function_calling = False
+    supports_vision = False
     max_context_tokens = 32000
     is_sovereign = False
 
@@ -178,6 +198,7 @@ class ClaudeProvider(_Base):
 
     name = "claude"
     is_sovereign = False
+    supports_vision = True
     max_context_tokens = 200000
 
     async def complete(self, req: CompletionRequest) -> CompletionResponse:
@@ -188,7 +209,7 @@ class ClaudeProvider(_Base):
             raise RuntimeError("Не задан ключ доступа.")
         payload = {"model": self.model, "max_tokens": req.max_tokens,
                    "temperature": req.temperature, "system": system,
-                   "messages": [{"role": "user", "content": user}]}
+                   "messages": [{"role": "user", "content": _content_blocks(user, req.images)}]}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             base = self.cfg.get("base_url", "https://api.anthropic.com")
             r = await client.post(f"{base}/v1/messages", json=payload,

@@ -39,3 +39,10 @@ llm_layer:
   # LLM работает только с извлечёнными фактами, свободная генерация запрещена
   facts_only: true
   verification_enabled: true
+  vision_escalation:
+    # Работает только если провайдер заявил supports_vision (сейчас — claude).
+    # На остальных провайдерах не включается вообще, даже при enabled: true.
+    enabled: true
+    min_text_facts: 2        # меньше — текста для сравнения недостаточно
+    max_images: 6            # предел листов на один запрос
+    render_dpi: 150
