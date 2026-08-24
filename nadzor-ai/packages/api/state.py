@@ -13,6 +13,8 @@ from integrations.urban_data.mock import MockUrbanDataProvider
 from llm_core.router import ProviderRouter
 from norms import load_norms
 
+from api.rate_limit import RateLimiter
+
 ROOT = Path(os.environ.get("APP_ROOT", Path(__file__).resolve().parents[2]))
 MANIFEST = ROOT / "data/demo/generated/manifest.json"
 STORAGE_ROOT = Path(os.environ.get("STORAGE_ROOT", ROOT / "data/storage"))
@@ -40,6 +42,7 @@ class AppState:
         self.identity = self._identity()
         self.urban_data = self._urban_data()
         self.audit = AuditChain()
+        self.rate_limiter = RateLimiter()
 
     def _identity(self):
         if os.environ.get("IDENTITY_PROVIDER", "mock") == "sudir":

@@ -7,8 +7,13 @@ from __future__ import annotations
 import hashlib
 import uuid
 from pathlib import Path
+from typing import Protocol
 
 from documents.schemas import IntakeError
+
+
+class _AsyncReadable(Protocol):
+    async def read(self, size: int = -1) -> bytes: ...
 
 # Сигнатуры (магические числа) разрешённых типов.
 SIGNATURES: list[tuple[bytes, str, str]] = [
@@ -56,6 +61,34 @@ def check_limits(size_bytes: int, limits: dict) -> None:
             "Разделите комплект на части или загрузите архив постранично.")
     if size_bytes == 0:
         raise IntakeError("Файл пустой.")
+
+
+async def read_with_limit(file: _AsyncReadable, limits: dict, chunk_size: int = 1024 * 1024,
+                          ) -> bytes:
+    """Прочитать файл, прервавшись сразу по превышении лимита размера.
+
+    `check_limits(len(data), ...)` после `file.read()` проверяет размер лишь
+    тогда, когда файл уже целиком лежит в памяти — сам лимит уже не спасает
+    от исчерпания ресурсов, которое он должен предотвращать. Здесь размер
+    проверяется по мере чтения, поэтому от файла, превышающего лимит,
+    в памяти остаётся не больше одного чанка сверх допустимого.
+    """
+    max_bytes = limits.get("max_file_bytes", 100 * 1024 * 1024)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise IntakeError(
+                f"Файл больше допустимого размера ({max_bytes // (1024 * 1024)} МБ). "
+                "Разделите комплект на части или загрузите архив постранично.")
+    if total == 0:
+        raise IntakeError("Файл пустой.")
+    return b"".join(chunks)
 
 
 def new_file_id() -> str:

@@ -51,3 +51,50 @@ def test_encrypted_pdf_is_reported_clearly():
     with pytest.raises(IntakeError) as info:
         parse(b"%PDF-1.4 broken")
     assert "PDF" in str(info.value)
+
+
+class _EndlessStream:
+    """Имитирует загрузку, которая продолжалась бы бесконечно без обрыва по лимиту."""
+
+    def __init__(self, chunk: bytes) -> None:
+        self._chunk = chunk
+        self.reads = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        self.reads += 1
+        return self._chunk
+
+
+async def test_oversized_upload_is_rejected_without_buffering_it_whole():
+    """Лимит обрывает чтение по мере поступления данных, а не после.
+
+    Иначе от файла, для которого лимит и придуман, в памяти к моменту
+    проверки уже лежала бы вся его — сколь угодно большая — сумма байт.
+    """
+    from documents.intake import read_with_limit
+
+    stream = _EndlessStream(b"x" * 1024)  # источник «бесконечен» без обрыва по лимиту
+    with pytest.raises(IntakeError):
+        await read_with_limit(stream, LIMITS, chunk_size=1024)
+
+    # Лимит в LIMITS — 1024 байта; обрыв должен случиться на первых чанках,
+    # а не после того, как гипотетический десятигигабайтный файл дочитан целиком.
+    assert stream.reads <= 3
+
+
+async def test_read_with_limit_returns_full_content_within_limit():
+    from documents.intake import read_with_limit
+
+    class _OnceStream:
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+            self._sent = False
+
+        async def read(self, size: int = -1) -> bytes:
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._data
+
+    data = await read_with_limit(_OnceStream(b"%PDF-1.7 hello"), LIMITS)
+    assert data == b"%PDF-1.7 hello"

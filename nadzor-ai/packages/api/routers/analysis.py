@@ -57,6 +57,9 @@ async def transitions(object_id: str, session: AsyncSession = Depends(session_de
 @router.post("/analysis/run", summary="Запустить анализ")
 async def run(payload: dict, session: AsyncSession = Depends(session_dep),
               principal: Principal = Depends(permission("analysis:run"))) -> dict:
+    limits = state.limits_config["rate_limit"]
+    state.rate_limiter.check(principal.subject, "analysis_run",
+                             limits["analysis_runs_per_hour"], window_seconds=3600)
     object_id = payload.get("object_id", "")
     obj = await _object_or_denied(session, object_id, principal)
     chosen = payload.get("transitions") or ["T1", "T2", "T3", "T5", "T6"]

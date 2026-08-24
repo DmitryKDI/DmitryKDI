@@ -24,9 +24,16 @@ async def current_principal(authorization: str = Header(default="")) -> Principa
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Требуется вход через единую систему идентификации.")
     try:
-        return await state.identity.fetch_principal(IdentityToken(value=token))
+        principal = await state.identity.fetch_principal(IdentityToken(value=token))
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    # Проверяется здесь, а не только в отдельных адаптерах, — иначе отзыв прав
+    # реально закрывает доступ лишь для тех реализаций IdentityProvider, что
+    # продублировали проверку у себя, а не для контракта в целом.
+    if await state.identity.is_revoked(principal.subject):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Права учётной записи отозваны.")
+    return principal
 
 
 def permission(action: str):

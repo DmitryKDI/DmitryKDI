@@ -37,13 +37,13 @@ class MockIdentityProvider:
         return IdentityToken(value=f"mock-token:{subject}", expires_at="2027-12-31T23:59:59Z")
 
     async def fetch_principal(self, token: IdentityToken) -> Principal:
+        # Отзыв прав проверяется вызывающей стороной через is_revoked() —
+        # единая точка для всех реализаций IdentityProvider, а не только мока.
         subject = token.value.split(":", 1)[1] if ":" in token.value else ""
         subject = subject.replace("mock-token:", "")
         record = self._staff.get(subject)
         if record is None:
             raise PermissionError("Учётная запись не найдена в системе идентификации.")
-        if subject in self._revoked:
-            raise PermissionError("Права учётной записи отозваны.")
         return self._to_principal(record)
 
     async def logout_url(self, token: IdentityToken) -> str:

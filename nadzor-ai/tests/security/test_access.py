@@ -48,6 +48,28 @@ def test_anonymous_request_is_rejected(client):
     assert client.get("/api/findings").status_code == 401
 
 
+def test_dashboard_confirmation_stats_are_scoped_to_own_objects(client, auth):
+    """Подтверждённые гипотезы чужих объектов не должны попадать в дашборд."""
+    inspector = auth("sudir:77001")  # объекты OBJ-001, OBJ-003
+    stranger = auth("sudir:77007")   # только OBJ-002, другой отдел
+
+    findings = client.get("/api/findings", params={"object_id": "OBJ-001"},
+                          headers=inspector).json()["items"]
+    assert findings, "в демо-данных должна быть хотя бы одна гипотеза по OBJ-001"
+    finding_id = findings[0]["id"]
+
+    before = client.get("/api/dashboard", headers=stranger).json()
+    client.post(f"/api/findings/{finding_id}/assess", json={"verdict": "confirmed"},
+               headers=inspector)
+    after = client.get("/api/dashboard", headers=stranger).json()
+
+    assert after["assessed"] == before["assessed"]
+    assert after["confirmed"] == before["confirmed"]
+
+    own = client.get("/api/dashboard", headers=inspector).json()
+    assert own["assessed"] >= 1
+
+
 def test_revoked_account_loses_access(client, auth):
     """Отзыв прав в системе идентификации закрывает доступ."""
     from api.state import state

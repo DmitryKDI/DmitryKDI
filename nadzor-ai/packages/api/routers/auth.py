@@ -32,6 +32,8 @@ async def login(payload: dict, session: AsyncSession = Depends(session_dep)) -> 
         principal = await state.identity.fetch_principal(token)
     except PermissionError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if await state.identity.is_revoked(principal.subject):
+        raise HTTPException(status_code=401, detail="Права учётной записи отозваны.")
     record(session, principal.subject, principal.roles[0] if principal.roles else "",
            "auth.login", "user", principal.subject, {"provider": state.identity.name})
     await session.commit()

@@ -59,3 +59,38 @@ def test_api_reports_broken_chain(client, auth):
     """Проверка целостности доступна аудитору через интерфейс."""
     result = client.post("/api/audit/verify", headers=auth("sudir:77006")).json()
     assert result["valid"] is True
+
+
+async def test_failed_commit_does_not_leave_phantom_audit_entry(tmp_path):
+    """Откат транзакции не должен оставлять в цепочке запись, которой нет в БД.
+
+    audit_store.record() мутирует цепочку в памяти до commit(), чтобы вернуть
+    хэш вызывающему коду синхронно. Если коммит не состоится, эта запись
+    обязана уйти из памяти — иначе следующая настоящая запись сошлётся на
+    хэш, которого в базе никогда не было, и обычный сбой транзакции после
+    перезапуска будет неотличим от подделки записи.
+    """
+    import api.state as state_module
+    from api.audit_store import record
+    from api.models import Base
+    from audit.chain import AuditChain
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/audit_rollback.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    original_chain = state_module.state.audit
+    state_module.state.audit = AuditChain()
+    try:
+        async with session_factory() as session:
+            record(session, "sudir:test", "inspector", "analysis.run", "run", "r-rollback")
+            assert len(state_module.state.audit) == 1
+            await session.rollback()  # тот же путь, что и при неудачном commit()
+
+        assert len(state_module.state.audit) == 0
+        assert state_module.state.audit.verify()["valid"] is True
+    finally:
+        state_module.state.audit = original_chain
+        await engine.dispose()

@@ -38,7 +38,13 @@ async def dashboard(session: AsyncSession = Depends(session_dep),
     ids = visible_object_ids(objects, principal)
     findings = (await session.execute(
         select(FindingRow).where(FindingRow.object_id.in_(ids or ["__none__"])))).scalars().all()
-    assessments = (await session.execute(select(Assessment))).scalars().all()
+    # Оценки инспекторов сужаем до гипотез по доступным объектам — иначе
+    # показатель подтверждения на дашборде инспектора подмешивал бы данные
+    # чужих объектов, до которых у него нет прав.
+    visible_finding_ids = {f.id for f in findings}
+    assessments = (await session.execute(
+        select(Assessment)
+        .where(Assessment.finding_id.in_(visible_finding_ids or {"__none__"})))).scalars().all()
     processed = await session.scalar(
         select(func.count()).select_from(DocumentRow)
         .where(DocumentRow.object_id.in_(ids or ["__none__"]))) or 0

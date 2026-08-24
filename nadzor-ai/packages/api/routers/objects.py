@@ -1,10 +1,11 @@
 """Объекты капитального строительства и их документы."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from analysis.pipeline import load_document
-from documents.intake import check_limits, detect_type, new_file_id, sha256_of, storage_key
+from documents.intake import detect_type, new_file_id, read_with_limit, sha256_of, storage_key
 from documents.pdf import render_png
 from documents.schemas import IntakeError, StateKind
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
@@ -80,9 +81,11 @@ async def upload_document(object_id: str, file: UploadFile = File(...), state_hi
     Инспектор сам указывает состояние (ПД/РД/ИД и т.д.), если оно не определяется
     по заголовку листа.
     """
+    limits = state.limits_config["rate_limit"]
+    state.rate_limiter.check(principal.subject, "upload",
+                             limits["uploads_per_minute"], window_seconds=60)
     obj = await _object_or_denied(session, object_id, principal)
-    data = await file.read()
-    check_limits(len(data), state.limits_config["upload"])
+    data = await read_with_limit(file, state.limits_config["upload"])
     kind, _mime = detect_type(data[:512], data)
     allowed = set(state.limits_config["upload"]["allowed_signatures"])
     if kind not in allowed:
@@ -106,7 +109,20 @@ async def upload_document(object_id: str, file: UploadFile = File(...), state_hi
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
 
-    parsed = load_document(path, obj.id, title=file.filename or "", hint_state=hint)
+    # Разбор PDF (PyMuPDF) — синхронный и потенциально тяжёлый на плотных или
+    # намеренно патологических файлах. В отдельном потоке — чтобы не блокировать
+    # цикл событий для всех остальных запросов API; с таймаутом — чтобы падение
+    # не роняло приложение (Приложение Б.4).
+    timeout = state.limits_config["processing"]["worker_timeout_seconds"]
+    try:
+        parsed = await asyncio.wait_for(
+            asyncio.to_thread(load_document, path, obj.id, title=file.filename or "",
+                              hint_state=hint),
+            timeout=timeout)
+    except TimeoutError as exc:
+        raise IntakeError(
+            f"Разбор документа не уложился в {timeout} с. Файл слишком велик или сложен "
+            "для обработки — разделите его на части.") from exc
     row = DocumentRow(
         id=parsed.id, object_id=obj.id, state_kind=parsed.state_kind.value,
         doc_kind=parsed.doc_kind.value, title=parsed.title, path=str(path),

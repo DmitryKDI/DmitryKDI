@@ -79,6 +79,16 @@ class AuditChain:
         self._records.append(record)
         return record
 
+    def discard_uncommitted(self, count: int) -> None:
+        """Убрать последние `count` записей, не подтверждённых записью в БД.
+
+        Используется только сохранением (audit_store), когда транзакция,
+        добавившая эти записи, откатилась: без этого цепочка в памяти
+        обгонит базу, и после перезапуска обычный сбой коммита будет
+        неотличим от подделки записи.
+        """
+        del self._records[max(len(self._records) - count, 0):]
+
     def verify(self) -> dict:
         """Проверить целостность цепочки."""
         prev = GENESIS
