@@ -1,6 +1,10 @@
 # Конфигурация провайдеров языковых моделей.
 # Переключение провайдера выполняется правкой поля default и не требует пересборки.
 default: mock            # gigachat | yandexgpt | local_vllm | claude | mock
+# local_vllm ниже включён (enabled: true) и готов к выбору как default — но
+# сам контейнер поднимается только профилем local-llm (`docker compose
+# --profile local-llm up`), т.к. требует GPU. Обычный `docker compose up`
+# не должен падать на машине без видеокарты, поэтому default здесь — mock.
 verifier: mock           # провайдер перепроверки; обязан отличаться от default в продуктиве
 
 providers:
@@ -22,7 +26,7 @@ providers:
     is_sovereign: true
 
   local_vllm:
-    enabled: false
+    enabled: true
     model: t-tech/T-lite-it-1.0
     base_url: http://vllm:8000/v1
     max_context_tokens: 32000
