@@ -4,6 +4,7 @@ aiosqlite==0.22.1
 alembic==1.19.1
 asyncpg==0.31.0
 ezdxf==1.4.4
+psycopg2-binary==2.9.10
 fastapi==0.141.1
 httpx==0.28.1
 pydantic-settings==2.15.0
