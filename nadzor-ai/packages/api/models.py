@@ -88,6 +88,11 @@ class AnalysisRun(Base):
     findings_count: Mapped[int] = mapped_column(Integer, default=0)
     provenance: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # Без relationship() unit of work не видит зависимость по FK и может
+    # отправить INSERT analysis_runs раньше construction_objects в одном
+    # flush — падает ForeignKeyViolationError при первом посеве демо-данных.
+    object: Mapped[ConstructionObject] = relationship()
+
 
 class FindingRow(Base):
     """Гипотеза нарушения."""
@@ -115,6 +120,12 @@ class FindingRow(Base):
     provenance: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # Та же причина, что у AnalysisRun.object выше: без relationship()
+    # порядок flush между findings, analysis_runs и construction_objects
+    # не гарантирован.
+    run: Mapped[AnalysisRun] = relationship()
+    object: Mapped[ConstructionObject] = relationship()
+
 
 class Assessment(Base):
     """Оценка гипотезы инспектором."""
@@ -127,6 +138,8 @@ class Assessment(Base):
     photos: Mapped[list] = mapped_column(JSON, default=list)
     user_id: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    finding: Mapped[FindingRow] = relationship()
 
 
 class AuditRow(Base):
