@@ -1,11 +1,18 @@
-"""Наполнение базы демонстрационными данными.
+"""Наполнение базы стартовыми данными.
 
-Комплект разбирается и анализируется один раз при первом запуске; повторный
+Сотрудники (контур СУДИР) заводятся всегда — без них роли в интерфейсе не с
+чем сопоставить. Демонстрационные ОБЪЕКТЫ по умолчанию НЕ создаются: система
+стартует с пустым списком, чтобы в журналах и на дашборде были только
+реальные загруженные комплекты, а не вымышленные. Включаются переменной
+окружения SEED_DEMO_OBJECTS=1 — это витрина для показа, а не рабочий режим.
+
+Разбор и анализ демо-комплекта идёт один раз при первом запуске; повторный
 запуск данные не пересоздаёт.
 """
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime
 
@@ -18,22 +25,35 @@ from api.models import AnalysisRun, ConstructionObject, DocumentRow, FindingRow,
 from api.state import MANIFEST, ROOT, state
 
 
+def demo_objects_enabled() -> bool:
+    """Витрина с вымышленными объектами — только по явному запросу."""
+    return os.environ.get("SEED_DEMO_OBJECTS", "").strip().lower() in {"1", "true", "yes"}
+
+
 async def is_seeded(session: AsyncSession) -> bool:
     total = await session.scalar(select(func.count()).select_from(ConstructionObject))
     return bool(total)
 
 
 async def seed(session: AsyncSession) -> dict:
-    """Разобрать демо-комплект, выполнить анализ и сохранить результат."""
-    if await is_seeded(session):
-        return {"seeded": False}
+    """Завести сотрудников; демо-объекты — только если включены явно."""
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
-    for person in manifest["staff"]:
-        session.add(User(id=person["subject"], full_name=person["full_name"],
-                         department=person.get("department", ""),
-                         position=person.get("position", ""), roles=person.get("roles", []),
-                         valid_until=person.get("valid_until", "")))
+    staff_added = 0
+    if not await session.scalar(select(func.count()).select_from(User)):
+        for person in manifest["staff"]:
+            session.add(User(id=person["subject"], full_name=person["full_name"],
+                             department=person.get("department", ""),
+                             position=person.get("position", ""), roles=person.get("roles", []),
+                             valid_until=person.get("valid_until", "")))
+            staff_added += 1
+
+    if not demo_objects_enabled():
+        await session.commit()
+        return {"seeded": False, "staff": staff_added, "demo_objects": False}
+    if await is_seeded(session):
+        await session.commit()
+        return {"seeded": False, "staff": staff_added, "demo_objects": True}
 
     stats = {"objects": 0, "documents": 0, "findings": 0}
     for obj in manifest["objects"]:
@@ -72,7 +92,7 @@ async def seed(session: AsyncSession) -> dict:
                       "provider": provider.name})
 
     await session.commit()
-    return {"seeded": True, **stats}
+    return {"seeded": True, "staff": staff_added, "demo_objects": True, **stats}
 
 
 def _object_row(obj: dict) -> ConstructionObject:

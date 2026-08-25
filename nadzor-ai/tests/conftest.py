@@ -29,10 +29,17 @@ def demo_result():
 
 @pytest.fixture(scope="session")
 def client(tmp_path_factory):
-    """Приложение с отдельной базой и хранилищем файлов на время тестов."""
+    """Приложение с отдельной базой и хранилищем файлов на время тестов.
+
+    Демо-объекты включены намеренно: в бою система стартует с пустым списком
+    (см. seed.demo_objects_enabled), но сквозным тестам нужен разобранный
+    комплект, иначе проверять RBAC и журналы не на чем. Что по умолчанию
+    объектов НЕТ — отдельно проверяет test_clean_start.py.
+    """
     db = tmp_path_factory.mktemp("db") / "test.db"
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db}"
     os.environ["STORAGE_ROOT"] = str(tmp_path_factory.mktemp("storage"))
+    os.environ["SEED_DEMO_OBJECTS"] = "1"
     import api.main as main
     from fastapi.testclient import TestClient
     with TestClient(main.app) as test_client:

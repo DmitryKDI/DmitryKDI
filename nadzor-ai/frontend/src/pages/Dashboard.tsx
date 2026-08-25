@@ -32,6 +32,29 @@ export default function Dashboard() {
   const data = query.data!
   const maxDynamic = Math.max(...data.dynamics.map((d) => d.findings), 1)
 
+  // Чистая установка: показывать сетку нулей и пустой график бессмысленно —
+  // это читается как поломка. Вместо этого говорим, что делать дальше.
+  if (data.objects_total === 0) {
+    return (
+      <SectionCard title="Объектов под надзором пока нет"
+        subtitle="Дашборд наполнится, как только появится первый объект и по нему пройдёт анализ">
+        <p className="text-sm text-ink-muted">
+          Начните с одного из двух шагов:
+        </p>
+        <ul className="mt-3 space-y-2 text-sm">
+          <li>
+            <Link className="font-medium text-accent hover:underline" to="/objects">Объекты надзора</Link>
+            {' '}— добавить объект по номеру разрешения на строительство.
+          </li>
+          <li>
+            <Link className="font-medium text-accent hover:underline" to="/analysis/new">Новый анализ</Link>
+            {' '}— сравнить два комплекта документации без привязки к объекту.
+          </li>
+        </ul>
+      </SectionCard>
+    )
+  }
+
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -82,7 +105,7 @@ export default function Dashboard() {
                 <span className="h-2 flex-1 overflow-hidden rounded-full bg-surface-muted">
                   <span className={`block h-full rounded-full ${key === 'critical' ? 'bg-critical'
                     : key === 'major' ? 'bg-major' : 'bg-minor'}`}
-                    style={{ width: `${(count / data.findings_total) * 100}%` }} />
+                    style={{ width: `${data.findings_total ? (count / data.findings_total) * 100 : 0}%` }} />
                 </span>
                 <span className="w-6 text-right tabular-nums">{count}</span>
               </div>

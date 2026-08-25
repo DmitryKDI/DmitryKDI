@@ -237,13 +237,13 @@ def _run_analysis(run_id: int) -> None:
                     result = compare_text_pair(
                         _page_text(before_facts, before_docs, row.before_document_id, row.before_page),
                         _page_text(after_facts, after_docs, row.after_document_id, row.after_page),
-                        config, context=context,
+                        config, context=context, discipline=before_doc.discipline_code,
                     )
                 else:
                     result = compare_page_pair(
                         before_doc.file_path, row.before_page,
                         after_doc.file_path, row.after_page,
-                        config, context=context,
+                        config, context=context, discipline=before_doc.discipline_code,
                     )
             except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
                 result = None

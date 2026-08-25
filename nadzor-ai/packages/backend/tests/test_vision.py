@@ -112,9 +112,75 @@ def test_compare_text_pair_sends_text_not_images():
     print("OK: text-kind comparison sends plain text (no images) with both page texts and context")
 
 
+def test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline():
+    """Известные нарушения из data/known_violations.json подставляются в
+    системный промпт — это единственный способ, которым они влияют на анализ
+    (весов модели мы не трогаем). Фильтрация обязательна: примеры для
+    чертежей не должны попадать в текстовый промпт и наоборот, иначе модель
+    ищет вытяжную вентиляцию в акте освидетельствования."""
+    from app.vision import known_violations_block, load_known_violations, vision_system_prompt
+
+    assert load_known_violations(), "файл примеров должен читаться, иначе промпт молча остаётся общим"
+
+    drawing_ov = known_violations_block("drawing", "ОВ")
+    assert "венткамер" in drawing_ov.lower(), drawing_ov
+    assert "освидетельствован" not in drawing_ov.lower(), "текстовый пример утёк в чертёжный блок"
+
+    text_any = known_violations_block("text", "КР")
+    assert "освидетельствован" in text_any.lower(), text_any
+    assert "венткамер" not in text_any.lower(), "чертёжный пример утёк в текстовый блок"
+
+    # Раздел ЭОМ: специфичных для ОВ примеров быть не должно, общие ('*') — должны.
+    drawing_eom = known_violations_block("drawing", "ЭОМ")
+    assert "венткамер" not in drawing_eom.lower(), "пример раздела ОВ показан для ЭОМ"
+
+    prompt = vision_system_prompt("ОВ")
+    assert "венткамер" in prompt.lower()
+    # Фигурные скобки JSON-шаблона не должны пострадать от .format()
+    assert '{"significant"' in prompt, "формат ответа сломан подстановкой примеров"
+    print("OK: примеры нарушений попадают в промпт с фильтром по типу листа и разделу")
+
+
+def test_missing_known_violations_file_does_not_break_prompt(monkeypatch):
+    """Отсутствие файла примеров не должно ронять анализ — промпт просто
+    остаётся общим, как был до их появления."""
+    import app.vision as vision_module
+    monkeypatch.setattr(vision_module, "KNOWN_VIOLATIONS_PATH", Path("/nonexistent/known_violations.json"))
+
+    assert vision_module.load_known_violations() == []
+    prompt = vision_module.vision_system_prompt("ОВ")
+    assert "НАРУШЕНИЯ, УЖЕ ВСТРЕЧАВШИЕСЯ" not in prompt
+    assert '{"significant"' in prompt, "промпт должен остаться рабочим без файла примеров"
+    print("OK: без файла примеров промпт остаётся корректным, анализ не падает")
+
+
+def test_compare_page_pair_passes_discipline_into_prompt():
+    """Раздел долетает из main.py до промпта — иначе фильтрация примеров
+    существует, но всегда получает None и вырождается в 'все примеры'."""
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"choices": [{"message": {"content": '{"significant": []}'}}]})
+
+    config = LlmConfig(provider="local", model="qwen2.5vl:7b", base_url="http://localhost:11434/v1")
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        compare_page_pair(
+            str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
+            str(SAMPLE_DIR / "rd_floor2_heating.pdf"), 1,
+            config, context="раздел ОВ", discipline="ОВ",
+        )
+
+    system_prompt = captured["json"]["messages"][0]["content"]
+    assert "венткамер" in system_prompt.lower(), "примеры раздела ОВ не попали в системный промпт"
+    print("OK: discipline из main.py доходит до системного промпта сравнения")
+
+
 if __name__ == "__main__":
     test_render_page_to_data_url_real_pdf()
     test_stamp_classifier_wired_into_classify_document()
     test_compare_page_pair_sends_two_images_with_context()
     test_compare_text_pair_sends_text_not_images()
+    test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline()
+    test_compare_page_pair_passes_discipline_into_prompt()
     print("ALL PASS")

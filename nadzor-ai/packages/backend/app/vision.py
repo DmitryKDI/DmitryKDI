@@ -8,6 +8,9 @@ nadzor-browser/main.js на PyMuPDF + llm.py.
 """
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Optional
 
 import pymupdf
@@ -16,6 +19,48 @@ from .classification import open_pdf
 from .llm import LlmConfig, call_llm_json, png_bytes_to_data_url
 
 VISION_MAX_DIM = 1600
+
+# Известные нарушения из реальной практики надзора. Модель не дообучается —
+# примеры подставляются в системный промпт, чтобы она искала нарушения того
+# же рода, а не произвольные различия оформления. Файл пополняется вручную,
+# см. комментарий внутри самого файла.
+KNOWN_VIOLATIONS_PATH = Path(
+    os.environ.get("KNOWN_VIOLATIONS_PATH")
+    or Path(__file__).resolve().parents[3] / "data" / "known_violations.json"
+)
+
+
+def load_known_violations() -> list[dict]:
+    """Отсутствие или порча файла не должны ронять анализ: без примеров
+    промпт просто остаётся общим, как был до их появления."""
+    try:
+        data = json.loads(KNOWN_VIOLATIONS_PATH.read_text(encoding="utf-8"))
+        examples = data.get("examples")
+        return examples if isinstance(examples, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def known_violations_block(applies_to: str, discipline: Optional[str] = None) -> str:
+    """Блок промпта с примерами, отфильтрованными по типу листа и разделу.
+    Пустая строка, если подходящих примеров нет, — тогда промпт не меняется."""
+    relevant = [
+        e for e in load_known_violations()
+        if e.get("applies_to") in (applies_to, "any")
+        and (e.get("discipline") in ("*", None) or not discipline or e.get("discipline") == discipline)
+    ]
+    if not relevant:
+        return ""
+    lines = [
+        f'- {e.get("what", "")} (severity: {e.get("severity", "")}).\n  Признак: {e.get("how_to_spot", "")}'
+        for e in relevant
+    ]
+    return (
+        "\nНАРУШЕНИЯ, УЖЕ ВСТРЕЧАВШИЕСЯ НА ЭТОМ ТИПЕ ОБЪЕКТОВ — проверь их в первую\n"
+        "очередь. Это не список того, что обязано найтись: если признака нет, не\n"
+        "выдумывай нарушение. Но если видишь такой признак — он значим:\n"
+        + "\n".join(lines) + "\n"
+    )
 
 # Инспектор идёт на объект с этим текстом в руках, поэтому находка обязана
 # отвечать не «что изменилось», а «куда идти и что там проверить». Отсюда
@@ -46,7 +91,7 @@ field_check — одно короткое действие на месте: чт
 Ты формируешь ГИПОТЕЗУ для проверки, а не заключение о нарушении. Пиши
 осторожно и кратко: change — одно предложение, field_check — одна строка."""
 
-VISION_SYSTEM_PROMPT = f"""\
+VISION_SYSTEM_PROMPT_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора найти
 потенциальные нарушения до выезда на объект.
 
@@ -72,16 +117,16 @@ VISION_SYSTEM_PROMPT = f"""\
 Пример НЕ значимого: "на правом листе текст чуть темнее".
 
 {SEVERITY_RULE}
-
+{{known}}
 Отвечай только JSON без пояснений вне JSON:
-{{"significant": [{{"label": "краткий код", "change": "что изменилось и где на листе",
+{{{{"significant": [{{{{"label": "краткий код", "change": "что изменилось и где на листе",
    "severity": "критично|существенно|незначительно",
-   "field_check": "что проверить на объекте"}}],
+   "field_check": "что проверить на объекте"}}}}],
  "injection_suspected": false,
  "noise_note": "что отброшено как несущественное, кратко",
- "checked_total": <int>, "significant_total": <int>}}"""
+ "checked_total": <int>, "significant_total": <int>}}}}"""
 
-TEXT_COMPARE_SYSTEM_PROMPT = f"""\
+TEXT_COMPARE_SYSTEM_PROMPT_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора найти
 потенциальные нарушения до выезда на объект.
 
@@ -104,14 +149,22 @@ TEXT_COMPARE_SYSTEM_PROMPT = f"""\
 форматирование, порядок слов без изменения смысла, пробелы и переносы строк.
 
 {SEVERITY_RULE}
-
+{{known}}
 Отвечай только JSON без пояснений вне JSON:
-{{"significant": [{{"label": "краткий код", "change": "что изменилось",
+{{{{"significant": [{{{{"label": "краткий код", "change": "что изменилось",
    "severity": "критично|существенно|незначительно",
-   "field_check": "что проверить или истребовать"}}],
+   "field_check": "что проверить или истребовать"}}}}],
  "injection_suspected": false,
  "noise_note": "что отброшено как несущественное, кратко",
- "checked_total": <int>, "significant_total": <int>}}"""
+ "checked_total": <int>, "significant_total": <int>}}}}"""
+
+
+def vision_system_prompt(discipline: Optional[str] = None) -> str:
+    return VISION_SYSTEM_PROMPT_TEMPLATE.format(known=known_violations_block("drawing", discipline))
+
+
+def text_compare_system_prompt(discipline: Optional[str] = None) -> str:
+    return TEXT_COMPARE_SYSTEM_PROMPT_TEMPLATE.format(known=known_violations_block("text", discipline))
 
 STAMP_READ_SYSTEM_PROMPT = """На картинке — угловой штамп листа строительного чертежа (ГОСТ Р 21.1101).
 Прочитай шифр проекта и определи код раздела — двух-четырёхбуквенное
@@ -160,13 +213,15 @@ def compare_page_pair(
     after_page: int,
     config: LlmConfig,
     context: str = "",
+    discipline: Optional[str] = None,
 ) -> Optional[dict]:
     before_img = render_page_to_data_url(before_pdf, before_page)
     after_img = render_page_to_data_url(after_pdf, after_page)
     user_text = "Сравни левый лист (ПД) и правый лист (РД/ИД)."
     if context:
         user_text += f" Контекст: {context}."
-    return call_llm_json(config, VISION_SYSTEM_PROMPT, user_text, images=[before_img, after_img])
+    return call_llm_json(config, vision_system_prompt(discipline), user_text,
+                         images=[before_img, after_img])
 
 
 def compare_text_pair(
@@ -174,6 +229,7 @@ def compare_text_pair(
     after_text: str,
     config: LlmConfig,
     context: str = "",
+    discipline: Optional[str] = None,
 ) -> Optional[dict]:
     # Явный контейнер вокруг содержимого документа — мера Б.3.1 модели угроз:
     # инструкция в системном сообщении и данные в пользовательском разделены
@@ -184,4 +240,4 @@ def compare_text_pair(
     )
     if context:
         user_text = f"Контекст: {context}.\n\n{user_text}"
-    return call_llm_json(config, TEXT_COMPARE_SYSTEM_PROMPT, user_text)
+    return call_llm_json(config, text_compare_system_prompt(discipline), user_text)
