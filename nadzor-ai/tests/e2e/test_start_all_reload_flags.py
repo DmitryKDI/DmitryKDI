@@ -93,8 +93,25 @@ def test_site_uvicorn_command_starts_without_crashing(tmp_path):
             proc.kill()
 
 
+def test_browser_launch_url_is_not_static():
+    """Реальный баг с батником: Chrome/Edge, получив от `start URL` адрес,
+    который уже открыт в одной из вкладок, переключается на неё вместо
+    новой загрузки — пользователь видел код, каким он был при прошлом
+    запуске батника, а не только что подтянутый git reset --hard. Статичный
+    http://localhost:5173 без переменной части наступает на эти грабли при
+    каждом повторном запуске."""
+    script = (ROOT / "scripts/start-all.sh").read_text(encoding="utf-8")
+    marker = "cmd.exe /c start"
+    start = script.index(marker)
+    line = script[start:script.index("\n", start)]
+    assert "$(" in line or "${" in line, \
+        "адрес автозапуска браузера должен меняться от запуска к запуску, иначе Chrome откроет старую вкладку"
+    print("OK: адрес автозапуска не статичен — новая вкладка на каждый запуск батника")
+
+
 if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         test_site_uvicorn_command_starts_without_crashing(Path(d))
+    test_browser_launch_url_is_not_static()
     print("ALL PASS")
