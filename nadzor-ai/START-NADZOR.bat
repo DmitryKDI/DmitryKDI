@@ -23,6 +23,11 @@ if errorlevel 1 (
   wsl -e bash -c "cd ~/nadzor-project; git reset --hard FETCH_HEAD"
 )
 
+wsl -e bash -c "test -f ~/nadzor-project/nadzor-ai/.env"
+if errorlevel 1 (
+  wsl -e bash -c "cp ~/nadzor-project/nadzor-ai/.env.example ~/nadzor-project/nadzor-ai/.env"
+)
+
 wsl -e bash -c "chmod +x ~/nadzor-project/nadzor-ai/scripts/*.sh; exec ~/nadzor-project/nadzor-ai/scripts/start-all.sh"
 
 echo.
