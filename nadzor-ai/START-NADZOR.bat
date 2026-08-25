@@ -17,7 +17,7 @@ echo.
 
 wsl -e bash -c "test -d ~/nadzor-project/.git"
 if errorlevel 1 (
-  wsl -e bash -c "git clone -b claude/new-session-d44es2 https://github.com/DmitryKDI/DmitryKDI.git ~/nadzor-project"
+  wsl -e bash -c "rm -rf ~/nadzor-project; git clone -b claude/new-session-d44es2 https://github.com/DmitryKDI/DmitryKDI.git ~/nadzor-project"
 ) else (
   wsl -e bash -c "cd ~/nadzor-project; git fetch origin claude/new-session-d44es2"
   wsl -e bash -c "cd ~/nadzor-project; git reset --hard FETCH_HEAD"
