@@ -78,6 +78,17 @@ class PagePair(Base):
     after_document: Mapped[Document] = relationship(foreign_keys=[after_document_id])
     findings: Mapped[list["Finding"]] = relationship(back_populates="pair")
 
+    # При нескольких файлах с каждой стороны один номер страницы неоднозначен
+    # без имени файла — а именно это и нужно, чтобы проверить самому, какому
+    # реальному листу РД сопоставлен лист ПД (см. "Подробности по листам").
+    @property
+    def before_document_name(self) -> str:
+        return self.before_document.name
+
+    @property
+    def after_document_name(self) -> str:
+        return self.after_document.name
+
 
 class Finding(Base):
     __tablename__ = "findings"

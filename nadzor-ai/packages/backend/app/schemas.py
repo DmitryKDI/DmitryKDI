@@ -43,8 +43,10 @@ class PagePairOut(BaseModel):
 
     id: int
     before_document_id: int
+    before_document_name: str
     before_page: int
     after_document_id: int
+    after_document_name: str
     after_page: int
     matched_by: str
     page_kind: str

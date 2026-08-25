@@ -49,8 +49,10 @@ export interface BackendAnalysisRun {
 export interface BackendPagePair {
   id: number
   before_document_id: number
+  before_document_name: string
   before_page: number
   after_document_id: number
+  after_document_name: string
   after_page: number
   matched_by: 'text' | 'position'
   page_kind: 'drawing' | 'text'

@@ -176,6 +176,33 @@ function FindingRow({ finding, onReview }: { finding: BackendFinding; onReview: 
   )
 }
 
+const SEVERITY_RANK: Record<BackendFinding['severity'], number> = { critical: 0, major: 1, minor: 2, '': 3 }
+
+function FindingGroup({ label, findings, onReview }: {
+  label: string; findings: BackendFinding[]
+  onReview: (id: number, status: BackendFinding['reviewed_status']) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const worst = findings.reduce((a, b) => (SEVERITY_RANK[a.severity] <= SEVERITY_RANK[b.severity] ? a : b))
+  return (
+    <li className="rounded-md border border-surface-line">
+      <button className="flex w-full flex-wrap items-center gap-2 p-3 text-left text-sm" onClick={() => setOpen((v) => !v)}>
+        <span className="text-ink-faint">{open ? '▾' : '▸'}</span>
+        {worst.severity && <SeverityChip value={worst.severity} />}
+        <span className="font-medium">{label || '(без метки)'}</span>
+        <Chip>{findings.length}</Chip>
+      </button>
+      {open && (
+        <ul className="space-y-2 border-t border-surface-line p-3 pt-2">
+          {findings.map((f) => (
+            <FindingRow key={f.id} finding={f} onReview={(status) => onReview(f.id, status)} />
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}
+
 export default function NewAnalysis() {
   const queryClient = useQueryClient()
   // Загруженные документы, очередь и id прогона живут в общем сторе, а не в
@@ -253,6 +280,7 @@ export default function NewAnalysis() {
   // итог; загружается только по клику "Подробности по листам", чтобы не
   // тянуть сотни строк на каждый прогон, если инспектору это не нужно.
   const [pairsOpen, setPairsOpen] = useState(false)
+  const [pairsFilter, setPairsFilter] = useState('')
   const pagePairs = useQuery({
     queryKey: ['backend-pairs', runId],
     queryFn: () => backendApi.listPagePairs(runId as number),
@@ -270,6 +298,21 @@ export default function NewAnalysis() {
 
   const items = findings.data ?? []
   const significantCount = items.filter((f) => f.reviewed_status !== 'rejected').length
+
+  // Сотни находок плоским списком не позволяют увидеть, что за ними на
+  // самом деле систематическая проблема одного типа, повторённая на многих
+  // листах, а не сто разных нарушений — группировка по label (краткий код
+  // из промпта, см. vision.py) сворачивает повторы в одну строку со счётчиком.
+  const [groupByLabel, setGroupByLabel] = useState(false)
+  const groups = (() => {
+    const map = new Map<string, BackendFinding[]>()
+    for (const f of items) {
+      const key = f.label || ''
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(f)
+    }
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length)
+  })()
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -304,20 +347,33 @@ export default function NewAnalysis() {
               )}
               {pairsOpen && runStatus.status === 'done' && (
                 pagePairs.isLoading ? <Skeleton rows={2} /> : (
-                  <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
-                    {(pagePairs.data ?? []).map((p) => (
-                      <li key={p.id}
-                        className="flex items-center justify-between gap-2 border-t border-surface-line/60 pt-1 first:border-t-0 first:pt-0">
-                        <span>
-                          лист {p.before_page} → {p.after_page} · {PAGE_KIND_LABELS[p.page_kind]}
-                          {p.discipline_mismatch && ' · раздел не совпал'}
-                        </span>
-                        <span className={p.llm_status === 'ok' ? 'text-ink-faint' : 'text-critical'} title={p.llm_error ?? undefined}>
-                          {p.llm_status === 'ok' ? '✓' : `✕ ${p.llm_error ?? 'ошибка'}`}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <input className="input mt-2 h-7 text-xs" placeholder="Фильтр: имя файла или номер листа"
+                      value={pairsFilter} onChange={(e) => setPairsFilter(e.target.value)} />
+                    <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                      {(pagePairs.data ?? [])
+                        .filter((p) => {
+                          const q = pairsFilter.trim().toLowerCase()
+                          if (!q) return true
+                          return p.before_document_name.toLowerCase().includes(q)
+                            || p.after_document_name.toLowerCase().includes(q)
+                            || String(p.before_page).includes(q) || String(p.after_page).includes(q)
+                        })
+                        .map((p) => (
+                          <li key={p.id}
+                            className="flex items-center justify-between gap-2 border-t border-surface-line/60 pt-1 first:border-t-0 first:pt-0">
+                            <span className="min-w-0 truncate" title={`${p.before_document_name} → ${p.after_document_name}`}>
+                              «{p.before_document_name}» стр.{p.before_page} → «{p.after_document_name}» стр.{p.after_page}
+                              {' · '}{PAGE_KIND_LABELS[p.page_kind]}
+                              {p.discipline_mismatch && ' · раздел не совпал'}
+                            </span>
+                            <span className={`shrink-0 ${p.llm_status === 'ok' ? 'text-ink-faint' : 'text-critical'}`} title={p.llm_error ?? undefined}>
+                              {p.llm_status === 'ok' ? '✓' : `✕ ${p.llm_error ?? 'ошибка'}`}
+                            </span>
+                          </li>
+                        ))}
+                    </ul>
+                  </>
                 )
               )}
             </div>
@@ -342,15 +398,31 @@ export default function NewAnalysis() {
               } />
             ) : (
               <>
-                <p className="mb-3 text-sm font-medium">
-                  Итог: {significantCount} из {items.length} пунктов реально стоит проверить.
-                </p>
-                <ul className="space-y-2">
-                  {items.map((f) => (
-                    <FindingRow key={f.id} finding={f}
-                      onReview={(status) => reviewFinding.mutate({ id: f.id, status })} />
-                  ))}
-                </ul>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">
+                    Итог: {significantCount} из {items.length} пунктов реально стоит проверить.
+                  </p>
+                  {items.length > 5 && (
+                    <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setGroupByLabel((v) => !v)}>
+                      {groupByLabel ? 'Список' : `Группировать по типу (${groups.length})`}
+                    </button>
+                  )}
+                </div>
+                {groupByLabel ? (
+                  <ul className="space-y-2">
+                    {groups.map(([label, group]) => (
+                      <FindingGroup key={label} label={label} findings={group}
+                        onReview={(id, status) => reviewFinding.mutate({ id, status })} />
+                    ))}
+                  </ul>
+                ) : (
+                  <ul className="space-y-2">
+                    {items.map((f) => (
+                      <FindingRow key={f.id} finding={f}
+                        onReview={(status) => reviewFinding.mutate({ id: f.id, status })} />
+                    ))}
+                  </ul>
+                )}
               </>
             )
           )}
