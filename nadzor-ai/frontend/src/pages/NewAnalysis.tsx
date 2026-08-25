@@ -3,11 +3,29 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   backendApi, pageImageUrl, type BackendAnalysisRun, type BackendDocument, type BackendFinding, type BackendSettings,
 } from '../backendApi'
-import { useApp } from '../store'
+import { useApp, type PendingUpload } from '../store'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
 
 const PROVIDER_LABELS: Record<BackendSettings['provider'], string> = {
   local: 'Локальная модель (Ollama)', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google',
+  yandexgpt: 'YandexGPT',
+}
+
+// Зеркало PROVIDER_DEFAULT_MODELS/MODEL_OPTIONS из packages/backend/app/llm.py —
+// реальные, а не выдуманные идентификаторы моделей, чтобы поле "Модель" не было
+// полем вслепую. Список подсказок, а не жёсткий выбор: свою модель ввести
+// по-прежнему можно (input + datalist), пустое поле берёт дефолт провайдера.
+const MODEL_OPTIONS: Record<BackendSettings['provider'], string[]> = {
+  local: ['qwen2.5vl:7b', 'qwen2.5vl:32b', 'llama3.2-vision:11b', 'minicpm-v:8b'],
+  openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'],
+  anthropic: ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5-20251001'],
+  google: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+  yandexgpt: ['yandexgpt/latest', 'yandexgpt-lite/latest', 'yandexgpt-32k/latest'],
+}
+
+const PROVIDER_DEFAULT_MODEL: Record<BackendSettings['provider'], string> = {
+  local: 'qwen2.5vl:7b', openai: 'gpt-4o-mini', anthropic: 'claude-sonnet-5',
+  google: 'gemini-2.5-flash', yandexgpt: 'yandexgpt/latest',
 }
 
 const CLASSIFICATION_SOURCE_LABELS: Record<string, string> = {
@@ -25,8 +43,6 @@ function DisciplineBadge({ doc }: { doc: BackendDocument }) {
     </Chip>
   )
 }
-
-interface PendingUpload { name: string; startedAt: number }
 
 function UploadZone({
   title, subtitle, docs, onFiles, onRemove, pending,
@@ -152,13 +168,15 @@ function FindingRow({ finding, onReview }: { finding: BackendFinding; onReview: 
 
 export default function NewAnalysis() {
   const queryClient = useQueryClient()
-  const { pushToast } = useApp()
-  const [beforeDocs, setBeforeDocs] = useState<BackendDocument[]>([])
-  const [afterDocs, setAfterDocs] = useState<BackendDocument[]>([])
-  const [pendingBefore, setPendingBefore] = useState<PendingUpload[]>([])
-  const [pendingAfter, setPendingAfter] = useState<PendingUpload[]>([])
+  // Загруженные документы, очередь и id прогона живут в общем сторе, а не в
+  // useState: переход на другую вкладку меню размонтирует этот компонент, и
+  // локальное состояние (в том числе идущий анализ) терялось бы целиком.
+  const {
+    pushToast, analysisBeforeDocs: beforeDocs, analysisAfterDocs: afterDocs,
+    analysisPendingBefore: pendingBefore, analysisPendingAfter: pendingAfter,
+    analysisRunId: runId, setAnalysisDocs, setAnalysisPending, setAnalysisRunId,
+  } = useApp()
   const [aiOpen, setAiOpen] = useState(false)
-  const [runId, setRunId] = useState<number | null>(null)
 
   const settings = useQuery({ queryKey: ['backend-settings'], queryFn: backendApi.getSettings })
   const [form, setForm] = useState<BackendSettings>({ provider: 'local', base_url: '', model: '', api_key: '' })
@@ -172,8 +190,8 @@ export default function NewAnalysis() {
 
   const uploadTo = async (side: 'before' | 'after', files: FileList | null) => {
     if (!files || !files.length) return
-    const setDocs = side === 'before' ? setBeforeDocs : setAfterDocs
-    const setPending = side === 'before' ? setPendingBefore : setPendingAfter
+    const setDocs = (updater: Parameters<typeof setAnalysisDocs>[1]) => setAnalysisDocs(side, updater)
+    const setPending = (updater: Parameters<typeof setAnalysisPending>[1]) => setAnalysisPending(side, updater)
 
     // Разбор PDF на бэкенде идёт синхронно в одном HTTP-запросе (см.
     // packages/backend/app/main.py, upload_document) — сотни листов могут
@@ -199,16 +217,15 @@ export default function NewAnalysis() {
   }
 
   const removeFrom = async (side: 'before' | 'after', id: number) => {
-    const setDocs = side === 'before' ? setBeforeDocs : setAfterDocs
     try {
       await backendApi.deleteDocument(id)
     } catch { /* уже удалён или недоступен — всё равно убираем из списка */ }
-    setDocs((prev) => prev.filter((d) => d.id !== id))
+    setAnalysisDocs(side, (prev) => prev.filter((d) => d.id !== id))
   }
 
   const run = useMutation({
     mutationFn: () => backendApi.createAnalysisRun(beforeDocs.map((d) => d.id), afterDocs.map((d) => d.id)),
-    onSuccess: (data) => setRunId(data.id),
+    onSuccess: (data) => setAnalysisRunId(data.id),
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось запустить анализ', 'error'),
   })
 
@@ -303,6 +320,11 @@ export default function NewAnalysis() {
                 <input className="input" placeholder="http://localhost:11434/v1"
                   value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
               </>
+            ) : form.provider === 'yandexgpt' ? (
+              <p className="text-xs text-ink-faint">
+                Ключ и Folder ID берутся из <code>.env</code> — тех же, что и в «Настройках моделей и правил».
+                Вводить их здесь отдельно не нужно.
+              </p>
             ) : (
               <>
                 <label className="block text-xs text-ink-faint">Ключ API</label>
@@ -311,8 +333,17 @@ export default function NewAnalysis() {
               </>
             )}
             <label className="block text-xs text-ink-faint">Модель</label>
-            <input className="input" placeholder="qwen3:8b" value={form.model}
-              onChange={(e) => setForm({ ...form, model: e.target.value })} />
+            <input className="input" list="model-suggestions" placeholder={PROVIDER_DEFAULT_MODEL[form.provider]}
+              value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
+            <datalist id="model-suggestions">
+              {MODEL_OPTIONS[form.provider].map((m) => <option key={m} value={m} />)}
+            </datalist>
+            {form.provider === 'yandexgpt' && (
+              <p className="text-xs text-ink-faint">
+                Только текстовое сравнение (акты, спецификации). Чертежи по картинке YandexGPT здесь не читает —
+                для них нужна локальная модель или другой провайдер со зрением.
+              </p>
+            )}
             <button className="btn-primary w-full justify-center" disabled={saveSettings.isPending}
               onClick={() => saveSettings.mutate()}>
               {saveSettings.isPending ? 'Сохранение…' : 'Сохранить'}

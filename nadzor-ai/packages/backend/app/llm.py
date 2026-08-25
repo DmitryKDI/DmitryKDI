@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -29,6 +30,7 @@ PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-5",
     "google": "gemini-2.5-flash",
+    "yandexgpt": "yandexgpt/latest",
 }
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -37,7 +39,7 @@ _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 @dataclass
 class LlmConfig:
-    provider: str  # 'local' | 'openai' | 'anthropic' | 'google'
+    provider: str  # 'local' | 'openai' | 'anthropic' | 'google' | 'yandexgpt'
     api_key: str = ""
     base_url: str = ""
     model: str = ""
@@ -154,6 +156,37 @@ def call_llm_json(
         resp.raise_for_status()
         data = resp.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return extract_json_object(text)
+
+    if provider == "yandexgpt":
+        # Ключ и Folder ID — из тех же переменных окружения, что и у
+        # полной CRM (packages/llm_core/providers/remote.py): один .env,
+        # один ключ, вводить его отдельно в этой панели не нужно.
+        if images:
+            raise ValueError(
+                "YandexGPT здесь понимает только текст — для сравнения чертежей "
+                "по картинке выберите локальную модель или другого провайдера"
+            )
+        api_key = os.environ.get("YANDEX_GPT_API_KEY", "")
+        folder_id = os.environ.get("YANDEX_GPT_FOLDER_ID", "")
+        if not api_key or not folder_id:
+            raise ValueError("в .env не заданы YANDEX_GPT_API_KEY / YANDEX_GPT_FOLDER_ID")
+        body = {
+            "modelUri": f"gpt://{folder_id}/{model}",
+            "completionOptions": {"stream": False, "temperature": 0.2, "maxTokens": "2000"},
+            "messages": [
+                {"role": "system", "text": system_prompt},
+                {"role": "user", "text": user_text},
+            ],
+        }
+        headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
+        resp = httpx.post(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            json=body, headers=headers, timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["result"]["alternatives"][0]["message"]["text"]
         return extract_json_object(text)
 
     raise ValueError(f"unknown provider: {provider}")

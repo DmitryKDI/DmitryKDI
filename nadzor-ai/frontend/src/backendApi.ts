@@ -65,7 +65,7 @@ export function pageImageUrl(documentId: number, page: number): string {
 }
 
 export interface BackendSettings {
-  provider: 'local' | 'openai' | 'anthropic' | 'google'
+  provider: 'local' | 'openai' | 'anthropic' | 'google' | 'yandexgpt'
   base_url: string
   model: string
   api_key: string
