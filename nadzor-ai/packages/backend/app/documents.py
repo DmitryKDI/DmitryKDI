@@ -11,9 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import pymupdf
-
-from .classification import classify_page_kind
+from .classification import classify_page_kind, open_pdf
 
 
 @dataclass
@@ -26,7 +24,7 @@ class DocumentFacts:
 
 
 def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
-    doc = pymupdf.open(pdf_path)
+    doc = open_pdf(pdf_path)
     try:
         text_facts = []
         page_kinds = {}

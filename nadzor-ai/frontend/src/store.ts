@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Principal } from './types'
-import type { BackendDocument } from './backendApi'
+import { backendApi, type BackendAnalysisRun, type BackendDocument } from './backendApi'
 
 interface Toast {
   id: number
@@ -31,6 +31,11 @@ interface AppState {
   analysisPendingBefore: PendingUpload[]
   analysisPendingAfter: PendingUpload[]
   analysisRunId: number | null
+  // Прогресс прогона — отдельно от analysisRunId: обновляется фоновым
+  // опросом (см. pollAnalysisRun ниже), который не привязан к тому, что
+  // экран "Новый анализ" сейчас смонтирован, — так прогон реально продолжает
+  // считаться, пока инспектор смотрит другие вкладки, а не замирает.
+  analysisRunStatus: BackendAnalysisRun | null
   setSession: (principal: Principal | null, permissions: string[]) => void
   toggleMenu: () => void
   setDensity: (value: 'comfortable' | 'compact') => void
@@ -60,6 +65,7 @@ export const useApp = create<AppState>()(
       analysisPendingBefore: [],
       analysisPendingAfter: [],
       analysisRunId: null,
+      analysisRunStatus: null,
       setSession: (principal, permissions) => set({ principal, permissions }),
       toggleMenu: () => set((s) => ({ menuCollapsed: !s.menuCollapsed })),
       setDensity: (density) => set({ density }),
@@ -86,10 +92,14 @@ export const useApp = create<AppState>()(
           const prev = s[key]
           return { [key]: typeof updater === 'function' ? updater(prev) : updater }
         }),
-      setAnalysisRunId: (analysisRunId) => set({ analysisRunId }),
+      setAnalysisRunId: (analysisRunId) => {
+        set({ analysisRunId, analysisRunStatus: null })
+        if (analysisRunId != null) pollAnalysisRun(analysisRunId)
+      },
       resetAnalysis: () => set({
         analysisBeforeDocs: [], analysisAfterDocs: [],
-        analysisPendingBefore: [], analysisPendingAfter: [], analysisRunId: null,
+        analysisPendingBefore: [], analysisPendingAfter: [],
+        analysisRunId: null, analysisRunStatus: null,
       }),
     }),
     {
@@ -107,6 +117,44 @@ export const useApp = create<AppState>()(
         analysisAfterDocs: s.analysisAfterDocs,
         analysisRunId: s.analysisRunId,
       }),
+      onRehydrateStorage: () => (state) => {
+        // Прогон мог остаться незавершённым, пока страница была закрыта —
+        // одним запросом узнаём актуальный статус и, если он ещё не готов,
+        // продолжаем фоновый опрос сразу, не дожидаясь открытия "Нового
+        // анализа" (см. pollAnalysisRun — опрос не привязан к монтированию
+        // конкретного экрана, поэтому продолжается на любой странице сайта).
+        // setTimeout, а не прямой вызов: гидратация может завершиться синхронно
+        // внутри самого create(), когда переменная useApp ещё не присвоена —
+        // pollAnalysisRun читает её через useApp.getState().
+        if (state?.analysisRunId != null) {
+          const id = state.analysisRunId
+          setTimeout(() => pollAnalysisRun(id), 0)
+        }
+      },
     },
   ),
 )
+
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+
+function pollAnalysisRun(runId: number): void {
+  if (pollTimer) clearTimeout(pollTimer)
+  const tick = async () => {
+    // Пока запрос летел, мог начаться другой прогон (или анализ сбросили) —
+    // не затираем более новое состояние устаревшим ответом.
+    if (useApp.getState().analysisRunId !== runId) return
+    let data: BackendAnalysisRun
+    try {
+      data = await backendApi.getAnalysisRun(runId)
+    } catch {
+      pollTimer = setTimeout(tick, 800)
+      return
+    }
+    if (useApp.getState().analysisRunId !== runId) return
+    useApp.setState({ analysisRunStatus: data })
+    if (data.status !== 'done' && data.status !== 'error') {
+      pollTimer = setTimeout(tick, 800)
+    }
+  }
+  void tick()
+}

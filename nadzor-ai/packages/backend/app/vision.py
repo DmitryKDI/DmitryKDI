@@ -12,6 +12,7 @@ from typing import Optional
 
 import pymupdf
 
+from .classification import open_pdf
 from .llm import LlmConfig, call_llm_json, png_bytes_to_data_url
 
 VISION_MAX_DIM = 1600
@@ -121,7 +122,7 @@ STAMP_READ_SYSTEM_PROMPT = """На картинке — угловой штам�
 
 
 def render_page_to_png_bytes(pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM) -> bytes:
-    doc = pymupdf.open(pdf_path)
+    doc = open_pdf(pdf_path)
     try:
         page = doc[page_no - 1]
         rect = page.rect

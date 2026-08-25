@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  backendApi, pageImageUrl, type BackendAnalysisRun, type BackendDocument, type BackendFinding, type BackendSettings,
+  backendApi, pageImageUrl, type BackendDocument, type BackendFinding, type BackendSettings,
 } from '../backendApi'
 import { useApp, type PendingUpload } from '../store'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
@@ -88,16 +88,24 @@ function UploadZone({
       {(docs.length > 0 || pending.length > 0) && (
         <ul className="mt-3 space-y-2">
           {docs.map((doc) => (
-            <li key={doc.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-line px-3 py-2 text-sm">
-              <span className="min-w-0 flex-1 truncate" title={doc.name}>
-                {doc.status === 'parsing' && <span className="text-ink-faint">Обрабатывается… </span>}
-                {doc.status === 'error' && <span className="text-critical">Ошибка · </span>}
-                {doc.name} <span className="text-ink-faint">· {doc.pages} л.</span>
-              </span>
-              <span className="flex items-center gap-2">
-                <DisciplineBadge doc={doc} />
-                <button className="text-xs text-ink-faint hover:text-critical" onClick={() => onRemove(doc.id)} aria-label="Удалить">✕</button>
-              </span>
+            <li key={doc.id} className="rounded-md border border-surface-line px-3 py-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="min-w-0 flex-1 truncate" title={doc.name}>
+                  {doc.status === 'parsing' && <span className="text-ink-faint">Обрабатывается… </span>}
+                  {doc.status === 'error' && <span className="text-critical">Ошибка · </span>}
+                  {doc.name} <span className="text-ink-faint">· {doc.pages} л.</span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <DisciplineBadge doc={doc} />
+                  <button className="text-xs text-ink-faint hover:text-critical" onClick={() => onRemove(doc.id)} aria-label="Удалить">✕</button>
+                </span>
+              </div>
+              {doc.status === 'error' && doc.classification_source && (
+                // Причина падения разбора — то, что реально нужно, чтобы понять,
+                // стоит ли просто перезалить файл (например, был запаролен) или
+                // дело в самом файле; раньше терялась, оставалась только "Ошибка".
+                <p className="mt-1 text-xs text-critical">{doc.classification_source}</p>
+              )}
             </li>
           ))}
           {pending.map((p, i) => (
@@ -174,7 +182,8 @@ export default function NewAnalysis() {
   const {
     pushToast, analysisBeforeDocs: beforeDocs, analysisAfterDocs: afterDocs,
     analysisPendingBefore: pendingBefore, analysisPendingAfter: pendingAfter,
-    analysisRunId: runId, setAnalysisDocs, setAnalysisPending, setAnalysisRunId,
+    analysisRunId: runId, analysisRunStatus: runStatus,
+    setAnalysisDocs, setAnalysisPending, setAnalysisRunId,
   } = useApp()
   const [aiOpen, setAiOpen] = useState(false)
 
@@ -229,20 +238,14 @@ export default function NewAnalysis() {
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось запустить анализ', 'error'),
   })
 
-  const runStatus = useQuery({
-    queryKey: ['backend-run', runId],
-    queryFn: () => backendApi.getAnalysisRun(runId as number),
-    enabled: runId !== null,
-    refetchInterval: (query) => {
-      const data = query.state.data as BackendAnalysisRun | undefined
-      return data && (data.status === 'done' || data.status === 'error') ? false : 800
-    },
-  })
-
+  // Прогресс прогона (runStatus) опрашивается фоново в сторе (см. store.ts,
+  // pollAnalysisRun) — не здесь: этот компонент размонтируется при уходе на
+  // другую вкладку меню, а прогон должен продолжаться независимо от того,
+  // какой экран сейчас открыт.
   const findings = useQuery({
     queryKey: ['backend-findings', runId],
     queryFn: () => backendApi.listFindings(runId as number),
-    enabled: runId !== null && runStatus.data?.status === 'done',
+    enabled: runId !== null && runStatus?.status === 'done',
   })
 
   const reviewFinding = useMutation({
@@ -269,18 +272,18 @@ export default function NewAnalysis() {
 
         <SectionCard title="Оценка расхождений" subtitle="Автоматический подбор пар листов по разделу (шифру), затем сравнение — без разбивки по помещениям">
           {runId === null && <p className="text-sm text-ink-muted">Запустите анализ, чтобы увидеть расхождения.</p>}
-          {runId !== null && runStatus.data && runStatus.data.status === 'running' && (
+          {runId !== null && runStatus && runStatus.status === 'running' && (
             <div>
               <Skeleton rows={3} />
               <p className="mt-2 text-xs text-ink-faint">
-                Обработано пар листов: {runStatus.data.pairs_done} из {runStatus.data.pairs_total || '…'}
+                Обработано пар листов: {runStatus.pairs_done} из {runStatus.pairs_total || '…'}
               </p>
             </div>
           )}
-          {runId !== null && runStatus.data?.status === 'error' && (
-            <Empty title="Анализ завершился с ошибкой" hint={runStatus.data.error ?? undefined} />
+          {runId !== null && runStatus?.status === 'error' && (
+            <Empty title="Анализ завершился с ошибкой" hint={runStatus.error ?? undefined} />
           )}
-          {runId !== null && runStatus.data?.status === 'done' && (
+          {runId !== null && runStatus?.status === 'done' && (
             findings.isLoading ? <Skeleton rows={3} /> : items.length === 0 ? (
               <Empty title="Существенных расхождений не найдено" hint="Проверенные пары листов совпадают по содержанию." />
             ) : (
@@ -356,9 +359,9 @@ export default function NewAnalysis() {
 
         <SectionCard title="Запуск анализа">
           <button className="btn-primary w-full justify-center"
-            disabled={!readyToRun || run.isPending || (runStatus.data?.status === 'running')}
+            disabled={!readyToRun || run.isPending || runStatus?.status === 'running'}
             onClick={() => run.mutate()}>
-            {run.isPending || runStatus.data?.status === 'running' ? 'Выполняется…' : 'Запустить анализ'}
+            {run.isPending || runStatus?.status === 'running' ? 'Выполняется…' : 'Запустить анализ'}
           </button>
           {!readyToRun && (
             <p className="mt-2 text-xs text-ink-faint">Загрузите хотя бы по одному разобранному файлу с каждой стороны.</p>

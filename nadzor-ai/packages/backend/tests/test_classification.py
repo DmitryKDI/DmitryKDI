@@ -1,9 +1,12 @@
 import sys
 from pathlib import Path
 
+import pymupdf
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.classification import classify_document, scan_text_for_discipline_codes
+from app.classification import classify_document, open_pdf, scan_text_for_discipline_codes
 
 SAMPLE_DIR = Path(
     "/tmp/claude-0/-home-user-DmitryKDI/0870a421-62c2-59a8-8978-c9163f520b16/scratchpad"
@@ -89,6 +92,55 @@ def test_filename_wins_before_opening_pdf_at_all():
     assert result.discipline_code == "АР", result
     assert result.source == "filename", result
     print("OK: filename signal short-circuits before stamp scan")
+
+
+def _make_pdf(path: Path, owner_pw: str = "", user_pw: str = "") -> None:
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "test page")
+    if owner_pw or user_pw:
+        doc.save(str(path), encryption=pymupdf.PDF_ENCRYPT_AES_256, owner_pw=owner_pw, user_pw=user_pw)
+    else:
+        doc.save(str(path))
+    doc.close()
+
+
+def test_open_pdf_unlocks_owner_password_only_file(tmp_path):
+    """Реальный случай на боевых документах: PDF-экспорт из CAD с owner-
+    паролем (только запрет копирования/печати, пароль на ОТКРЫТИЕ не задан).
+    PyMuPDF отдаёт такой файл как открытый и без явной авторизации — здесь
+    просто фиксируем, что open_pdf не ломает этот случай, который и так
+    работал, чтобы не откатить его при следующей правке."""
+    path = tmp_path / "owner_protected.pdf"
+    _make_pdf(path, owner_pw="ownersecret", user_pw="")
+    doc = open_pdf(str(path))
+    try:
+        assert doc.page_count == 1
+        assert "test page" in doc[0].get_text()
+    finally:
+        doc.close()
+    print("OK: файл с owner-паролем открывается и читается как обычно")
+
+
+def test_open_pdf_raises_clear_error_for_user_password_file(tmp_path):
+    """Файл, требующий пароль именно на открытие (needs_pass), — снять его
+    пустым паролем нельзя; open_pdf должен упасть понятной ошибкой, а не
+    отдать документ с недоступными страницами (пустой текст, 0 листов молча)."""
+    path = tmp_path / "user_protected.pdf"
+    _make_pdf(path, owner_pw="ownersecret", user_pw="realpassword")
+    with pytest.raises(ValueError, match="паролем"):
+        open_pdf(str(path))
+    print("OK: PDF с паролем на открытие — понятная ошибка вместо тихого 0 страниц")
+
+
+def test_open_pdf_plain_file_unaffected(tmp_path):
+    path = tmp_path / "plain.pdf"
+    _make_pdf(path)
+    doc = open_pdf(str(path))
+    try:
+        assert doc.page_count == 1
+    finally:
+        doc.close()
+    print("OK: обычный PDF без пароля открывается как раньше")
 
 
 if __name__ == "__main__":

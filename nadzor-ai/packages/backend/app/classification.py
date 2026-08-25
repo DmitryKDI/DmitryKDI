@@ -28,6 +28,23 @@ from typing import Callable, Optional
 
 import pymupdf
 
+def open_pdf(pdf_path: str) -> "pymupdf.Document":
+    """Открывает PDF, снимая пустой пароль владельца, если он есть.
+
+    Реальный случай из проверки на боевых документах: PDF-экспорты из
+    проектных CAD-систем нередко зашифрованы пустым паролем владельца —
+    это ограничивает копирование/печать в Acrobat, но не мешает открыть файл
+    на просмотр там же. PyMuPDF же на таком файле отдаёт документ с
+    недоступными страницами, если не аутентифицироваться явно, — без этого
+    загрузка падала с невнятной ошибкой на листе, который на самом деле
+    открывается и читается."""
+    doc = pymupdf.open(pdf_path)
+    if doc.needs_pass and not doc.authenticate(""):
+        doc.close()
+        raise ValueError("PDF защищён паролем, снять пустым паролем не удалось")
+    return doc
+
+
 DISCIPLINE_CODES = [
     "НВК", "ЭОМ", "АПС", "ОПС", "СКС", "ПОС",
     "КЖ", "КМ", "АР", "АС", "КР", "ОВ", "ВК", "ЭС", "СС", "ГП", "ТХ", "ПБ",
@@ -133,7 +150,7 @@ def classify_document(
     if best is not None:
         return ClassificationResult(best, "filename", scores)
 
-    doc = pymupdf.open(pdf_path)
+    doc = open_pdf(pdf_path)
     try:
         if doc.page_count == 0:
             return ClassificationResult(None, "none", scores)
