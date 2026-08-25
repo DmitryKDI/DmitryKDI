@@ -36,11 +36,31 @@ case "$ROOT" in
     ;;
 esac
 
-command -v python3 >/dev/null 2>&1 || die "не найден python3. Установите: sudo apt install -y python3 python3-venv python3-pip"
-# venv в Debian/Ubuntu ставится отдельным пакетом, и без него ошибка приходит
-# уже в середине установки, в невнятном виде. Проверяем заранее.
-python3 -c 'import ensurepip' >/dev/null 2>&1 \
-  || die "не хватает python3-venv. Установите: sudo apt install -y python3-venv python3-pip"
+# Недостающее собираем целиком и показываем одной командой: получать «поставьте
+# X», а после установки — «поставьте Y», и так несколько раз подряд, хуже, чем
+# один раз увидеть весь список.
+MISSING=""
+
+command -v git >/dev/null 2>&1 || MISSING="$MISSING git"
+
+if command -v python3 >/dev/null 2>&1; then
+  # venv в Debian/Ubuntu ставится отдельным пакетом, и без него установка
+  # обрывается на середине с невнятной ошибкой. Проверяем заранее.
+  python3 -c 'import ensurepip' >/dev/null 2>&1 || MISSING="$MISSING python3-venv python3-pip"
+else
+  MISSING="$MISSING python3 python3-venv python3-pip"
+fi
+
+if [ ! -x /usr/bin/node ] && ! command -v node >/dev/null 2>&1; then
+  MISSING="$MISSING nodejs npm"
+fi
+
+if [ -n "$MISSING" ]; then
+  printf '\n%s\n' "${RED}${BOLD}Не хватает системных пакетов:${MISSING}${OFF}" >&2
+  printf '%s\n' "Выполните одну команду и запустите снова:" >&2
+  printf '\n  %s\n\n' "${BOLD}sudo apt update && sudo apt install -y${MISSING}${OFF}" >&2
+  exit 1
+fi
 ok "python3 $(python3 -V 2>&1 | cut -d' ' -f2)"
 
 NPM="$(pick_npm)"; NODE="$(pick_node)"
