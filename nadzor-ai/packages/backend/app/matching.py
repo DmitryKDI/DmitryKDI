@@ -28,8 +28,10 @@ from typing import Optional
 
 from .classification import PAGE_KIND_TEXT
 from .diffing import jaccard, norm_word
+from .subsystem import subsystem_lean
 
 MIN_PAGE_MATCH_SIMILARITY = 0.12
+SUBSYSTEM_MISMATCH_PENALTY = 0.4
 
 
 @dataclass
@@ -48,6 +50,8 @@ class _PageRef:
     page: int
     tokens: set[str]
     kind: str
+    room_keys: set[str] = field(default_factory=set)
+    lean: Optional[str] = None  # subsystem.subsystem_lean — 'вент' | 'тепл' | None
 
 
 @dataclass
@@ -102,6 +106,14 @@ def page_token_set(entry: DocumentInput, page_no: int) -> set[str]:
     return tokens
 
 
+def room_key_set(entry: DocumentInput, page_no: int) -> set[str]:
+    return {f["key"] for f in entry.room_facts if f["page"] == page_no and f.get("key")}
+
+
+def _page_text(entry: DocumentInput, page_no: int) -> str:
+    return next((f["text"] for f in entry.text_facts if f["page"] == page_no), "")
+
+
 def _match_pool(
     before_pages: list[_PageRef],
     after_pages: list[_PageRef],
@@ -125,6 +137,23 @@ def _match_pool(
             if gate_by_discipline and after_codes[a.file_idx] != b_code:
                 continue
             score = jaccard(b.tokens, a.tokens)
+            if b.room_keys and a.room_keys:
+                # Номер помещения — куда более специфичный сигнал, чем общая
+                # лексика листа (заголовки штампа, названия систем и т.п.
+                # повторяются на сотнях листов раздела): экспликация листа с
+                # десятками случайных общих слов может набрать балл выше, чем
+                # лист, где буквально совпадает то самое помещение, где
+                # находится нарушение (см. CLAUDE.md — реальный случай на
+                # Nadzor_Sample). Поэтому берём лучший из двух сигналов, а не
+                # смешиваем — один хороший сигнал не должен тонуть в другом.
+                score = max(score, jaccard(b.room_keys, a.room_keys))
+            if b.lean and a.lean and b.lean != a.lean:
+                # Оба тома одного раздела ОВ, но по словам явно разные
+                # подсистемы (вентиляция/отопление) — не блокируем совсем
+                # (эвристика по словам ненадёжна на 100%), но совпадение
+                # номеров помещений в общем техническом подполье не должно
+                # перевешивать явный текстовый признак другой подсистемы.
+                score *= SUBSYSTEM_MISMATCH_PENALTY
             if score >= MIN_PAGE_MATCH_SIMILARITY:
                 candidates.append((score, b, a))
 
@@ -189,13 +218,20 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
     before_codes = [f.discipline_code for f in before_files]
     after_codes = [f.discipline_code for f in after_files]
 
+    # Файл РД/ИД внутри раздела ОВ почти всегда посвящён одной подсистеме
+    # целиком (см. subsystem.py) — уровень файла даёт достаточно текста для
+    # надёжного сигнала, отдельная страница может быть слишком скудной.
+    after_file_leans = [subsystem_lean(" ".join(f["text"] for f in entry.text_facts)) for entry in after_files]
+
     before_pages = [
-        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT))
+        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT),
+                 room_key_set(entry, p), subsystem_lean(_page_text(entry, p)))
         for fi, entry in enumerate(before_files)
         for p in range(1, entry.pages + 1)
     ]
     after_pages = [
-        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT))
+        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT),
+                 room_key_set(entry, p), after_file_leans[fi])
         for fi, entry in enumerate(after_files)
         for p in range(1, entry.pages + 1)
     ]

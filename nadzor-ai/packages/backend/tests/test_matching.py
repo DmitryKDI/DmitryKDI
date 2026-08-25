@@ -107,6 +107,76 @@ def test_drawing_and_text_pages_never_cross_paired():
     print("OK: drawing and text pages never cross-paired even with identical vocabulary")
 
 
+def rf(page, key, name):
+    return {"page": page, "key": key, "name": name}
+
+
+def test_shared_room_number_wins_over_stronger_generic_word_overlap():
+    """Реальный случай на Nadzor_Sample: страница с десятками общих, но
+    неспецифичных слов (заголовки штампа, названия систем) набирала балл
+    Jaccard выше, чем страница, где буквально совпадает то самое помещение,
+    где находится нарушение — и нарушение терялось. Номер помещения обязан
+    перевешивать общую лексику."""
+    before = [DocumentInput(
+        "pd.pdf", 1,
+        [tf(1, "воздухозаборная шахта форкамера венткамера дренажный приямок принципиальная схема")],
+        [rf(1, "012", "Венткамера"), rf(1, "012.1", "Форкамера")],
+        "ОВ",
+    )]
+    after = [
+        DocumentInput(
+            "rd_generic.pdf", 1,
+            # Много общих слов оформления листа, но ни одного общего помещения.
+            [tf(1, "воздухозаборная шахта дренажный приямок принципиальная схема система теплоснабжения приточных установок")],
+            [rf(1, "301", "Кабинет")],
+            "ОВ",
+        ),
+        DocumentInput(
+            "rd_room_match.pdf", 1,
+            [tf(1, "техническое подполье итп")],
+            [rf(1, "012", "Венткамера")],
+            "ОВ",
+        ),
+    ]
+    pairs = match_page_pairs(before, after)
+    assert len(pairs) == 1
+    assert after[pairs[0].after_file_idx].name == "rd_room_match.pdf", pairs
+    print("OK: a shared room number outweighs stronger overlap of generic sheet-boilerplate words")
+
+
+def test_subsystem_keyword_conflict_breaks_a_room_number_tie():
+    """Реальный случай: раздел ОВ по коду один и тот же для вентиляции и
+    отопления (ОВ2.1 и ОВ1 — один раздел, см. classification.py), а
+    техническое подполье физически общее для обеих систем, поэтому номера
+    помещений сами по себе не отличают вентиляционный лист от теплового.
+    Ключевые слова подсистемы должны разрешать этот перевес — иначе лист
+    'вентиляция' может уйти в сравнение с листом по отоплению."""
+    before = [DocumentInput(
+        "pd.pdf", 1,
+        [tf(1, "венткамера форкамера приточная установка вентилятор воздуховод")],
+        [rf(1, "012", "Венткамера")],
+        "ОВ",
+    )]
+    after = [
+        DocumentInput(
+            "rd_heating.pdf", 1,
+            [tf(1, "отопление радиатор стояк отопления теплоснабжение элеватор отопительный прибор")],
+            [rf(1, "012", "Венткамера")],  # то же техническое помещение, другая система
+            "ОВ",
+        ),
+        DocumentInput(
+            "rd_ventilation.pdf", 1,
+            [tf(1, "вентиляция воздуховод приточная вытяжная система калорифер")],
+            [rf(1, "012", "Венткамера")],
+            "ОВ",
+        ),
+    ]
+    pairs = match_page_pairs(before, after)
+    assert len(pairs) == 1
+    assert after[pairs[0].after_file_idx].name == "rd_ventilation.pdf", pairs
+    print("OK: matching subsystem vocabulary breaks a room-number tie between heating and ventilation volumes")
+
+
 def test_page_kind_gating_even_when_one_side_has_no_text_pages():
     """Если у ПД нет текстовых листов вообще (только чертежи), а у РД есть и
     то, и другое — текстовые листы РД просто не с чем сравнивать, и они не
@@ -130,6 +200,8 @@ if __name__ == "__main__":
     test_positional_fallback_flags_discipline_mismatch()
     test_digit_suffix_ignored_ov21_vs_ov1()
     test_every_page_covered_when_after_side_much_larger()
+    test_shared_room_number_wins_over_stronger_generic_word_overlap()
+    test_subsystem_keyword_conflict_breaks_a_room_number_tie()
     test_drawing_and_text_pages_never_cross_paired()
     test_page_kind_gating_even_when_one_side_has_no_text_pages()
     print("ALL PASS")
