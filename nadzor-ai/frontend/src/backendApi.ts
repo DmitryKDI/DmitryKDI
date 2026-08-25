@@ -48,6 +48,10 @@ export interface BackendFinding {
   kind: 'text' | 'vision'
   label: string
   change_text: string
+  /** Ключи theme.severity. Пустая строка — модель не вернула степень внятно. */
+  severity: '' | 'critical' | 'major' | 'minor'
+  /** Что проверить или измерить на объекте. Пусто — проверять нечего. */
+  field_check: string
   reviewed_status: 'new' | 'confirmed' | 'rejected'
   created_at: string
   before_document_id: number | null

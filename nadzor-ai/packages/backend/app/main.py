@@ -50,6 +50,51 @@ def _ensure_schema_and_defaults() -> None:
 _ensure_schema_and_defaults()
 
 
+# Ключи те же, что в контракте находки (CLAUDE.md, раздел 5.2) и в
+# theme.severity фронтенда: русские подписи живут в интерфейсе, данные —
+# на латинице, иначе получилось бы два несогласованных словаря степеней.
+SEVERITY_CRITICAL = "critical"
+SEVERITY_MAJOR = "major"
+SEVERITY_MINOR = "minor"
+
+# Порядок обхода объекта: критичное первым. Неразобранная величина уходит в
+# конец, но находку не теряет — пропустить возможное нарушение хуже, чем
+# показать его без степени.
+SEVERITY_ORDER = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 2, "": 3}
+
+
+def _normalize_severity(value: object) -> str:
+    """Привести ответ модели к одной из трёх степеней.
+
+    Модель просят вернуть одно из трёх слов, но 7B-модель регулярно отвечает
+    синонимом или английским термином. Сопоставляем по корню, а незнакомое
+    значение отбрасываем в пустую строку, а не выдаём за настоящую оценку.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+
+    # Отрицание разбирается первым и по строке без пробелов и дефисов: модель
+    # пишет и «незначительно», и «не значимо», и «не критично» — во всех
+    # случаях это низшая степень. Без этого «не значимо» цеплялось за корень
+    # «значим» и самая безобидная находка вставала в начало списка обхода.
+    compact = text.replace(" ", "").replace("-", "")
+    if compact.startswith("не") and any(
+        root in compact for root in ("знач", "крит", "сущест", "важн")
+    ):
+        return SEVERITY_MINOR
+
+    for word, severity in (
+        ("крит", SEVERITY_CRITICAL), ("critical", SEVERITY_CRITICAL), ("high", SEVERITY_CRITICAL),
+        ("сущест", SEVERITY_MAJOR), ("major", SEVERITY_MAJOR), ("medium", SEVERITY_MAJOR),
+        ("значим", SEVERITY_MAJOR), ("средн", SEVERITY_MAJOR),
+        ("minor", SEVERITY_MINOR), ("low", SEVERITY_MINOR),
+    ):
+        if word in text:
+            return severity
+    return ""
+
+
 def _llm_config(db: Session) -> LlmConfig:
     s = db.query(models.Settings).first()
     if s is None:
@@ -194,16 +239,31 @@ def _run_analysis(run_id: int) -> None:
                     )
             except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
                 result = None
+            kind = "vision" if row.page_kind == "drawing" else "text"
             if result and isinstance(result.get("significant"), list):
                 for item in result["significant"]:
                     if not item.get("change"):
                         continue
                     db.add(models.Finding(
-                        run_id=run.id, pair_id=row.id,
-                        kind="vision" if row.page_kind == "drawing" else "text",
+                        run_id=run.id, pair_id=row.id, kind=kind,
                         label=item.get("label", ""), change_text=item["change"],
+                        severity=_normalize_severity(item.get("severity")),
+                        field_check=str(item.get("field_check") or "").strip(),
                         raw_llm_response=result,
                     ))
+            # Попытка внушить модели что-либо через содержимое документа —
+            # сама по себе находка и повод проверить добросовестность
+            # заявителя, а не техническая ошибка разбора (модель угроз, Б.3.5).
+            if result and result.get("injection_suspected") is True:
+                db.add(models.Finding(
+                    run_id=run.id, pair_id=row.id, kind=kind,
+                    label="Подозрение на инъекцию инструкций",
+                    change_text="В содержимом листа обнаружена попытка повлиять на "
+                                "работу анализатора. Указания из документа не выполнялись.",
+                    severity=SEVERITY_CRITICAL,
+                    field_check="Проверить добросовестность заявителя, сверить лист вручную",
+                    raw_llm_response=result,
+                ))
             run.pairs_done = i + 1
             db.commit()
 
@@ -251,7 +311,11 @@ def list_findings(run_id: int, status: str | None = None, db: Session = Depends(
     q = db.query(models.Finding).filter(models.Finding.run_id == run_id)
     if status:
         q = q.filter(models.Finding.reviewed_status == status)
-    return q.order_by(models.Finding.created_at).all()
+    # Инспектору нужен порядок обхода, а не хронология разбора: критичное
+    # первым, внутри одной степени — как нашли. Сортируем в Python, потому что
+    # порядок задан словарём, а не алфавитом колонки.
+    findings = q.order_by(models.Finding.created_at).all()
+    return sorted(findings, key=lambda f: SEVERITY_ORDER.get(f.severity, 3))
 
 
 @app.patch("/findings/{finding_id}", response_model=schemas.FindingOut)

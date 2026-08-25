@@ -4,7 +4,7 @@ import {
   backendApi, pageImageUrl, type BackendAnalysisRun, type BackendDocument, type BackendFinding, type BackendSettings,
 } from '../backendApi'
 import { useApp } from '../store'
-import { Chip, Empty, SectionCard, Skeleton } from '../components/ui'
+import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
 
 const PROVIDER_LABELS: Record<BackendSettings['provider'], string> = {
   local: 'Локальная модель (Ollama)', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google',
@@ -90,6 +90,7 @@ function FindingRow({ finding, onReview }: { finding: BackendFinding; onReview: 
         )}
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex flex-wrap items-center gap-2">
+            {finding.severity && <SeverityChip value={finding.severity} />}
             <Chip tone={finding.kind === 'vision' ? 'accent' : 'neutral'}>
               {finding.kind === 'vision' ? 'визуально' : 'текст'}
             </Chip>
@@ -100,6 +101,13 @@ function FindingRow({ finding, onReview }: { finding: BackendFinding; onReview: 
             {finding.reviewed_status !== 'new' && <Chip>{REVIEW_LABELS[finding.reviewed_status]}</Chip>}
           </div>
           <p className="text-ink-muted">{finding.change_text}</p>
+          {finding.field_check && (
+            // Ради этой строки инспектор и открывает список: она говорит, что
+            // сделать на объекте, а не что различается на бумаге.
+            <p className="mt-1.5 border-l-2 border-accent-line pl-2 text-xs text-ink-muted">
+              <span className="font-medium text-ink">На объекте: </span>{finding.field_check}
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button

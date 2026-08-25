@@ -75,6 +75,11 @@ class Finding(Base):
     kind: Mapped[str] = mapped_column(String)  # 'text' | 'vision'
     label: Mapped[str] = mapped_column(String)
     change_text: Mapped[str] = mapped_column(String)
+    # Порядок обхода объекта и действие на месте. Пустая строка, а не NULL:
+    # модель может не вернуть поле, и на экране это должно читаться как
+    # «не указано», без ветвления на None в каждом месте.
+    severity: Mapped[str] = mapped_column(String, default="")
+    field_check: Mapped[str] = mapped_column(String, default="")
     raw_llm_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     reviewed_status: Mapped[str] = mapped_column(String, default="new")  # new|confirmed|rejected
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)

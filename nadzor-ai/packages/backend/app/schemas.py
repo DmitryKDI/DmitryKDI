@@ -43,6 +43,8 @@ class FindingOut(BaseModel):
     kind: str
     label: str
     change_text: str
+    severity: str
+    field_check: str
     reviewed_status: str
     created_at: dt.datetime
     before_document_id: int | None
