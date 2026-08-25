@@ -1,0 +1,91 @@
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.classification import classify_document, render_stamp_crop_png
+from app.llm import LlmConfig
+from app.vision import compare_page_pair, make_llm_stamp_classifier, render_page_to_data_url
+
+SAMPLE_DIR = Path(
+    "/tmp/claude-0/-home-user-DmitryKDI/0870a421-62c2-59a8-8978-c9163f520b16/scratchpad"
+)
+
+
+def test_render_page_to_data_url_real_pdf():
+    data_url = render_page_to_data_url(str(SAMPLE_DIR / "rd_floor1.pdf"), 1)
+    assert data_url.startswith("data:image/png;base64,")
+    assert len(data_url) > 5000  # реальная картинка листа, не заглушка
+    print("OK: real page renders to a substantial PNG data URL")
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def test_stamp_classifier_wired_into_classify_document():
+    """Проверяет весь путь: classify_document зовёт vision_stamp_fn только
+    когда текст не даёт кода, тот в свою очередь реально шлёт картинку штампа
+    через llm.call_llm_json (замокан) и код долетает обратно как
+    discipline_code с source='stamp_vision'."""
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse(
+            {"choices": [{"message": {"content": '{"discipline_code": "ОВ", "sheet_name": "План 1-го этажа (вентиляция)"}'}}]}
+        )
+
+    config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
+    stamp_classifier = make_llm_stamp_classifier(config)
+
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        result = classify_document(str(SAMPLE_DIR / "rd_floor1.pdf"), "rd_floor1.pdf", vision_stamp_fn=stamp_classifier)
+
+    assert result.discipline_code == "ОВ", result
+    assert result.source == "stamp_vision"
+    content = captured["json"]["messages"][1]["content"]
+    image_blocks = [c for c in content if c.get("type") == "image_url"]
+    assert len(image_blocks) == 1, "stamp crop should be sent as exactly one image"
+    print("OK: classify_document -> vision stamp classifier -> llm.call_llm_json wired correctly end to end")
+
+
+def test_compare_page_pair_sends_two_images_with_context():
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse(
+            {"choices": [{"message": {"content": '{"significant": [], "checked_total": 1, "significant_total": 0}'}}]}
+        )
+
+    config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        result = compare_page_pair(
+            str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
+            str(SAMPLE_DIR / "rd_floor2_heating.pdf"), 1,
+            config, context="раздел ОВ, план этажа",
+        )
+
+    assert result == {"significant": [], "checked_total": 1, "significant_total": 0}
+    content = captured["json"]["messages"][1]["content"]
+    image_blocks = [c for c in content if c.get("type") == "image_url"]
+    assert len(image_blocks) == 2
+    text_block = next(c for c in content if c.get("type") == "text")
+    assert "раздел ОВ" in text_block["text"]
+    print("OK: page-pair comparison sends both real page images plus classification context in the prompt")
+
+
+if __name__ == "__main__":
+    test_render_page_to_data_url_real_pdf()
+    test_stamp_classifier_wired_into_classify_document()
+    test_compare_page_pair_sends_two_images_with_context()
+    print("ALL PASS")

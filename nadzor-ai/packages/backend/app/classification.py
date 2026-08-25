@@ -1,0 +1,189 @@
+"""Определение раздела документа по шифру — из имени файла, титульного листа
+и штампа чертежа.
+
+Портировано из проверенной логики клиентского браузерного инструмента
+(nadzor-browser/app.js: scanTextForDisciplineCodes/extractDisciplineCode),
+с двумя добавлениями по итогам разбора реальных образцов документов:
+
+1. На исполнительной документации штамп в правом нижнем углу листа часто —
+   растровая картинка (флаттенированный скан/экспорт из CAD), а не текст:
+   на реальном листе `АНО/150321/1-РД-ОВ1` PyMuPDF не находит в области
+   штампа ни слова текстом — там 4 изображения. Поэтому для такого случая
+   нужен запасной путь: распознавание кодового обозначения через
+   vision-модель по вырезанному фрагменту штампа, а не по тексту.
+2. На титульном листе тома шифр обычно присутствует прямым текстом (в
+   отличие от штампа на листе чертежа) — поэтому первую страницу документа
+   стоит проверять отдельно и с повышенным весом, до похода в штамп.
+
+Обозначение раздела в конце шифра — это буквенный код (АР, ОВ, КР и т.п.),
+поэтому сравниваем только его, отбрасывая последующие цифры тома/подраздела
+(«ОВ2.1» и «ОВ1» — один и тот же раздел ОВ), как того требует оформление
+шифров по ГОСТ Р 21.1101 (код раздела — всегда последний сегмент).
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+import pymupdf
+
+DISCIPLINE_CODES = [
+    "НВК", "ЭОМ", "АПС", "ОПС", "СКС", "ПОС",
+    "КЖ", "КМ", "АР", "АС", "КР", "ОВ", "ВК", "ЭС", "СС", "ГП", "ТХ", "ПБ",
+]
+DISCIPLINE_CODE_SET = set(DISCIPLINE_CODES)
+
+_TOKEN_SPLIT_RE = re.compile(r"[^A-Za-zА-Яа-яЁё0-9.\-]+")
+_SEGMENT_SPLIT_RE = re.compile(r"[.\-]")
+_TRAILING_DIGITS_RE = re.compile(r"\d+$")
+
+# Табличные графы штампа по ГОСТ Р 21.1101 — если они есть текстом на листе,
+# это лист чертежа с текстовым (не растровым) штампом, а не титульный лист:
+# сканировать его целиком на код раздела опасно (см. TITLE_PAGE_MAX_BLOCKS).
+# «шифр» намеренно не входит сюда — оно легитимно встречается и на титульном
+# листе тома, и по нему нельзя отличить штамп от титульника.
+STAMP_KEYWORDS_RE = re.compile(r"стадия|гип\b|гап\b|изм\.|разраб", re.IGNORECASE)
+
+MAX_STAMP_SCAN_PAGES = 5  # не сканируем текст штампа на всех 177 страницах тома
+MIN_CODE_SCORE = 3        # порог уверенности — как в браузерном инструменте
+
+# Настоящий титульный лист малонасыщен текстом (у реального тома ~22 текстовых
+# блока); лист чертежа с экспликацией помещений — под сотни блоков (у
+# реального листа — 476). Если блоков много, это не титульный лист, а
+# содержательный чертёж, и сканировать его целиком на код раздела опасно:
+# аббревиатуры категорий помещений («ВК», «В2» и т.п.) дают ложные совпадения.
+TITLE_PAGE_MAX_BLOCKS = 60
+
+
+def scan_text_for_discipline_codes(text: str) -> list[str]:
+    found: list[str] = []
+    for token in _TOKEN_SPLIT_RE.split(text or ""):
+        if not token:
+            continue
+        segments = [s for s in _SEGMENT_SPLIT_RE.split(token) if s]
+        for seg in reversed(segments):
+            raw = seg.upper()
+            core = _TRAILING_DIGITS_RE.sub("", raw)
+            if core in DISCIPLINE_CODE_SET:
+                found.append(core)
+                break
+            if raw in DISCIPLINE_CODE_SET:
+                found.append(raw)
+                break
+    return found
+
+
+# Между таблицей экспликации помещений (правый низ, но выше) и собственно
+# штампом (самый угол) на реальных листах есть заметный зазор — узкая рамка
+# для текстового скана держит совпадения только внутри настоящего штампа,
+# не задевая соседнюю таблицу; для vision-вырезки берём с запасом шире, чтобы
+# не обрезать штамп по компоновкам, отличным от увиденной в образцах.
+def _stamp_text_scan_rect(page: "pymupdf.Page") -> "pymupdf.Rect":
+    r = page.rect
+    return pymupdf.Rect(r.width * 0.65, r.height * 0.90, r.width, r.height)
+
+
+def _stamp_vision_crop_rect(page: "pymupdf.Page") -> "pymupdf.Rect":
+    r = page.rect
+    return pymupdf.Rect(r.width * 0.55, r.height * 0.82, r.width, r.height)
+
+
+def _stamp_region_text(page: "pymupdf.Page") -> str:
+    rect = _stamp_text_scan_rect(page)
+    parts = []
+    for b in page.get_text("blocks"):
+        bx0, by0 = b[0], b[1]
+        if bx0 >= rect.x0 and by0 >= rect.y0:
+            parts.append(b[4])
+    return " ".join(parts)
+
+
+def render_stamp_crop_png(page: "pymupdf.Page", zoom: float = 2.0) -> bytes:
+    """Растровая вырезка штампа для vision-fallback, когда текста там нет."""
+    rect = _stamp_vision_crop_rect(page)
+    pix = page.get_pixmap(clip=rect, matrix=pymupdf.Matrix(zoom, zoom))
+    return pix.tobytes("png")
+
+
+@dataclass
+class ClassificationResult:
+    discipline_code: Optional[str]
+    source: str  # 'filename' | 'title_page' | 'stamp_text' | 'stamp_vision' | 'none'
+    scores: dict[str, int] = field(default_factory=dict)
+    used_vision: bool = False
+
+
+def classify_document(
+    pdf_path: str,
+    filename: str,
+    vision_stamp_fn: Optional[Callable[[bytes], Optional[str]]] = None,
+) -> ClassificationResult:
+    """vision_stamp_fn(png_bytes) -> код раздела или None. Вызывается только
+    если текстовых сигналов недостаточно — держит стоимость по vision-вызовам
+    низкой (один на документ, а не на страницу)."""
+    scores: dict[str, int] = {}
+
+    def bump(code: str, weight: int) -> None:
+        scores[code] = scores.get(code, 0) + weight
+
+    for code in scan_text_for_discipline_codes(filename):
+        bump(code, 3)
+    best = _best_code(scores)
+    if best is not None:
+        return ClassificationResult(best, "filename", scores)
+
+    doc = pymupdf.open(pdf_path)
+    try:
+        if doc.page_count == 0:
+            return ClassificationResult(None, "none", scores)
+
+        # Титульный лист: тот, что идёт до первого листа со штампом в правом
+        # нижнем углу — на нём шифр обычно напечатан прямым текстом, это
+        # самый дешёвый и надёжный сигнал после имени файла.
+        first_page = doc[0]
+        first_page_text = first_page.get_text("text")
+        first_page_block_count = len(first_page.get_text("blocks"))
+        is_plausible_title_page = (
+            first_page_block_count <= TITLE_PAGE_MAX_BLOCKS
+            and not STAMP_KEYWORDS_RE.search(first_page_text)
+        )
+        if is_plausible_title_page:
+            for code in scan_text_for_discipline_codes(first_page_text):
+                bump(code, 3)
+
+        best = _best_code(scores)
+        if best is not None:
+            return ClassificationResult(best, "title_page", scores)
+
+        # Штамп текстом — сканируем первые несколько листов, не весь том.
+        for i in range(min(doc.page_count, MAX_STAMP_SCAN_PAGES)):
+            stamp_text = _stamp_region_text(doc[i])
+            for code in scan_text_for_discipline_codes(stamp_text):
+                bump(code, 1)
+
+        best = _best_code(scores)
+        if best is not None:
+            return ClassificationResult(best, "stamp_text", scores)
+
+        # Штамп — картинка (типично для исполнительной документации, см.
+        # докстринг модуля): без vision-модели код не прочитать.
+        if vision_stamp_fn is not None:
+            crop = render_stamp_crop_png(doc[0])
+            vision_code = vision_stamp_fn(crop)
+            if vision_code:
+                code = vision_code.strip().upper()
+                if code in DISCIPLINE_CODE_SET:
+                    bump(code, 3)
+                    return ClassificationResult(code, "stamp_vision", scores, used_vision=True)
+
+        return ClassificationResult(None, "none", scores)
+    finally:
+        doc.close()
+
+
+def _best_code(scores: dict[str, int]) -> Optional[str]:
+    if not scores:
+        return None
+    code, score = max(scores.items(), key=lambda kv: kv[1])
+    return code if score >= MIN_CODE_SCORE else None

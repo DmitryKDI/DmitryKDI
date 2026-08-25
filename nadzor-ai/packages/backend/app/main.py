@@ -1,0 +1,280 @@
+"""FastAPI-приложение: загрузка документов, запуск анализа, находки, настройки.
+
+Однопользовательский локальный инструмент — без RBAC/аудит-цепочки (это
+намеренное упрощение по сравнению с packages/api в этом же репозитории; см.
+обсуждение архитектуры в сессии — этот бэкенд не заменяет packages/api, а
+существует отдельно как более лёгкий вариант под конкретную механику
+сравнения документов).
+"""
+from __future__ import annotations
+
+import shutil
+import uuid
+from pathlib import Path
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+
+from . import models, schemas
+from .classification import classify_document
+from .db import get_session, init_db
+from .diffing import find_text_differences
+from .documents import extract_document_facts
+from .llm import LlmConfig
+from .matching import DocumentInput, match_page_pairs
+from .vision import compare_page_pair, make_llm_stamp_classifier
+
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+app = FastAPI(title="НАДЗОР.ИИ — backend")
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+)
+
+
+def _ensure_schema_and_defaults() -> None:
+    # На module-level, а не только в @app.on_event("startup") — тестовые
+    # клиенты (и не только) не всегда гарантированно проигрывают lifespan-
+    # события перед первым запросом, а без таблиц первый же INSERT падает.
+    init_db()
+    db = next(get_session())
+    try:
+        if db.query(models.Settings).count() == 0:
+            db.add(models.Settings(id=1, provider="local", base_url="", model="", api_key=""))
+            db.commit()
+    finally:
+        db.close()
+
+
+_ensure_schema_and_defaults()
+
+
+def _llm_config(db: Session) -> LlmConfig:
+    s = db.query(models.Settings).first()
+    if s is None:
+        return LlmConfig(provider="local")
+    return LlmConfig(provider=s.provider, api_key=s.api_key, base_url=s.base_url, model=s.model)
+
+
+# ---------- Документы ----------
+
+
+@app.post("/documents", response_model=schemas.DocumentOut)
+def upload_document(side: str, file: UploadFile, db: Session = Depends(get_session)):
+    if side not in ("before", "after"):
+        raise HTTPException(400, "side must be 'before' or 'after'")
+
+    # Оригинальное имя файла — только отображаемые метаданные (используется в
+    # классификации по имени и в подписях находок), на диск не идёт вообще:
+    # приходит от клиента и не должно участвовать в построении пути.
+    original_name = Path(file.filename or "document.pdf").name
+    dest = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    doc = models.Document(name=original_name, side=side, file_path=str(dest), status="parsing")
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+    try:
+        facts = extract_document_facts(str(dest), original_name)
+        config = _llm_config(db)
+        vision_fn = make_llm_stamp_classifier(config) if config.provider else None
+        classification = classify_document(str(dest), original_name, vision_stamp_fn=vision_fn)
+        doc.pages = facts.pages
+        doc.discipline_code = classification.discipline_code
+        doc.classification_source = classification.source
+        doc.status = "ok"
+    except Exception as exc:  # noqa: BLE001 — на распознавании не валим загрузку
+        doc.status = "error"
+        doc.classification_source = str(exc)
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+@app.get("/documents", response_model=list[schemas.DocumentOut])
+def list_documents(db: Session = Depends(get_session)):
+    return db.query(models.Document).order_by(models.Document.uploaded_at.desc()).all()
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(document_id: int, db: Session = Depends(get_session)):
+    doc = db.get(models.Document, document_id)
+    if doc is None:
+        raise HTTPException(404, "not found")
+    Path(doc.file_path).unlink(missing_ok=True)
+    db.delete(doc)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- Анализ ----------
+
+
+def _run_analysis(run_id: int) -> None:
+    db = next(get_session())
+    try:
+        run = db.get(models.AnalysisRun, run_id)
+        if run is None:
+            return
+        before_docs = [db.get(models.Document, i) for i in run.before_document_ids]
+        after_docs = [db.get(models.Document, i) for i in run.after_document_ids]
+
+        before_facts = [extract_document_facts(d.file_path, d.name) for d in before_docs]
+        after_facts = [extract_document_facts(d.file_path, d.name) for d in after_docs]
+
+        before_inputs = [
+            DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code)
+            for d, f in zip(before_docs, before_facts)
+        ]
+        after_inputs = [
+            DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code)
+            for d, f in zip(after_docs, after_facts)
+        ]
+        pairs = match_page_pairs(before_inputs, after_inputs)
+        run.pairs_total = len(pairs)
+        db.commit()
+
+        pair_rows = []
+        for p in pairs:
+            row = models.PagePair(
+                run_id=run.id,
+                before_document_id=before_docs[p.before_file_idx].id,
+                before_page=p.before_page,
+                after_document_id=after_docs[p.after_file_idx].id,
+                after_page=p.after_page,
+                matched_by=p.matched_by,
+                score=p.score,
+                discipline_mismatch=p.discipline_mismatch,
+            )
+            db.add(row)
+            pair_rows.append(row)
+        db.commit()
+
+        # Текстовые расхождения — по всем сопоставленным парам файлов целиком
+        # (не только внутри одной страницы), как в браузерном инструменте.
+        before_entries = [
+            {"page": f["page"], "text": f["text"], "file": d.name}
+            for d, facts in zip(before_docs, before_facts)
+            for f in facts.text_facts
+        ]
+        after_entries = [
+            {"page": f["page"], "text": f["text"], "file": d.name}
+            for d, facts in zip(after_docs, after_facts)
+            for f in facts.text_facts
+        ]
+        for d in find_text_differences(before_entries, after_entries):
+            db.add(models.Finding(
+                run_id=run.id, pair_id=None, kind="text",
+                label=f"{d.before.file} · с. {d.before.page} ↔ {d.after.file} · с. {d.after.page}",
+                change_text="; ".join(op.text for op in d.diff if op.type != "eq")[:2000],
+            ))
+        db.commit()
+
+        config = _llm_config(db)
+        for i, row in enumerate(pair_rows):
+            before_doc = next(d for d in before_docs if d.id == row.before_document_id)
+            after_doc = next(d for d in after_docs if d.id == row.after_document_id)
+            context = f"раздел {before_doc.discipline_code or '?'}"
+            if row.matched_by == "position" and row.discipline_mismatch:
+                context += " (сопоставлено по позиции, разделы штампа не совпадают — проверьте применимость)"
+            try:
+                result = compare_page_pair(
+                    before_doc.file_path, row.before_page,
+                    after_doc.file_path, row.after_page,
+                    config, context=context,
+                )
+            except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
+                result = None
+            if result and isinstance(result.get("significant"), list):
+                for item in result["significant"]:
+                    if not item.get("change"):
+                        continue
+                    db.add(models.Finding(
+                        run_id=run.id, pair_id=row.id, kind="vision",
+                        label=item.get("label", ""), change_text=item["change"],
+                        raw_llm_response=result,
+                    ))
+            run.pairs_done = i + 1
+            db.commit()
+
+        run.status = "done"
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        run = db.get(models.AnalysisRun, run_id)
+        if run is not None:
+            run.status = "error"
+            run.error = str(exc)
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/analysis-runs", response_model=schemas.AnalysisRunOut)
+def create_analysis_run(
+    body: schemas.AnalysisRunCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_session)
+):
+    run = models.AnalysisRun(
+        before_document_ids=body.before_document_ids,
+        after_document_ids=body.after_document_ids,
+        status="running",
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    background_tasks.add_task(_run_analysis, run.id)
+    return run
+
+
+@app.get("/analysis-runs/{run_id}", response_model=schemas.AnalysisRunOut)
+def get_analysis_run(run_id: int, db: Session = Depends(get_session)):
+    run = db.get(models.AnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    return run
+
+
+# ---------- Находки ----------
+
+
+@app.get("/findings", response_model=list[schemas.FindingOut])
+def list_findings(run_id: int, status: str | None = None, db: Session = Depends(get_session)):
+    q = db.query(models.Finding).filter(models.Finding.run_id == run_id)
+    if status:
+        q = q.filter(models.Finding.reviewed_status == status)
+    return q.order_by(models.Finding.created_at).all()
+
+
+@app.patch("/findings/{finding_id}", response_model=schemas.FindingOut)
+def update_finding(finding_id: int, body: schemas.FindingUpdate, db: Session = Depends(get_session)):
+    finding = db.get(models.Finding, finding_id)
+    if finding is None:
+        raise HTTPException(404, "not found")
+    finding.reviewed_status = body.reviewed_status
+    db.commit()
+    db.refresh(finding)
+    return finding
+
+
+# ---------- Настройки ----------
+
+
+@app.get("/settings", response_model=schemas.SettingsOut)
+def get_settings(db: Session = Depends(get_session)):
+    return db.query(models.Settings).first()
+
+
+@app.put("/settings", response_model=schemas.SettingsOut)
+def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_session)):
+    s = db.query(models.Settings).first()
+    s.provider = body.provider
+    s.base_url = body.base_url
+    s.model = body.model
+    s.api_key = body.api_key
+    db.commit()
+    db.refresh(s)
+    return s
