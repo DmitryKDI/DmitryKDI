@@ -26,14 +26,29 @@ function DisciplineBadge({ doc }: { doc: BackendDocument }) {
   )
 }
 
+interface PendingUpload { name: string; startedAt: number }
+
 function UploadZone({
-  title, subtitle, docs, onFiles, onRemove, uploading,
+  title, subtitle, docs, onFiles, onRemove, pending,
 }: {
   title: string; subtitle: string; docs: BackendDocument[]
-  onFiles: (files: FileList | null) => void; onRemove: (id: number) => void; uploading: boolean
+  onFiles: (files: FileList | null) => void; onRemove: (id: number) => void
+  pending: PendingUpload[]
 }) {
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  // Тикает, пока есть хоть один файл в очереди — секундомер у "Обрабатывается…"
+  // это доказательство, что процесс идёт, а не завис: большой PDF (сотни
+  // листов) разбирается синхронно на бэкенде и может занимать десятки секунд
+  // без единого промежуточного ответа сервера.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!pending.length) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [pending.length])
+
   return (
     <SectionCard title={title} subtitle={subtitle}>
       <div
@@ -44,14 +59,17 @@ function UploadZone({
         onDrop={(e) => { e.preventDefault(); setDragOver(false); onFiles(e.dataTransfer.files) }}
       >
         <p className="text-sm font-medium">Перетащите PDF сюда</p>
-        <button type="button" className="btn-ghost mt-3" disabled={uploading}
-          onClick={() => fileInput.current?.click()}>
-          {uploading ? 'Загрузка…' : 'Выбрать файлы'}
+        {/* Кнопка выбора не блокируется во время загрузки: файлы уходят на
+            сервер по одному в очереди, поэтому можно докидывать ещё, не
+            дожидаясь конца текущей — именно это раньше выглядело как "не
+            получается добавить ещё". */}
+        <button type="button" className="btn-ghost mt-3" onClick={() => fileInput.current?.click()}>
+          Выбрать файлы
         </button>
         <input ref={fileInput} type="file" multiple hidden accept=".pdf"
           onChange={(e) => { onFiles(e.target.files); e.target.value = '' }} />
       </div>
-      {docs.length > 0 && (
+      {(docs.length > 0 || pending.length > 0) && (
         <ul className="mt-3 space-y-2">
           {docs.map((doc) => (
             <li key={doc.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-line px-3 py-2 text-sm">
@@ -63,6 +81,16 @@ function UploadZone({
               <span className="flex items-center gap-2">
                 <DisciplineBadge doc={doc} />
                 <button className="text-xs text-ink-faint hover:text-critical" onClick={() => onRemove(doc.id)} aria-label="Удалить">✕</button>
+              </span>
+            </li>
+          ))}
+          {pending.map((p, i) => (
+            <li key={`${p.name}-${p.startedAt}`}
+              className="flex items-center gap-2 rounded-md border border-dashed border-surface-line px-3 py-2 text-sm text-ink-faint">
+              <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+              <span className="min-w-0 flex-1 truncate" title={p.name}>{p.name}</span>
+              <span className="shrink-0">
+                {i === 0 ? `обрабатывается… ${Math.max(0, Math.round((now - p.startedAt) / 1000))} с` : 'в очереди'}
               </span>
             </li>
           ))}
@@ -127,8 +155,8 @@ export default function NewAnalysis() {
   const { pushToast } = useApp()
   const [beforeDocs, setBeforeDocs] = useState<BackendDocument[]>([])
   const [afterDocs, setAfterDocs] = useState<BackendDocument[]>([])
-  const [uploadingBefore, setUploadingBefore] = useState(false)
-  const [uploadingAfter, setUploadingAfter] = useState(false)
+  const [pendingBefore, setPendingBefore] = useState<PendingUpload[]>([])
+  const [pendingAfter, setPendingAfter] = useState<PendingUpload[]>([])
   const [aiOpen, setAiOpen] = useState(false)
   const [runId, setRunId] = useState<number | null>(null)
 
@@ -144,12 +172,20 @@ export default function NewAnalysis() {
 
   const uploadTo = async (side: 'before' | 'after', files: FileList | null) => {
     if (!files || !files.length) return
-    const setUploading = side === 'before' ? setUploadingBefore : setUploadingAfter
     const setDocs = side === 'before' ? setBeforeDocs : setAfterDocs
-    setUploading(true)
-    for (const file of Array.from(files)) {
+    const setPending = side === 'before' ? setPendingBefore : setPendingAfter
+
+    // Разбор PDF на бэкенде идёт синхронно в одном HTTP-запросе (см.
+    // packages/backend/app/main.py, upload_document) — сотни листов могут
+    // занять десятки секунд без единого промежуточного ответа сервера.
+    // Показываем всю партию в очереди сразу, а не молчим до первого ответа.
+    const fileList = Array.from(files)
+    const queued: PendingUpload[] = fileList.map((f) => ({ name: f.name, startedAt: Date.now() }))
+    setPending((prev) => [...prev, ...queued])
+
+    for (let i = 0; i < fileList.length; i++) {
       try {
-        const doc = await backendApi.uploadDocument(side, file)
+        const doc = await backendApi.uploadDocument(side, fileList[i])
         setDocs((prev) => [...prev, doc])
         if (doc.status === 'error') {
           pushToast(`«${doc.name}»: не удалось разобрать документ`, 'error')
@@ -157,8 +193,9 @@ export default function NewAnalysis() {
       } catch (e) {
         pushToast(e instanceof Error ? e.message : 'Не удалось загрузить файл', 'error')
       }
+      const done = queued[i]
+      setPending((prev) => prev.filter((p) => p !== done))
     }
-    setUploading(false)
   }
 
   const removeFrom = async (side: 'before' | 'after', id: number) => {
@@ -208,10 +245,10 @@ export default function NewAnalysis() {
       <div className="space-y-4 lg:col-span-2">
         <UploadZone title="1. Проектная документация (ПД)" subtitle="Комплект «до» — эталон, с которым сравниваем"
           docs={beforeDocs} onFiles={(f) => uploadTo('before', f)} onRemove={(id) => removeFrom('before', id)}
-          uploading={uploadingBefore} />
+          pending={pendingBefore} />
         <UploadZone title="2. Рабочая / исполнительная документация (РД/ИД)" subtitle="Комплект «после» — что проверяем на соответствие"
           docs={afterDocs} onFiles={(f) => uploadTo('after', f)} onRemove={(id) => removeFrom('after', id)}
-          uploading={uploadingAfter} />
+          pending={pendingAfter} />
 
         <SectionCard title="Оценка расхождений" subtitle="Автоматический подбор пар листов по разделу (шифру), затем сравнение — без разбивки по помещениям">
           {runId === null && <p className="text-sm text-ink-muted">Запустите анализ, чтобы увидеть расхождения.</p>}

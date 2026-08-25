@@ -58,15 +58,23 @@ say "Запускаю серверы"
 
 # Сайт целиком. APP_ROOT нужен, чтобы сервер нашёл config/ и data/ при любом
 # текущем каталоге; PYTHONPATH — чтобы пакеты импортировались как `api.*`.
+# --reload следит только за packages/ (исходники), не за всем деревом:
+# наблюдение за корнем зацепило бы каждую запись в data/ и .venv/, вызывая
+# перезапуск на любой загрузке документа. packages/backend исключён отдельно
+# — у него свои uploads/ и nadzor.db, за которые следит уже второй процесс.
 PYTHONPATH="$ROOT/packages" APP_ROOT="$ROOT" \
   ./.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 \
+  --reload --reload-dir "$ROOT/packages" --reload-exclude "$ROOT/packages/backend/*" \
   >"$LOGS/site.log" 2>&1 &
 PIDS+=($!)
 
 # Сравнение документов. Зависимости — подмножество общего requirements.txt тех
 # же версий, поэтому окружение Python одно на оба сервера, а не два.
+# reload-dir сужен до app/ — соседние uploads/ и nadzor.db меняются на
+# каждую загрузку файла и не должны перезапускать сервер посреди анализа.
 (cd packages/backend && PYTHONPATH="$ROOT/packages/backend" \
-  "$ROOT/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8010) \
+  "$ROOT/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8010 \
+  --reload --reload-dir "$ROOT/packages/backend/app") \
   >"$LOGS/compare.log" 2>&1 &
 PIDS+=($!)
 

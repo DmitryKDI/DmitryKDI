@@ -33,6 +33,11 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
 def _ensure_schema_and_defaults() -> None:
     # На module-level, а не только в @app.on_event("startup") — тестовые
     # клиенты (и не только) не всегда гарантированно проигрывают lifespan-
