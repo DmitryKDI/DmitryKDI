@@ -42,6 +42,15 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
-    proxy: { '/api': { target: process.env.VITE_API_URL || 'http://localhost:8000', changeOrigin: true } },
+    proxy: {
+      '/api': { target: process.env.VITE_API_URL || 'http://localhost:8000', changeOrigin: true },
+      // Отдельный лёгкий бэкенд (packages/backend) — сравнение документов,
+      // без RBAC/аудита; см. NewAnalysis.tsx и backendApi.ts.
+      '/backend': {
+        target: process.env.VITE_BACKEND_URL || 'http://localhost:8010',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/backend/, ''),
+      },
+    },
   },
 })
