@@ -75,6 +75,31 @@ export default function Shell({ children }: { children: ReactNode }) {
     navigate('/login')
   }
 
+  // Локальная сессия (см. Login.tsx «Открыть «Новый анализ»») работает только
+  // с packages/backend — весь остальной пункт меню (дашборд, журналы и т.п.)
+  // требует packages/api, которого на домашнем ПК скорее всего нет и не
+  // будет. Показывать ссылки, которые заведомо упадут с «Failed to fetch»,
+  // хуже, чем не показывать их вовсе — поэтому здесь отдельная, минимальная
+  // оболочка без бокового меню.
+  if (principal?.source === 'local') {
+    return (
+      <div className="flex min-h-screen flex-col bg-surface-muted">
+        <header className="no-print sticky top-0 z-20 flex h-14 items-center gap-3 border-b
+          border-surface-line bg-surface px-4">
+          <img src="/icon.svg" alt="" className="h-7 w-7" />
+          <span className="text-sm font-semibold">НАДЗОР.ИИ — сравнение документов (локально)</span>
+          <div className="ml-auto flex items-center gap-3">
+            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => { setSession(null, []); navigate('/login') }}>
+              Выход
+            </button>
+          </div>
+        </header>
+        <main className="min-w-0 flex-1 p-4">{children}</main>
+        <Toasts />
+      </div>
+    )
+  }
+
   return (
     <div className="flex min-h-screen bg-surface-muted">
       <aside className={`no-print sticky top-0 hidden h-screen shrink-0 border-r border-surface-line

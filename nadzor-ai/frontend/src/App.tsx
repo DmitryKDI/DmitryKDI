@@ -24,6 +24,12 @@ function Protected({ children }: { children: React.ReactNode }) {
   const principal = useApp((s) => s.principal)
   const location = useLocation()
   if (!getToken() || !principal) return <Navigate to="/login" state={{ from: location }} replace />
+  // Локальная сессия умеет только «Новый анализ» — остальные экраны требуют
+  // packages/api, которого при этом входе нет и не будет. Не пускаем на них
+  // даже по прямой ссылке/истории браузера, а не только прячем в меню.
+  if (principal.source === 'local' && location.pathname !== '/analysis/new') {
+    return <Navigate to="/analysis/new" replace />
+  }
   return <Shell>{children}</Shell>
 }
 
