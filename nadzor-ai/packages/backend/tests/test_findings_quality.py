@@ -83,7 +83,7 @@ def test_text_compare_wraps_document_in_untrusted_container():
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["user"] = json["messages"][1]["content"]
-        return _FakeResponse({"choices": [{"message": {"content": '{"significant": []}'}}]})
+        return _FakeResponse({"message": {"content": '{"significant": []}'}})
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
         compare_text_pair("бетон B30", "бетон B25", LlmConfig(provider="local"))
@@ -101,7 +101,7 @@ def _run_analysis_with(llm_content: str) -> list[dict]:
         system = json["messages"][0]["content"]
         content = ('{"discipline_code": "ОВ", "sheet_name": "План"}'
                    if "штамп" in system else llm_content)
-        return _FakeResponse({"choices": [{"message": {"content": content}}]})
+        return _FakeResponse({"message": {"content": content}})
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
         docs = {}

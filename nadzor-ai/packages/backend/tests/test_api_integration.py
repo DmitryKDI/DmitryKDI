@@ -48,7 +48,7 @@ def fake_llm_post(url, json=None, headers=None, timeout=None):
             '{"significant": [{"label": "H-1", "change": "Изменена конфигурация воздуховода"}],'
             ' "noise_note": "", "checked_total": 1, "significant_total": 1}'
         )
-    return _FakeResponse({"choices": [{"message": {"content": content}}]})
+    return _FakeResponse({"message": {"content": content}})
 
 
 def upload(side: str, path: Path):

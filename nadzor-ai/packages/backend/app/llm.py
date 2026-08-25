@@ -84,7 +84,8 @@ def _image_content_block(provider: str, data_url: str) -> dict:
         header, b64data = data_url.split(",", 1)
         mime = header.split(";")[0].split(":")[1]
         return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64data}}
-    # local (OpenAI-совместимый) и openai — общий image_url формат
+    # openai — единственный оставшийся потребитель этого формата (local
+    # использует родной формат Ollama, см. call_llm_json)
     return {"type": "image_url", "image_url": {"url": data_url}}
 
 
@@ -117,8 +118,32 @@ def call_llm_json(
     model = config.resolved_model()
     images = images or []
 
-    if provider == "local" or provider == "openai":
-        base_url = config.resolved_base_url() if provider == "local" else "https://api.openai.com/v1"
+    if provider == "local":
+        # Ollama через свой родной /api/chat, не через OpenAI-совместимый
+        # /v1/chat/completions: реальный случай на боевой машине — та ветка
+        # молча теряла num_ctx (в исходниках Ollama ChatCompletionRequest
+        # такого поля вообще нет, JSON просто отбрасывает незнакомый ключ),
+        # поэтому каждое сравнение с двумя картинками листа падало 400-й
+        # ошибкой по нехватке контекста. options.num_ctx у родного эндпоинта
+        # поддерживается всегда и не зависит от версии совместимого слоя.
+        root = config.resolved_base_url()
+        if root.endswith("/v1"):
+            root = root[: -len("/v1")]
+        message: dict = {"role": "user", "content": user_text}
+        if images:
+            message["images"] = [img.split(",", 1)[1] if "," in img else img for img in images]
+        body = {
+            "model": model,
+            "messages": [{"role": "system", "content": system_prompt}, message],
+            "format": "json",
+            "stream": False,
+            "options": {"num_ctx": LOCAL_NUM_CTX},
+        }
+        resp = _post_json(f"{root}/api/chat", json=body, headers={"Content-Type": "application/json"}, timeout=timeout)
+        data = resp.json()
+        return extract_json_object(data["message"]["content"])
+
+    if provider == "openai":
         content: list[dict] = [{"type": "text", "text": user_text}]
         for img in images:
             content.append(_image_content_block(provider, img))
@@ -130,12 +155,8 @@ def call_llm_json(
             ],
             "response_format": {"type": "json_object"},
         }
-        if provider == "local":
-            body["num_ctx"] = LOCAL_NUM_CTX
-        headers = {"Content-Type": "application/json"}
-        if provider == "openai":
-            headers["Authorization"] = f"Bearer {config.api_key}"
-        resp = _post_json(f"{base_url}/chat/completions", json=body, headers=headers, timeout=timeout)
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
+        resp = _post_json("https://api.openai.com/v1/chat/completions", json=body, headers=headers, timeout=timeout)
         data = resp.json()
         text = data["choices"][0]["message"]["content"]
         return extract_json_object(text)

@@ -37,33 +37,42 @@ class _FakeResponse:
         return self._payload
 
 
-def test_local_provider_request_shape_and_no_auth_header():
+def test_local_provider_posts_to_ollamas_native_chat_endpoint():
+    """local использует родной /api/chat Ollama, не /v1/chat/completions:
+    реальный случай на боевой машине — тот совместимый эндпоинт молча
+    отбрасывает num_ctx (его нет в структуре ChatCompletionRequest в
+    исходниках Ollama), и любое сравнение с двумя картинками листа падало
+    400-й ошибкой нехватки контекста. /api/chat это поле поддерживает
+    всегда, независимо от версии Ollama."""
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
-        return _FakeResponse({"choices": [{"message": {"content": '{"significant": [], "checked_total": 1}'}}]})
+        return _FakeResponse({"message": {"content": '{"significant": [], "checked_total": 1}'}})
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
         config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
         result = call_llm_json(config, "system prompt", "user text")
 
     assert result == {"significant": [], "checked_total": 1}
-    assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+    # /v1 обрезается — это родной эндпоинт Ollama, не OpenAI-совместимый
+    assert captured["url"] == "http://localhost:11434/api/chat"
     assert "Authorization" not in captured["headers"]
-    assert captured["json"]["response_format"] == {"type": "json_object"}
+    assert captured["json"]["format"] == "json"
     assert captured["json"]["model"] == "qwen3:8b"
-    print("OK: local provider posts to Ollama-compatible endpoint without auth header")
+    print("OK: local provider posts to Ollama's own /api/chat, stripping the /v1 suffix from base_url")
 
 
-def test_vision_request_includes_images_for_local_provider():
+def test_vision_request_embeds_bare_base64_images_for_local_provider():
+    """Родной формат Ollama — просто base64 в message['images'], без
+    data:-префикса и без списка content-блоков в стиле OpenAI."""
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
-        return _FakeResponse({"choices": [{"message": {"content": "{}"}}]})
+        return _FakeResponse({"message": {"content": "{}"}})
 
     png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
     data_url = png_bytes_to_data_url(png)
@@ -72,29 +81,29 @@ def test_vision_request_includes_images_for_local_provider():
         config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
         call_llm_json(config, "system", "compare these", images=[data_url, data_url])
 
-    content = captured["json"]["messages"][1]["content"]
-    assert isinstance(content, list)
-    image_blocks = [c for c in content if c.get("type") == "image_url"]
-    assert len(image_blocks) == 2, content
-    print("OK: vision call embeds 2 images as image_url blocks for local provider")
+    message = captured["json"]["messages"][1]
+    assert message["content"] == "compare these"
+    assert len(message["images"]) == 2, message
+    assert not message["images"][0].startswith("data:"), "родной формат Ollama — голый base64, без data:-префикса"
+    print("OK: vision call embeds 2 bare-base64 images on the message for local provider")
 
 
 def test_local_provider_requests_a_wider_context_than_ollamas_default():
     """Реальный случай: два листа-картинки с промптом легко превышают
-    дефолтные 4096 токенов контекста Ollama, запрос падает 400-й ошибкой.
-    num_ctx — нестандартное поле верхнего уровня, которое Ollama понимает на
-    OpenAI-совместимом эндпоинте (не часть спецификации OpenAI)."""
+    дефолтные 4096 токенов контекста Ollama, запрос падал 400-й ошибкой.
+    options.num_ctx — единственное поле, которое родной /api/chat реально
+    учитывает при выборе размера контекста."""
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
-        return _FakeResponse({"choices": [{"message": {"content": "{}"}}]})
+        return _FakeResponse({"message": {"content": "{}"}})
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
         config = LlmConfig(provider="local", model="qwen2.5vl:7b", base_url="http://localhost:11434/v1")
         call_llm_json(config, "system", "user")
 
-    assert captured["json"]["num_ctx"] > 4096, captured["json"]
+    assert captured["json"]["options"]["num_ctx"] > 4096, captured["json"]
     print("OK: local (Ollama) requests a context window bigger than Ollama's own 4096 default")
 
 
@@ -169,8 +178,8 @@ if __name__ == "__main__":
     test_extract_json_object_strips_think_block()
     test_extract_json_object_fenced()
     test_extract_json_object_invalid_returns_none()
-    test_local_provider_request_shape_and_no_auth_header()
-    test_vision_request_includes_images_for_local_provider()
+    test_local_provider_posts_to_ollamas_native_chat_endpoint()
+    test_vision_request_embeds_bare_base64_images_for_local_provider()
     test_local_provider_requests_a_wider_context_than_ollamas_default()
     test_openai_provider_does_not_send_ollama_specific_num_ctx()
     print("ALL PASS (запустите pytest для тестов с monkeypatch)")
