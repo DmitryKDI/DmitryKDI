@@ -33,6 +33,22 @@ export default function Login() {
     onError: () => pushToast('Не удалось войти. Проверьте учётную запись.', 'error'),
   })
 
+  // Инструмент сравнения документов (packages/backend) — отдельный, без RBAC
+  // и без зависимости от СУДИР/ИАИС ОГД (packages/api может быть вообще не
+  // поднят на домашнем ПК). Сессия не идёт по сети — просто открывает
+  // рабочий экран локально, честно помечено, что это не настоящий вход.
+  const continueLocally = () => {
+    setToken('local-tool')
+    setSession(
+      {
+        subject: 'local', full_name: 'Локальный инспектор', department: '—',
+        position: 'Без входа через СУДИР', roles: ['inspector'], valid_until: '2999-01-01', source: 'local',
+      },
+      ['analysis:run'],
+    )
+    navigate('/analysis/new')
+  }
+
   return (
     <div className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-6 p-6">
       <div className="flex items-center gap-3">
@@ -75,6 +91,19 @@ export default function Login() {
             </li>
           ))}
         </ul>
+      </div>
+
+      <div className="card p-5">
+        <h2 className="text-sm font-semibold">Сравнение документов без входа через СУДИР</h2>
+        <p className="mt-1 text-sm text-ink-muted">
+          Лёгкий локальный инструмент — загрузка ПД/РД и автоматическое
+          сравнение, без учёта объектов и ролей. Работает даже если СУДИР/ИАИС
+          ОГД (карточки выше) не запущены — это отдельный, более простой
+          бэкенд.
+        </p>
+        <button className="btn-primary mt-3" onClick={continueLocally}>
+          Открыть «Новый анализ»
+        </button>
       </div>
 
       <p className="text-xs text-ink-faint">
