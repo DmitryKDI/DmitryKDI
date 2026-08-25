@@ -1,7 +1,17 @@
+import { Fragment, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import { useApp } from '../store'
 import { Chip, ErrorState, Hint, SectionCard, Skeleton, Table } from '../components/ui'
+
+interface ProviderTestResult {
+  ok: boolean
+  provider: string
+  latency_ms: number
+  model?: string
+  raw_text?: string
+  error?: string
+}
 
 interface ProvidersResponse {
   default: string
@@ -31,6 +41,16 @@ export default function Admin() {
     },
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось переключить провайдера', 'error'),
   })
+  const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({})
+  const testProvider = useMutation({
+    mutationFn: (name: string) => api.post<ProviderTestResult>(`/admin/providers/${name}/test`, {}),
+    onSuccess: (data, name) => setTestResults((prev) => ({ ...prev, [name]: data })),
+    onError: (e, name) => setTestResults((prev) => ({
+      ...prev, [name]: { ok: false, provider: name, latency_ms: 0,
+        error: e instanceof Error ? e.message : 'Запрос не выполнен' },
+    })),
+  })
+
   const toggleRule = useMutation({
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
       api.post(`/admin/rules/${name}`, { enabled }),
@@ -48,33 +68,60 @@ export default function Admin() {
         {providers.isError && <ErrorState error={providers.error} retry={() => providers.refetch()} />}
         {providers.data && (
           <Table head={['Провайдер', 'Модель', 'Размещение', 'Контекст', 'Состояние', '']}>
-            {providers.data.providers.map((p) => (
-              <tr key={p.name} className={p.is_default ? 'bg-accent-soft/40' : ''}>
-                <td className="td font-medium">{p.name}</td>
-                <td className="td text-ink-muted">{p.model}</td>
-                <td className="td">
-                  <Chip tone={p.is_sovereign ? 'accent' : 'warn'}>
-                    {p.is_sovereign ? 'российский контур' : 'зарубежный, только разработка'}
-                  </Chip>
-                </td>
-                <td className="td tabular-nums text-ink-muted">
-                  {p.max_context_tokens.toLocaleString('ru-RU')}
-                </td>
-                <td className="td">
-                  <span className="flex flex-wrap gap-1">
-                    {p.is_default && <Chip tone="accent">основной</Chip>}
-                    {p.is_verifier && <Chip>перепроверка</Chip>}
-                    {!p.enabled && <Chip>отключён</Chip>}
-                  </span>
-                </td>
-                <td className="td">
-                  {can('admin:write') && !p.is_default && (
-                    <button className="btn-ghost px-2 py-1 text-xs" disabled={setProvider.isPending}
-                      onClick={() => setProvider.mutate(p.name)}>Сделать основным</button>
+            {providers.data.providers.map((p) => {
+              const testing = testProvider.isPending && testProvider.variables === p.name
+              const result = testResults[p.name]
+              return (
+                <Fragment key={p.name}>
+                  <tr className={p.is_default ? 'bg-accent-soft/40' : ''}>
+                    <td className="td font-medium">{p.name}</td>
+                    <td className="td text-ink-muted">{p.model}</td>
+                    <td className="td">
+                      <Chip tone={p.is_sovereign ? 'accent' : 'warn'}>
+                        {p.is_sovereign ? 'российский контур' : 'зарубежный, только разработка'}
+                      </Chip>
+                    </td>
+                    <td className="td tabular-nums text-ink-muted">
+                      {p.max_context_tokens.toLocaleString('ru-RU')}
+                    </td>
+                    <td className="td">
+                      <span className="flex flex-wrap gap-1">
+                        {p.is_default && <Chip tone="accent">основной</Chip>}
+                        {p.is_verifier && <Chip>перепроверка</Chip>}
+                        {!p.enabled && <Chip>отключён</Chip>}
+                      </span>
+                    </td>
+                    <td className="td">
+                      <span className="flex items-center gap-1">
+                        {can('admin:write') && p.enabled && (
+                          <button className="btn-ghost px-2 py-1 text-xs" disabled={testing}
+                            onClick={() => testProvider.mutate(p.name)}>
+                            {testing ? 'Проверяю…' : 'Проверить'}
+                          </button>
+                        )}
+                        {can('admin:write') && !p.is_default && (
+                          <button className="btn-ghost px-2 py-1 text-xs" disabled={setProvider.isPending}
+                            onClick={() => setProvider.mutate(p.name)}>Сделать основным</button>
+                        )}
+                      </span>
+                    </td>
+                  </tr>
+                  {result && (
+                    <tr>
+                      <td colSpan={6} className="td !py-2">
+                        {result.ok ? (
+                          <p className="text-xs text-accent">
+                            ✓ Ответил за {result.latency_ms} мс, модель «{result.model}»: «{result.raw_text}»
+                          </p>
+                        ) : (
+                          <p className="text-xs text-critical">✕ Сбой: {result.error}</p>
+                        )}
+                      </td>
+                    </tr>
                   )}
-                </td>
-              </tr>
-            ))}
+                </Fragment>
+              )
+            })}
           </Table>
         )}
         <p className="mt-3 text-xs text-ink-faint">

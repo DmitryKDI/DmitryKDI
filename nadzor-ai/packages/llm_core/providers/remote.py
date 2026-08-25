@@ -72,6 +72,15 @@ class _Base:
             tokens_out=int(usage.get("completion_tokens", 0)),
             latency_ms=int((time.monotonic() - started) * 1000))
 
+    @staticmethod
+    def _raise_for_status(r: httpx.Response) -> None:
+        """r.raise_for_status() как есть теряет тело ответа — сообщение вида
+        «403 Forbidden» без причины. Провайдер вернёт вместо него текст
+        ответа сервиса (роль не назначена, неверный ключ, неверный folder_id
+        и т.п.), который и виден в /admin/providers/{name}/test."""
+        if r.status_code >= 400:
+            raise RuntimeError(f"{r.status_code} {r.reason_phrase}: {r.text[:300]}")
+
     async def embed(self, texts: list[str]) -> list[Vector]:
         raise NotImplementedError("Векторизация выполняется отдельным сервисом норм.")
 
@@ -108,7 +117,7 @@ class OpenAICompatProvider(_Base):
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(f"{self.base_url}/chat/completions", json=payload)
-            r.raise_for_status()
+            self._raise_for_status(r)
             data = r.json()
         text = data["choices"][0]["message"]["content"]
         return self._response(text, req, started, data.get("usage"))
@@ -134,7 +143,7 @@ class GigaChatProvider(_Base):
         scope = self.cfg.get("scope", "GIGACHAT_API_CORP")
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(url, headers=headers, data={"scope": scope})
-            r.raise_for_status()
+            self._raise_for_status(r)
             data = r.json()
         self._token = data["access_token"]
         self._token_expires = data.get("expires_at", time.time() + 1500) / 1000
@@ -152,7 +161,7 @@ class GigaChatProvider(_Base):
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(f"{self.base_url}/chat/completions", json=payload,
                                   headers={"Authorization": f"Bearer {token}"})
-            r.raise_for_status()
+            self._raise_for_status(r)
             data = r.json()
         return self._response(data["choices"][0]["message"]["content"], req, started,
                               data.get("usage"))
@@ -180,7 +189,7 @@ class YandexGPTProvider(_Base):
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(f"{self.base_url}/completion", json=payload,
                                   headers={"Authorization": f"Api-Key {api_key}"})
-            r.raise_for_status()
+            self._raise_for_status(r)
             data = r.json()
         result = data["result"]
         usage = result.get("usage", {})
@@ -215,7 +224,7 @@ class ClaudeProvider(_Base):
             r = await client.post(f"{base}/v1/messages", json=payload,
                                   headers={"x-api-key": api_key,
                                            "anthropic-version": "2023-06-01"})
-            r.raise_for_status()
+            self._raise_for_status(r)
             data = r.json()
         usage = data.get("usage", {})
         return self._response(data["content"][0]["text"], req, started,

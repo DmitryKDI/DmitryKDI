@@ -44,8 +44,7 @@ def test_request_shape_matches_yandex_api_contract(monkeypatch):
     captured = {}
 
     class _Resp:
-        def raise_for_status(self):
-            pass
+        status_code = 200
 
         def json(self):
             return {"result": {"alternatives": [{"message": {"text": '{"significant": []}'}}],

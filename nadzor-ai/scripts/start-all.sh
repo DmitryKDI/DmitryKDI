@@ -76,7 +76,7 @@ say "Запускаю серверы"
 # — у него свои uploads/ и nadzor.db, за которые следит уже второй процесс.
 PYTHONPATH="$ROOT/packages" APP_ROOT="$ROOT" \
   ./.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 \
-  --reload --reload-dir "$ROOT/packages" --reload-exclude "$ROOT/packages/backend/*" \
+  --reload --reload-dir "$ROOT/packages" --reload-exclude "packages/backend/*" \
   >"$LOGS/site.log" 2>&1 &
 PIDS+=($!)
 

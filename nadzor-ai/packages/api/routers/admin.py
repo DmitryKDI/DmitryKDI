@@ -1,6 +1,7 @@
 """Администрирование, журнал аудита, сводные показатели."""
 from __future__ import annotations
 
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 
@@ -8,6 +9,9 @@ from analysis import scoring
 from fastapi import APIRouter, Depends, HTTPException
 from integrations.identity.ports import ROLES, Principal
 from integrations.stubs import catalog
+from llm_core.envelope import SYSTEM_RULES
+from llm_core.ports import CompletionRequest
+from llm_core.router import ProviderPolicyError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -195,6 +199,40 @@ async def set_provider(payload: dict, session: AsyncSession = Depends(session_de
                  "config", "providers.yaml", {"default": name})
     await session.commit()
     return {"default": name, "providers": state.router.describe()}
+
+
+@router.post("/admin/providers/{name}/test", summary="Проверить связь с провайдером")
+async def test_provider(
+    name: str, principal: Principal = Depends(permission("admin:write")),
+) -> dict:
+    """Настоящий вызов модели с минимальным запросом, а не health() по общему
+    адресу без ключа (который для внешних API отвечает одинаково что с
+    верным ключом, что без него — 4хх на любой GET). Ту же цепочку вызовов
+    (llm_layer.py, verification.py) сбой провайдера при обычном анализе не
+    показывает — он там намеренно гасится, чтобы не ронять прогон. Здесь —
+    наоборот, настоящая ошибка должна быть видна целиком: неверный ключ,
+    неверный folder_id и сетевой сбой выглядят по-разному, и по тексту
+    ошибки сразу видно, что именно поправить.
+    """
+    try:
+        provider = state.router.get(name)
+    except ProviderPolicyError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    req = CompletionRequest(
+        task="verify", system=SYSTEM_RULES, prompt_version="admin-test",
+        facts=[{"field": "проверка_связи", "value": "ok"}],
+        context={"instruction": 'Ответь JSON ровно {"ok": true} и ничего больше — '
+                                'это проверка связи.'},
+    )
+    started = time.monotonic()
+    try:
+        response = await provider.complete(req)
+    except Exception as exc:  # noqa: BLE001 — сюда стекаются реальные сетевые/авторизационные сбои, их и нужно показать как есть
+        return {"ok": False, "provider": name,
+               "latency_ms": int((time.monotonic() - started) * 1000), "error": str(exc)[:500]}
+    return {"ok": True, "provider": name, "model": response.model,
+           "latency_ms": response.latency_ms, "raw_text": response.raw_text[:300]}
 
 
 @router.get("/admin/rules", summary="Правила детектора")
