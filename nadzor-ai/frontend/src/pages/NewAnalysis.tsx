@@ -6,6 +6,8 @@ import {
 import { useApp, type PendingUpload } from '../store'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
 
+const PAGE_KIND_LABELS: Record<'drawing' | 'text', string> = { drawing: 'чертёж', text: 'текст' }
+
 const PROVIDER_LABELS: Record<BackendSettings['provider'], string> = {
   local: 'Локальная модель (Ollama)', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google',
   yandexgpt: 'YandexGPT',
@@ -185,7 +187,6 @@ export default function NewAnalysis() {
     analysisRunId: runId, analysisRunStatus: runStatus,
     setAnalysisDocs, setAnalysisPending, setAnalysisRunId,
   } = useApp()
-  const [aiOpen, setAiOpen] = useState(false)
 
   const settings = useQuery({ queryKey: ['backend-settings'], queryFn: backendApi.getSettings })
   const [form, setForm] = useState<BackendSettings>({ provider: 'local', base_url: '', model: '', api_key: '' })
@@ -248,6 +249,16 @@ export default function NewAnalysis() {
     enabled: runId !== null && runStatus?.status === 'done',
   })
 
+  // Список пар листов с исходом по каждой — данные о работе ИИ, а не только
+  // итог; загружается только по клику "Подробности по листам", чтобы не
+  // тянуть сотни строк на каждый прогон, если инспектору это не нужно.
+  const [pairsOpen, setPairsOpen] = useState(false)
+  const pagePairs = useQuery({
+    queryKey: ['backend-pairs', runId],
+    queryFn: () => backendApi.listPagePairs(runId as number),
+    enabled: runId !== null && runStatus?.status === 'done' && pairsOpen,
+  })
+
   const reviewFinding = useMutation({
     mutationFn: ({ id, status }: { id: number; status: BackendFinding['reviewed_status'] }) =>
       backendApi.updateFinding(id, status),
@@ -272,6 +283,45 @@ export default function NewAnalysis() {
 
         <SectionCard title="Оценка расхождений" subtitle="Автоматический подбор пар листов по разделу (шифру), затем сравнение — без разбивки по помещениям">
           {runId === null && <p className="text-sm text-ink-muted">Запустите анализ, чтобы увидеть расхождения.</p>}
+          {/* Данные о работе ИИ — какой провайдер считал и сколько пар реально
+              дошло до ответа, — а не только итоговый список находок: без
+              этого "существенных расхождений не найдено" неотличимо на глаз
+              от "ИИ не ответил ни разу". */}
+          {runId !== null && runStatus && runStatus.provider && (
+            <div className="mb-3 rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2 text-xs text-ink-muted">
+              <p>
+                ИИ: <span className="font-medium text-ink">{PROVIDER_LABELS[runStatus.provider as BackendSettings['provider']] ?? runStatus.provider}</span>
+                {runStatus.model && <> · {runStatus.model}</>}
+                {' · '}пар листов сверено: {runStatus.pairs_llm_ok} из {runStatus.pairs_total || '…'}
+                {runStatus.pairs_llm_error > 0 && (
+                  <span className="ml-1 font-medium text-critical">· сбоев ИИ: {runStatus.pairs_llm_error}</span>
+                )}
+              </p>
+              {runStatus.status === 'done' && (
+                <button className="btn-ghost mt-2 px-2 py-1 text-xs" onClick={() => setPairsOpen((v) => !v)}>
+                  {pairsOpen ? 'Скрыть подробности по листам' : 'Подробности по листам'}
+                </button>
+              )}
+              {pairsOpen && runStatus.status === 'done' && (
+                pagePairs.isLoading ? <Skeleton rows={2} /> : (
+                  <ul className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                    {(pagePairs.data ?? []).map((p) => (
+                      <li key={p.id}
+                        className="flex items-center justify-between gap-2 border-t border-surface-line/60 pt-1 first:border-t-0 first:pt-0">
+                        <span>
+                          лист {p.before_page} → {p.after_page} · {PAGE_KIND_LABELS[p.page_kind]}
+                          {p.discipline_mismatch && ' · раздел не совпал'}
+                        </span>
+                        <span className={p.llm_status === 'ok' ? 'text-ink-faint' : 'text-critical'} title={p.llm_error ?? undefined}>
+                          {p.llm_status === 'ok' ? '✓' : `✕ ${p.llm_error ?? 'ошибка'}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              )}
+            </div>
+          )}
           {runId !== null && runStatus && runStatus.status === 'running' && (
             <div>
               <Skeleton rows={3} />
@@ -285,7 +335,11 @@ export default function NewAnalysis() {
           )}
           {runId !== null && runStatus?.status === 'done' && (
             findings.isLoading ? <Skeleton rows={3} /> : items.length === 0 ? (
-              <Empty title="Существенных расхождений не найдено" hint="Проверенные пары листов совпадают по содержанию." />
+              <Empty title="Существенных расхождений не найдено" hint={
+                runStatus.pairs_llm_error > 0
+                  ? `По ${runStatus.pairs_llm_error} из ${runStatus.pairs_total} пар ИИ не ответил — это не то же самое, что «расхождений нет». См. подробности по листам выше.`
+                  : 'Проверенные пары листов совпадают по содержанию.'
+              } />
             ) : (
               <>
                 <p className="mb-3 text-sm font-medium">
@@ -304,11 +358,7 @@ export default function NewAnalysis() {
       </div>
 
       <div className="space-y-4">
-        <SectionCard title="Настроить ИИ" collapsible defaultOpen={aiOpen} right={
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setAiOpen((v) => !v)}>
-            {aiOpen ? 'Свернуть' : 'Настроить'}
-          </button>
-        }>
+        <SectionCard title="Настроить ИИ" collapsible defaultOpen={false}>
           <div className="space-y-2">
             <label className="block text-xs text-ink-faint">Провайдер</label>
             <select className="input" value={form.provider}

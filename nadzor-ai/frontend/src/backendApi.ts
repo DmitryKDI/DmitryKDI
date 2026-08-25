@@ -38,7 +38,25 @@ export interface BackendAnalysisRun {
   status: 'running' | 'done' | 'error'
   pairs_total: number
   pairs_done: number
+  /** Кто считал прогон — данные о работе ИИ, а не только итог. */
+  provider: string
+  model: string
+  pairs_llm_ok: number
+  pairs_llm_error: number
   error: string | null
+}
+
+export interface BackendPagePair {
+  id: number
+  before_document_id: number
+  before_page: number
+  after_document_id: number
+  after_page: number
+  matched_by: 'text' | 'position'
+  page_kind: 'drawing' | 'text'
+  discipline_mismatch: boolean
+  llm_status: 'ok' | 'error'
+  llm_error: string | null
 }
 
 export interface BackendFinding {
@@ -87,6 +105,7 @@ export const backendApi = {
       body: JSON.stringify({ before_document_ids: beforeIds, after_document_ids: afterIds }),
     }),
   getAnalysisRun: (id: number) => request<BackendAnalysisRun>(`/analysis-runs/${id}`),
+  listPagePairs: (runId: number) => request<BackendPagePair[]>(`/analysis-runs/${runId}/pairs`),
 
   listFindings: (runId: number) => request<BackendFinding[]>(`/findings?run_id=${runId}`),
   updateFinding: (id: number, reviewedStatus: BackendFinding['reviewed_status']) =>

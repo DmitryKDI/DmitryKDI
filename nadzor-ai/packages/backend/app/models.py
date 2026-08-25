@@ -40,6 +40,13 @@ class AnalysisRun(Base):
     after_document_ids: Mapped[list] = mapped_column(JSON, default=list)
     pairs_total: Mapped[int] = mapped_column(Integer, default=0)
     pairs_done: Mapped[int] = mapped_column(Integer, default=0)
+    # Какой провайдер/модель реально считали этот прогон и сколько пар
+    # реально дошли до ответа ИИ — без этого "критических несоответствий не
+    # найдено" неотличимо от "ИИ не ответил ни разу" (см. pairs_llm_error).
+    provider: Mapped[str] = mapped_column(String, default="")
+    model: Mapped[str] = mapped_column(String, default="")
+    pairs_llm_ok: Mapped[int] = mapped_column(Integer, default=0)
+    pairs_llm_error: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
 
     pairs: Mapped[list["PagePair"]] = relationship(back_populates="run", cascade="all, delete-orphan")
@@ -59,6 +66,12 @@ class PagePair(Base):
     page_kind: Mapped[str] = mapped_column(String, default="drawing")  # 'drawing' | 'text'
     score: Mapped[float] = mapped_column(Float, default=0.0)
     discipline_mismatch: Mapped[bool] = mapped_column(default=False)
+    # Дошёл ли вызов ИИ до ответа по этой паре, а не упал (сеть, лимит
+    # провайдера, невалидный JSON и т.п.) — раньше падение молча превращалось
+    # в "значимых расхождений нет", неотличимое от настоящего "ИИ проверил и
+    # совпадений не нашёл".
+    llm_status: Mapped[str] = mapped_column(String, default="ok")  # 'ok' | 'error'
+    llm_error: Mapped[str | None] = mapped_column(String, nullable=True)
 
     run: Mapped[AnalysisRun] = relationship(back_populates="pairs")
     before_document: Mapped[Document] = relationship(foreign_keys=[before_document_id])

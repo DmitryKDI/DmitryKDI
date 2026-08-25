@@ -31,7 +31,26 @@ class AnalysisRunOut(BaseModel):
     status: str
     pairs_total: int
     pairs_done: int
+    provider: str
+    model: str
+    pairs_llm_ok: int
+    pairs_llm_error: int
     error: str | None
+
+
+class PagePairOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    before_document_id: int
+    before_page: int
+    after_document_id: int
+    after_page: int
+    matched_by: str
+    page_kind: str
+    discipline_mismatch: bool
+    llm_status: str
+    llm_error: str | None
 
 
 class FindingOut(BaseModel):

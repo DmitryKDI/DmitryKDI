@@ -223,6 +223,9 @@ def _run_analysis(run_id: int) -> None:
             return "\n".join(f["text"] for f in facts_list[idx].text_facts if f["page"] == page)
 
         config = _llm_config(db)
+        run.provider = config.provider
+        run.model = config.resolved_model()
+        db.commit()
         for i, row in enumerate(pair_rows):
             before_doc = next(d for d in before_docs if d.id == row.before_document_id)
             after_doc = next(d for d in after_docs if d.id == row.after_document_id)
@@ -244,6 +247,17 @@ def _run_analysis(run_id: int) -> None:
                     )
             except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
                 result = None
+                row.llm_status, row.llm_error = "error", str(exc)
+            else:
+                if result is None:
+                    # Вызов дошёл до ответа, но не удалось разобрать JSON
+                    # (см. llm.extract_json_object) — не то же самое, что
+                    # сетевой сбой, но для инспектора одинаково "ИИ не сказал
+                    # ничего по этой паре", и это должно быть видно, а не
+                    # выглядеть как "различий нет".
+                    row.llm_status, row.llm_error = "error", "ИИ ответил, но ответ не разобран как JSON"
+                else:
+                    row.llm_status = "ok"
             kind = "vision" if row.page_kind == "drawing" else "text"
             if result and isinstance(result.get("significant"), list):
                 for item in result["significant"]:
@@ -270,6 +284,10 @@ def _run_analysis(run_id: int) -> None:
                     raw_llm_response=result,
                 ))
             run.pairs_done = i + 1
+            if row.llm_status == "ok":
+                run.pairs_llm_ok += 1
+            else:
+                run.pairs_llm_error += 1
             db.commit()
 
         run.status = "done"
@@ -306,6 +324,19 @@ def get_analysis_run(run_id: int, db: Session = Depends(get_session)):
     if run is None:
         raise HTTPException(404, "not found")
     return run
+
+
+@app.get("/analysis-runs/{run_id}/pairs", response_model=list[schemas.PagePairOut])
+def list_page_pairs(run_id: int, db: Session = Depends(get_session)):
+    # "Данные о работе ИИ" по прогону: какие пары листов реально дошли до
+    # ответа модели и какие упали — без этого списка "расхождений не найдено"
+    # неотличимо на глаз от "ИИ не ответил ни разу" (см. AnalysisRun.pairs_llm_error).
+    return (
+        db.query(models.PagePair)
+        .filter(models.PagePair.run_id == run_id)
+        .order_by(models.PagePair.id)
+        .all()
+    )
 
 
 # ---------- Находки ----------

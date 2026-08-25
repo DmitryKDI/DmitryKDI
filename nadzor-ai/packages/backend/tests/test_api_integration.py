@@ -92,6 +92,17 @@ def test_full_pipeline_upload_analyze_findings():
         assert run["pairs_total"] > 0, run
         print(f"OK: analysis run completed, {run['pairs_total']} pairs processed")
 
+        # "Данные о работе ИИ" — какой провайдер считал и сколько пар реально
+        # дошло до ответа, а не просто "готово" без деталей.
+        assert run["provider"] and run["model"], run
+        assert run["pairs_llm_ok"] == run["pairs_total"], run
+        assert run["pairs_llm_error"] == 0, run
+        pairs = client.get(f"/analysis-runs/{run_id}/pairs").json()
+        assert len(pairs) == run["pairs_total"], pairs
+        assert all(p["llm_status"] == "ok" for p in pairs), pairs
+        print(f"OK: run reports provider «{run['provider']}» / «{run['model']}», "
+              f"all {run['pairs_llm_ok']} pairs reached the LLM successfully")
+
         findings = client.get(f"/findings?run_id={run_id}").json()
         vision_findings = [f for f in findings if f["kind"] == "vision"]
         # Оба after-файла — чертежи (rd_floor1/rd_floor2_heating), поэтому
@@ -106,6 +117,51 @@ def test_full_pipeline_upload_analyze_findings():
         assert patch_resp.status_code == 200
         assert patch_resp.json()["reviewed_status"] == "confirmed"
         print("OK: finding review status can be updated via API")
+
+
+def test_llm_failure_is_visible_not_silent():
+    """Раньше упавший вызов ИИ и "ИИ честно ничего не нашёл" выглядели в
+    ответе API совершенно одинаково — 0 findings, run.status == "done".
+    Инспектору нужно различать эти два случая (см. запрос сессии: "мне надо
+    как-то получить данные о работе с ИИ, а не просто «не найдено»") —
+    здесь провайдер ломается на каждом вызове, и это должно быть видно и в
+    сводке прогона, и по каждой паре листов."""
+
+    def broken_llm_post(*a, **kw):
+        raise ConnectionError("провайдер недоступен (симуляция для теста)")
+
+    with patch("app.llm.httpx.post", side_effect=broken_llm_post):
+        before_doc = upload("before", SAMPLE_DIR / "rd_floor1.pdf")
+        after_doc = upload("after", SAMPLE_DIR / "rd_floor2_heating.pdf")
+
+        run_resp = client.post(
+            "/analysis-runs",
+            json={"before_document_ids": [before_doc["id"]], "after_document_ids": [after_doc["id"]]},
+        )
+        run_id = run_resp.json()["id"]
+
+        run = None
+        for _ in range(30):
+            run = client.get(f"/analysis-runs/{run_id}").json()
+            if run["status"] in ("done", "error"):
+                break
+            time.sleep(0.2)
+        # Сбой отдельных вызовов ИИ не должен ронять весь прогон — деградация
+        # до "проверок не было", а не 500 или зависший статус (см. main.py).
+        assert run["status"] == "done", run
+        assert run["pairs_total"] > 0, run
+        assert run["pairs_llm_error"] == run["pairs_total"], run
+        assert run["pairs_llm_ok"] == 0, run
+
+        pairs = client.get(f"/analysis-runs/{run_id}/pairs").json()
+        assert len(pairs) == run["pairs_total"], pairs
+        assert all(p["llm_status"] == "error" for p in pairs), pairs
+        assert all("недоступен" in (p["llm_error"] or "") for p in pairs), pairs
+
+        findings = client.get(f"/findings?run_id={run_id}").json()
+        assert findings == [], findings
+        print(f"OK: все {run['pairs_llm_error']} пар с сорванным вызовом ИИ видны в сводке и по каждой "
+              f"паре отдельно — «0 находок» здесь не перепутать с «ИИ ничего не нашёл»")
 
 
 def test_page_image_endpoint_serves_real_png():
@@ -134,6 +190,7 @@ def test_settings_roundtrip():
 
 if __name__ == "__main__":
     test_full_pipeline_upload_analyze_findings()
+    test_llm_failure_is_visible_not_silent()
     test_page_image_endpoint_serves_real_png()
     test_settings_roundtrip()
     print("ALL PASS")
