@@ -12,18 +12,17 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from . import models, schemas
 from .classification import classify_document
 from .db import get_session, init_db
-from .diffing import find_text_differences
 from .documents import extract_document_facts
 from .llm import LlmConfig
 from .matching import DocumentInput, match_page_pairs
-from .vision import compare_page_pair, make_llm_stamp_classifier
+from .vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier, render_page_to_png_bytes
 
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -112,6 +111,17 @@ def delete_document(document_id: int, db: Session = Depends(get_session)):
     return {"ok": True}
 
 
+@app.get("/page-image/{document_id}/{page}")
+def get_page_image(document_id: int, page: int, db: Session = Depends(get_session)):
+    doc = db.get(models.Document, document_id)
+    if doc is None:
+        raise HTTPException(404, "not found")
+    if page < 1 or page > doc.pages:
+        raise HTTPException(404, "page out of range")
+    png_bytes = render_page_to_png_bytes(doc.file_path, page)
+    return Response(content=png_bytes, media_type="image/png")
+
+
 # ---------- Анализ ----------
 
 
@@ -128,11 +138,11 @@ def _run_analysis(run_id: int) -> None:
         after_facts = [extract_document_facts(d.file_path, d.name) for d in after_docs]
 
         before_inputs = [
-            DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code)
+            DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code, f.page_kinds)
             for d, f in zip(before_docs, before_facts)
         ]
         after_inputs = [
-            DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code)
+            DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code, f.page_kinds)
             for d, f in zip(after_docs, after_facts)
         ]
         pairs = match_page_pairs(before_inputs, after_inputs)
@@ -148,6 +158,7 @@ def _run_analysis(run_id: int) -> None:
                 after_document_id=after_docs[p.after_file_idx].id,
                 after_page=p.after_page,
                 matched_by=p.matched_by,
+                page_kind=p.page_kind,
                 score=p.score,
                 discipline_mismatch=p.discipline_mismatch,
             )
@@ -155,25 +166,11 @@ def _run_analysis(run_id: int) -> None:
             pair_rows.append(row)
         db.commit()
 
-        # Текстовые расхождения — по всем сопоставленным парам файлов целиком
-        # (не только внутри одной страницы), как в браузерном инструменте.
-        before_entries = [
-            {"page": f["page"], "text": f["text"], "file": d.name}
-            for d, facts in zip(before_docs, before_facts)
-            for f in facts.text_facts
-        ]
-        after_entries = [
-            {"page": f["page"], "text": f["text"], "file": d.name}
-            for d, facts in zip(after_docs, after_facts)
-            for f in facts.text_facts
-        ]
-        for d in find_text_differences(before_entries, after_entries):
-            db.add(models.Finding(
-                run_id=run.id, pair_id=None, kind="text",
-                label=f"{d.before.file} · с. {d.before.page} ↔ {d.after.file} · с. {d.after.page}",
-                change_text="; ".join(op.text for op in d.diff if op.type != "eq")[:2000],
-            ))
-        db.commit()
+        # Текст листа по номеру страницы — нужен для текстового сравнения
+        # (не всего документа, только конкретной сопоставленной пары листов).
+        def _page_text(facts_list, docs, document_id: int, page: int) -> str:
+            idx = next(i for i, d in enumerate(docs) if d.id == document_id)
+            return "\n".join(f["text"] for f in facts_list[idx].text_facts if f["page"] == page)
 
         config = _llm_config(db)
         for i, row in enumerate(pair_rows):
@@ -183,11 +180,18 @@ def _run_analysis(run_id: int) -> None:
             if row.matched_by == "position" and row.discipline_mismatch:
                 context += " (сопоставлено по позиции, разделы штампа не совпадают — проверьте применимость)"
             try:
-                result = compare_page_pair(
-                    before_doc.file_path, row.before_page,
-                    after_doc.file_path, row.after_page,
-                    config, context=context,
-                )
+                if row.page_kind == "text":
+                    result = compare_text_pair(
+                        _page_text(before_facts, before_docs, row.before_document_id, row.before_page),
+                        _page_text(after_facts, after_docs, row.after_document_id, row.after_page),
+                        config, context=context,
+                    )
+                else:
+                    result = compare_page_pair(
+                        before_doc.file_path, row.before_page,
+                        after_doc.file_path, row.after_page,
+                        config, context=context,
+                    )
             except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
                 result = None
             if result and isinstance(result.get("significant"), list):
@@ -195,7 +199,8 @@ def _run_analysis(run_id: int) -> None:
                     if not item.get("change"):
                         continue
                     db.add(models.Finding(
-                        run_id=run.id, pair_id=row.id, kind="vision",
+                        run_id=run.id, pair_id=row.id,
+                        kind="vision" if row.page_kind == "drawing" else "text",
                         label=item.get("label", ""), change_text=item["change"],
                         raw_llm_response=result,
                     ))

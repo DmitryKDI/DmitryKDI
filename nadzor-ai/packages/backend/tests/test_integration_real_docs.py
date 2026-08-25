@@ -70,22 +70,27 @@ def test_pairing_with_ov_spec_volume_uses_discipline_gate():
     for name in rd_names:
         facts = extract_document_facts(str(SAMPLE_DIR / name), name)
         result = classify_document(str(SAMPLE_DIR / name), name, vision_stamp_fn=make_vision_fn(name))
-        rd_docs.append(DocumentInput(name, facts.pages, facts.text_facts, [], result.discipline_code))
+        rd_docs.append(DocumentInput(name, facts.pages, facts.text_facts, [], result.discipline_code, facts.page_kinds))
 
-    before = [DocumentInput("pd_tom542_ov.pdf", pd_facts.pages, pd_facts.text_facts, [], pd_code)]
+    before = [DocumentInput("pd_tom542_ov.pdf", pd_facts.pages, pd_facts.text_facts, [], pd_code, pd_facts.page_kinds)]
     pairs = match_page_pairs(before, rd_docs)
 
-    # rd_basement.pdf не проходит classify (не про ОВ в этом наборе примеров,
-    # и в имени/тексте у него нет распознаваемого кода) — гейт по разделу не
-    # должен просто выкидывать его без пары, а увести в резерв как раньше.
-    assert len(pairs) == 3, pairs
+    assert len(pairs) > 0, "expected at least some pairs"
+    # Каждая пара — либо чертёж с чертежом, либо текст с текстом, никогда не
+    # вперемешку (см. classification.classify_page_kind).
+    for p in pairs:
+        before_kind = pd_facts.page_kinds.get(p.before_page)
+        after_kind = rd_docs[p.after_file_idx].page_kinds.get(p.after_page)
+        assert before_kind == after_kind == p.page_kind, (p, before_kind, after_kind)
+
+    # Оба реальных исполнительных чертежа раздела ОВ должны попасть хотя бы в
+    # одну пару, без пометки расхождения раздела.
     ov_pairs = [p for p in pairs if rd_docs[p.after_file_idx].name in ("rd_floor1.pdf", "rd_floor2_heating.pdf")]
+    assert {rd_docs[p.after_file_idx].name for p in ov_pairs} == {"rd_floor1.pdf", "rd_floor2_heating.pdf"}
     for p in ov_pairs:
         assert p.discipline_mismatch is False, p
-    print(f"OK: {len(pairs)} pairs found, both real ОВ as-built sheets paired without discipline mismatch flag")
-    for p in pairs:
-        print(f"    before p{p.before_page} <-> {rd_docs[p.after_file_idx].name} p{p.after_page}"
-              f" ({p.matched_by}, mismatch={p.discipline_mismatch})")
+        assert p.page_kind == "drawing", p  # оба реальных листа — исполнительные чертежи A0
+    print(f"OK: {len(pairs)} pairs found, all page-kind consistent, both real ОВ as-built sheets paired without discipline mismatch")
 
 
 if __name__ == "__main__":

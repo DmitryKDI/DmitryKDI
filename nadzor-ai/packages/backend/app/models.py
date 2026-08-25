@@ -56,6 +56,7 @@ class PagePair(Base):
     after_document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     after_page: Mapped[int] = mapped_column(Integer)
     matched_by: Mapped[str] = mapped_column(String)  # 'text' | 'position'
+    page_kind: Mapped[str] = mapped_column(String, default="drawing")  # 'drawing' | 'text'
     score: Mapped[float] = mapped_column(Float, default=0.0)
     discipline_mismatch: Mapped[bool] = mapped_column(default=False)
 
@@ -80,6 +81,25 @@ class Finding(Base):
 
     run: Mapped[AnalysisRun] = relationship(back_populates="findings")
     pair: Mapped[PagePair | None] = relationship(back_populates="findings")
+
+    # Денормализованный доступ к листу-источнику для фронтенда (картинка
+    # листа к находке) — без пары (текстовая находка старого вида, больше не
+    # создаётся, но старые записи в БД могут остаться) просто None.
+    @property
+    def after_document_id(self) -> int | None:
+        return self.pair.after_document_id if self.pair else None
+
+    @property
+    def after_page(self) -> int | None:
+        return self.pair.after_page if self.pair else None
+
+    @property
+    def before_document_id(self) -> int | None:
+        return self.pair.before_document_id if self.pair else None
+
+    @property
+    def before_page(self) -> int | None:
+        return self.pair.before_page if self.pair else None
 
 
 class Settings(Base):

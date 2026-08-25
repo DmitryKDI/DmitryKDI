@@ -50,6 +50,14 @@ export interface BackendFinding {
   change_text: string
   reviewed_status: 'new' | 'confirmed' | 'rejected'
   created_at: string
+  before_document_id: number | null
+  before_page: number | null
+  after_document_id: number | null
+  after_page: number | null
+}
+
+export function pageImageUrl(documentId: number, page: number): string {
+  return `/backend/page-image/${documentId}/${page}`
 }
 
 export interface BackendSettings {

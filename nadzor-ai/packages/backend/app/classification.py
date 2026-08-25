@@ -187,3 +187,32 @@ def _best_code(scores: dict[str, int]) -> Optional[str]:
         return None
     code, score = max(scores.items(), key=lambda kv: kv[1])
     return code if score >= MIN_CODE_SCORE else None
+
+
+# ---------- Тип листа: чертёж или текст/приложение ----------
+# Объём ПД и РД/ИД почти никогда не совпадает даже внутри одного раздела —
+# частая причина в том, что в один PDF подшиты вперемешку сами чертежи и
+# текстовые приложения (акты, спецификации, содержание тома). Сравнивать
+# чертёж с текстовым актом визуально бессмысленно — это разные типы листов,
+# и их надо различать до сопоставления пар, а не только по разделу/шифру.
+#
+# Сигнал очень надёжный и не требует LLM: чертежи печатаются на крупном
+# формате (А0-А3) и содержат десятки-сотни тысяч векторных линий (сам
+# чертёж — это и есть векторная графика); текстовые листы почти всегда А4 и
+# содержат от силы сотню линий (рамка таблицы, подпись). Разница на
+# реальных образцах этой сессии — на три порядка (145 000+ против <100).
+PAGE_KIND_DRAWING = "drawing"
+PAGE_KIND_TEXT = "text"
+
+DRAWING_FORMAT_LONG_SIDE_MM = 350.0  # больше А4 (297мм) — считаем чертёжным форматом
+DRAWING_MIN_VECTOR_PATHS = 500
+
+
+def classify_page_kind(page: "pymupdf.Page") -> str:
+    rect = page.rect
+    long_side_mm = max(rect.width, rect.height) * 25.4 / 72
+    if long_side_mm >= DRAWING_FORMAT_LONG_SIDE_MM:
+        return PAGE_KIND_DRAWING
+    if len(page.get_drawings()) >= DRAWING_MIN_VECTOR_PATHS:
+        return PAGE_KIND_DRAWING
+    return PAGE_KIND_TEXT

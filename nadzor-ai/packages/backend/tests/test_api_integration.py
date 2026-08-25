@@ -85,20 +85,42 @@ def test_full_pipeline_upload_analyze_findings():
                 break
             time.sleep(0.2)
         assert run["status"] == "done", run
-        assert run["pairs_total"] == 2, run
+        # Не фиксированное число: pd_tom542 (177 стр.) реально содержит и
+        # текстовые страницы, и вклеенные чертежи большого формата (см.
+        # test_page_kind.py) — сколько именно страниц распознается как
+        # чертёж, определяется реальным содержимым файла, не тестом.
+        assert run["pairs_total"] > 0, run
         print(f"OK: analysis run completed, {run['pairs_total']} pairs processed")
 
         findings = client.get(f"/findings?run_id={run_id}").json()
         vision_findings = [f for f in findings if f["kind"] == "vision"]
-        assert len(vision_findings) == 2, findings  # один significant item на каждую из 2 пар
+        # Оба after-файла — чертежи (rd_floor1/rd_floor2_heating), поэтому
+        # сопоставление идёт только внутри пула чертежей — все находки vision.
+        assert len(vision_findings) == run["pairs_total"], findings  # один significant item на пару (мок)
         for f in vision_findings:
             assert "воздуховод" in f["change_text"].lower()
-        print(f"OK: {len(vision_findings)} vision findings recorded through the real API")
+            assert f["after_document_id"] is not None and f["after_page"] is not None
+        print(f"OK: {len(vision_findings)} vision findings recorded through the real API, each with a page image reference")
 
         patch_resp = client.patch(f"/findings/{vision_findings[0]['id']}", json={"reviewed_status": "confirmed"})
         assert patch_resp.status_code == 200
         assert patch_resp.json()["reviewed_status"] == "confirmed"
         print("OK: finding review status can be updated via API")
+
+
+def test_page_image_endpoint_serves_real_png():
+    with patch("app.llm.httpx.post", side_effect=fake_llm_post):
+        doc = upload("before", SAMPLE_DIR / "rd_floor1.pdf")
+    resp = client.get(f"/page-image/{doc['id']}/1")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(resp.content) > 5000
+    print("OK: /page-image serves a real PNG for an uploaded document")
+
+    bad = client.get(f"/page-image/{doc['id']}/99")
+    assert bad.status_code == 404
+    print("OK: /page-image returns 404 for an out-of-range page instead of crashing")
 
 
 def test_settings_roundtrip():
@@ -112,5 +134,6 @@ def test_settings_roundtrip():
 
 if __name__ == "__main__":
     test_full_pipeline_upload_analyze_findings()
+    test_page_image_endpoint_serves_real_png()
     test_settings_roundtrip()
     print("ALL PASS")

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  backendApi, type BackendAnalysisRun, type BackendDocument, type BackendFinding, type BackendSettings,
+  backendApi, pageImageUrl, type BackendAnalysisRun, type BackendDocument, type BackendFinding, type BackendSettings,
 } from '../backendApi'
 import { useApp } from '../store'
 import { Chip, Empty, SectionCard, Skeleton } from '../components/ui'
@@ -77,15 +77,26 @@ const REVIEW_LABELS: Record<BackendFinding['reviewed_status'], string> = {
 }
 
 function FindingRow({ finding, onReview }: { finding: BackendFinding; onReview: (status: BackendFinding['reviewed_status']) => void }) {
+  const photoUrl = finding.after_document_id && finding.after_page
+    ? pageImageUrl(finding.after_document_id, finding.after_page) : null
   return (
     <li className="rounded-md border border-surface-line p-3 text-sm">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      <div className="flex flex-wrap items-start gap-3">
+        {photoUrl && (
+          <a href={photoUrl} target="_blank" rel="noreferrer" className="shrink-0" title="Открыть лист целиком">
+            <img src={photoUrl} alt={`Лист ${finding.after_page}`}
+              className="h-24 w-24 rounded border border-surface-line object-cover object-top" />
+          </a>
+        )}
         <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center gap-2">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
             <Chip tone={finding.kind === 'vision' ? 'accent' : 'neutral'}>
               {finding.kind === 'vision' ? 'визуально' : 'текст'}
             </Chip>
             {finding.label && <span className="font-medium">{finding.label}</span>}
+            {finding.after_page && (
+              <span className="text-xs text-ink-faint">лист {finding.after_page}</span>
+            )}
             {finding.reviewed_status !== 'new' && <Chip>{REVIEW_LABELS[finding.reviewed_status]}</Chip>}
           </div>
           <p className="text-ink-muted">{finding.change_text}</p>

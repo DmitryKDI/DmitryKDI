@@ -10,12 +10,23 @@
 на DocumentInput — потому что в бэкенде он может быть получен и через
 vision-fallback (см. classification.classify_document), а matching.py не
 должен знать про LLM/vision вообще, только сопоставлять по готовым данным.
+
+Второй, независимый от раздела гейтинг — по типу листа (чертёж/текст, см.
+classification.classify_page_kind). Объём ПД и РД/ИД внутри одного раздела
+почти никогда не совпадает именно потому, что в один PDF подшиты вперемешку
+сами чертежи и текстовые приложения (акты, спецификации, содержание тома) —
+сравнивать чертёж с текстовым актом визуально бессмысленно. Поэтому перед
+сопоставлением листы делятся на два независимых пула по типу, и весь
+алгоритм (текстовое сопоставление + позиционный резерв) прогоняется отдельно
+внутри каждого пула — чертежи сравниваются только с чертежами, текст только
+с текстом.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .classification import PAGE_KIND_TEXT
 from .diffing import jaccard, norm_word
 
 MIN_PAGE_MATCH_SIMILARITY = 0.12
@@ -28,6 +39,7 @@ class DocumentInput:
     text_facts: list[dict] = field(default_factory=list)  # [{page, text}]
     room_facts: list[dict] = field(default_factory=list)  # [{page, key, name}]
     discipline_code: Optional[str] = None
+    page_kinds: dict[int, str] = field(default_factory=dict)  # {page: 'drawing'|'text'}
 
 
 @dataclass
@@ -35,6 +47,7 @@ class _PageRef:
     file_idx: int
     page: int
     tokens: set[str]
+    kind: str
 
 
 @dataclass
@@ -45,7 +58,27 @@ class PagePair:
     after_page: int
     score: float
     matched_by: str  # 'text' | 'position'
+    page_kind: str  # 'drawing' | 'text'
     discipline_mismatch: bool = False
+
+
+def _cover_pairs(before_list: list[_PageRef], after_list: list[_PageRef]) -> list[tuple[_PageRef, _PageRef]]:
+    """Позиционные пары так, чтобы КАЖДЫЙ лист с обеих сторон попал хотя бы в
+    одну пару — а не так, как раньше: пар получалось min(before, after), и
+    если, скажем, РД (712 листов) вдвое объёмнее ПД (177), лишние ~535
+    листов РД молча не проверялись вообще (реальный случай, найденный на
+    настоящих документах пользователя). Меньшая сторона переиспользуется
+    пропорционально — качество такой пары ниже текстовой, но лист хотя бы
+    попадает на визуальную проверку, а не пропадает."""
+    if not before_list or not after_list:
+        return []
+    n = max(len(before_list), len(after_list))
+    pairs = []
+    for i in range(n):
+        b = before_list[min(i * len(before_list) // n, len(before_list) - 1)]
+        a = after_list[min(i * len(after_list) // n, len(after_list) - 1)]
+        pairs.append((b, a))
+    return pairs
 
 
 def page_token_set(entry: DocumentInput, page_no: int) -> set[str]:
@@ -69,21 +102,16 @@ def page_token_set(entry: DocumentInput, page_no: int) -> set[str]:
     return tokens
 
 
-def match_page_pairs(before_files: list[DocumentInput], after_files: list[DocumentInput]) -> list[PagePair]:
-    before_codes = [f.discipline_code for f in before_files]
-    after_codes = [f.discipline_code for f in after_files]
+def _match_pool(
+    before_pages: list[_PageRef],
+    after_pages: list[_PageRef],
+    before_codes: list[Optional[str]],
+    after_codes: list[Optional[str]],
+) -> list[PagePair]:
+    """Основной алгоритм сопоставления (текстовое + позиционный резерв),
+    независимый от типа листа — вызывается отдельно для пула чертежей и
+    отдельно для пула текстовых листов."""
     after_code_set = {c for c in after_codes if c}
-
-    before_pages = [
-        _PageRef(fi, p, page_token_set(entry, p))
-        for fi, entry in enumerate(before_files)
-        for p in range(1, entry.pages + 1)
-    ]
-    after_pages = [
-        _PageRef(fi, p, page_token_set(entry, p))
-        for fi, entry in enumerate(after_files)
-        for p in range(1, entry.pages + 1)
-    ]
 
     candidates = []
     for b in before_pages:
@@ -111,7 +139,7 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
             continue
         used_before.add(b_key)
         used_after.add(a_key)
-        pairs.append(PagePair(b.file_idx, b.page, a.file_idx, a.page, score, "text"))
+        pairs.append(PagePair(b.file_idx, b.page, a.file_idx, a.page, score, "text", b.kind))
 
     remaining_before = [b for b in before_pages if (b.file_idx, b.page) not in used_before]
     remaining_after = [a for a in after_pages if (a.file_idx, a.page) not in used_after]
@@ -135,27 +163,50 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
     positional: list[tuple[_PageRef, _PageRef, bool]] = []
     for group in by_code.values():
         gb, ga = group["before"], group["after"]
-        n = min(len(gb), len(ga))
-        used_b, used_a = set(), set()
-        for i in range(n):
-            b = gb[(i * len(gb)) // n]
-            a = ga[(i * len(ga)) // n]
-            used_b.add(id(b))
-            used_a.add(id(a))
-            positional.append((b, a, False))
-        leftover_before.extend(b for b in gb if id(b) not in used_b)
-        leftover_after.extend(a for a in ga if id(a) not in used_a)
+        if gb and ga:
+            for b, a in _cover_pairs(gb, ga):
+                positional.append((b, a, False))
+        else:
+            # Одна из сторон пуста — сравнивать не с чем внутри этого раздела,
+            # отдаём в общий резерв, а не молча теряем эти листы.
+            leftover_before.extend(gb)
+            leftover_after.extend(ga)
 
-    n2 = min(len(leftover_before), len(leftover_after))
-    for i in range(n2):
-        b = leftover_before[(i * len(leftover_before)) // n2]
-        a = leftover_after[(i * len(leftover_after)) // n2]
-        b_code = before_codes[b.file_idx]
-        a_code = after_codes[a.file_idx]
-        mismatch = bool(b_code and a_code and b_code != a_code)
-        positional.append((b, a, mismatch))
+    if leftover_before and leftover_after:
+        for b, a in _cover_pairs(leftover_before, leftover_after):
+            b_code = before_codes[b.file_idx]
+            a_code = after_codes[a.file_idx]
+            mismatch = bool(b_code and a_code and b_code != a_code)
+            positional.append((b, a, mismatch))
 
     for b, a, mismatch in positional:
-        pairs.append(PagePair(b.file_idx, b.page, a.file_idx, a.page, 0.0, "position", mismatch))
+        pairs.append(PagePair(b.file_idx, b.page, a.file_idx, a.page, 0.0, "position", b.kind, mismatch))
+
+    return pairs
+
+
+def match_page_pairs(before_files: list[DocumentInput], after_files: list[DocumentInput]) -> list[PagePair]:
+    before_codes = [f.discipline_code for f in before_files]
+    after_codes = [f.discipline_code for f in after_files]
+
+    before_pages = [
+        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT))
+        for fi, entry in enumerate(before_files)
+        for p in range(1, entry.pages + 1)
+    ]
+    after_pages = [
+        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT))
+        for fi, entry in enumerate(after_files)
+        for p in range(1, entry.pages + 1)
+    ]
+
+    pairs: list[PagePair] = []
+    kinds = {p.kind for p in before_pages} | {p.kind for p in after_pages}
+    for kind in kinds:
+        pool_before = [p for p in before_pages if p.kind == kind]
+        pool_after = [p for p in after_pages if p.kind == kind]
+        if not pool_before or not pool_after:
+            continue  # нечего сравнивать в этом пуле вообще (например, только чертежи с обеих сторон)
+        pairs.extend(_match_pool(pool_before, pool_after, before_codes, after_codes))
 
     return pairs

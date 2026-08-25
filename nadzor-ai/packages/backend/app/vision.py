@@ -1,5 +1,7 @@
-"""Рендер листа PDF в картинку и vision-сравнение пары листов — плюс
-vision-чтение штампа, когда там нет текстового слоя (см. classification.py).
+"""Сравнение пары листов — по картинке для чертежей, по тексту для текстовых
+листов/приложений (см. classification.classify_page_kind — почему это два
+разных пути, а не один). Плюс рендер листа в картинку и vision-чтение
+штампа, когда там нет текстового слоя (см. classification.py).
 
 Порт renderPageToImage/callVisionLlm/AI_VISION_SYSTEM_PROMPT из
 nadzor-browser/main.js на PyMuPDF + llm.py.
@@ -38,6 +40,23 @@ VISION_SYSTEM_PROMPT = """Ты проверяешь строительную д�
  "noise_note": "что отброшено как несущественное, кратко",
  "checked_total": <int>, "significant_total": <int>}"""
 
+TEXT_COMPARE_SYSTEM_PROMPT = """Ты проверяешь строительную документацию. Тебе показан текст одного и того
+же листа из двух комплектов: ПД (проектная) и РД/ИД (рабочая или
+исполнительная) — акт, спецификация, содержание тома или другой текстовый
+лист (не чертёж).
+
+Найди только содержательные расхождения — то, что реально может быть
+нарушением или требует проверки: другое значение (размер, марка, класс
+материала, количество, дата, срок), другой пункт/раздел, появившийся или
+пропавший абзац/позиция. Не считай расхождением: перенумерацию позиций в
+перечне без изменения содержания, форматирование, порядок слов без
+изменения смысла, различия в пробелах/переносах строк.
+
+Отвечай только JSON без пояснений вне JSON:
+{"significant": [{"label": "краткий код", "change": "что изменилось и почему это важно"}],
+ "noise_note": "что отброшено как несущественное, кратко",
+ "checked_total": <int>, "significant_total": <int>}"""
+
 STAMP_READ_SYSTEM_PROMPT = """На картинке — угловой штамп листа строительного чертежа (ГОСТ Р 21.1101).
 Прочитай шифр проекта и определи код раздела — двух-четырёхбуквенное
 обозначение в конце шифра (АР, КР, ОВ, ВК, ЭОМ и т.п.). Если код раздела
@@ -46,7 +65,7 @@ STAMP_READ_SYSTEM_PROMPT = """На картинке — угловой штам�
 {"discipline_code": "ОВ" или null, "sheet_name": "наименование чертежа с листа, если видно"}"""
 
 
-def render_page_to_data_url(pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM) -> str:
+def render_page_to_png_bytes(pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM) -> bytes:
     doc = pymupdf.open(pdf_path)
     try:
         page = doc[page_no - 1]
@@ -54,9 +73,13 @@ def render_page_to_data_url(pdf_path: str, page_no: int, max_dim: int = VISION_M
         scale = max_dim / max(rect.width, rect.height)
         scale = min(scale, 4.0)  # не апскейлим совсем маленькие страницы сверх разумного
         pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale))
-        return png_bytes_to_data_url(pix.tobytes("png"))
+        return pix.tobytes("png")
     finally:
         doc.close()
+
+
+def render_page_to_data_url(pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM) -> str:
+    return png_bytes_to_data_url(render_page_to_png_bytes(pdf_path, page_no, max_dim))
 
 
 def make_llm_stamp_classifier(config: LlmConfig):
@@ -88,3 +111,15 @@ def compare_page_pair(
     if context:
         user_text += f" Контекст: {context}."
     return call_llm_json(config, VISION_SYSTEM_PROMPT, user_text, images=[before_img, after_img])
+
+
+def compare_text_pair(
+    before_text: str,
+    after_text: str,
+    config: LlmConfig,
+    context: str = "",
+) -> Optional[dict]:
+    user_text = f"ПД:\n{before_text[:8000]}\n\nРД/ИД:\n{after_text[:8000]}"
+    if context:
+        user_text = f"Контекст: {context}.\n\n{user_text}"
+    return call_llm_json(config, TEXT_COMPARE_SYSTEM_PROMPT, user_text)

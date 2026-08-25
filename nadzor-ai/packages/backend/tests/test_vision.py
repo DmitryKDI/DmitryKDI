@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.classification import classify_document, render_stamp_crop_png
 from app.llm import LlmConfig
-from app.vision import compare_page_pair, make_llm_stamp_classifier, render_page_to_data_url
+from app.vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier, render_page_to_data_url
 
 SAMPLE_DIR = Path(
     "/tmp/claude-0/-home-user-DmitryKDI/0870a421-62c2-59a8-8978-c9163f520b16/scratchpad"
@@ -84,8 +84,37 @@ def test_compare_page_pair_sends_two_images_with_context():
     print("OK: page-pair comparison sends both real page images plus classification context in the prompt")
 
 
+def test_compare_text_pair_sends_text_not_images():
+    """Текстовые (не чертёжные) листы сравниваются по тексту — ни одной
+    картинки в запросе быть не должно, это отдельный, более дешёвый путь."""
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse(
+            {"choices": [{"message": {"content":
+                '{"significant": [{"label": "A-1", "change": "Класс бетона B25 вместо B30"}],'
+                ' "noise_note": "", "checked_total": 1, "significant_total": 1}'}}]}
+        )
+
+    config = LlmConfig(provider="local", model="qwen2.5vl:7b", base_url="http://localhost:11434/v1")
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        result = compare_text_pair(
+            "Класс бетона по проекту B30", "Класс бетона по факту B25",
+            config, context="раздел КР, акт освидетельствования",
+        )
+
+    assert result["significant"][0]["change"] == "Класс бетона B25 вместо B30"
+    content = captured["json"]["messages"][1]["content"]
+    assert isinstance(content, str), "no images -> content should stay plain text, not a content-block list"
+    assert "B30" in content and "B25" in content
+    assert "раздел КР" in content
+    print("OK: text-kind comparison sends plain text (no images) with both page texts and context")
+
+
 if __name__ == "__main__":
     test_render_page_to_data_url_real_pdf()
     test_stamp_classifier_wired_into_classify_document()
     test_compare_page_pair_sends_two_images_with_context()
+    test_compare_text_pair_sends_text_not_images()
     print("ALL PASS")

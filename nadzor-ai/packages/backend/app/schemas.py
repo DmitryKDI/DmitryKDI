@@ -45,6 +45,10 @@ class FindingOut(BaseModel):
     change_text: str
     reviewed_status: str
     created_at: dt.datetime
+    before_document_id: int | None
+    before_page: int | None
+    after_document_id: int | None
+    after_page: int | None
 
 
 class FindingUpdate(BaseModel):
