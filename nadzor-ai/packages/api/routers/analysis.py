@@ -14,6 +14,7 @@ from analysis.reporting import build_inspection_act, build_prescription
 from analysis.runner import STAGES, object_card_for_rules, parse_documents, run_analysis
 from fastapi import APIRouter, Depends, HTTPException, Response
 from integrations.identity.ports import Principal
+from llm_core.router import ProviderPolicyError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,7 +66,15 @@ async def run(payload: dict, session: AsyncSession = Depends(session_dep),
     chosen = payload.get("transitions") or ["T1", "T2", "T3", "T5", "T6"]
 
     docs = await _parsed_docs(session, object_id, principal)
-    provider = state.router.select(protected_object=obj.protected)
+    try:
+        # Неизвестное или отключённое в конфиге имя провайдера — единственная
+        # ошибка выбора, которая долетает досюда непойманной: сам вызов модели
+        # (llm_layer.py, verification.py) уже гасит любой сбой провайдера и
+        # тихо деградирует до одних детерминированных правил, поэтому
+        # отсутствие реквизитов у уже выбранного провайдера сюда не долетает.
+        provider = state.router.select(protected_object=obj.protected)
+    except ProviderPolicyError as exc:
+        raise HTTPException(422, str(exc)) from exc
     run_id = f"run-{object_id}-{uuid.uuid4().hex[:8]}"
     result = await run_analysis(object_id, docs, object_card_for_rules(obj.card), state.norms,
                                 state.rules_config, state.scoring_config, provider,

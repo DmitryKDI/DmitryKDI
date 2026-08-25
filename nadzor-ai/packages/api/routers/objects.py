@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 
 from analysis.pipeline import load_document
@@ -43,6 +44,55 @@ async def list_objects(session: AsyncSession = Depends(session_dep),
     stmt = scope_objects(select(ConstructionObject).order_by(ConstructionObject.name), principal)
     rows = (await session.execute(stmt)).scalars().all()
     return {"items": [_brief(o) for o in rows], "total": len(rows)}
+
+
+@router.post("/objects", summary="Добавить объект вручную")
+async def create_object(payload: dict, session: AsyncSession = Depends(session_dep),
+                        principal: Principal = Depends(permission("objects:create"))) -> dict:
+    """Ручное создание — когда номера разрешения нет в ИАИС ОГД или поиск не дал
+    результата (см. /objects/lookup). Источник помечается честно: data_source
+    остаётся "manual", а не подделывается под "iais_ogd" (раздел 2.2 CLAUDE.md).
+
+    Объект закрепляется за автором и его подразделением — иначе только что
+    созданный объект тут же выпал бы из собственной выборки инспектора
+    (scope_objects фильтрует по assigned_to/department, «запрещено по
+    умолчанию» действует и для собственных данных).
+    """
+    permit_number = str(payload.get("permit_number", "")).strip()
+    name = str(payload.get("name", "")).strip()
+    if not permit_number or not name:
+        raise HTTPException(422, "Укажите номер разрешения и наименование объекта.")
+
+    existing = (await session.execute(
+        select(ConstructionObject).where(ConstructionObject.permit_number == permit_number)
+    )).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(409, f"Объект с разрешением «{permit_number}» уже существует "
+                                 f"(«{existing.name}»).")
+
+    obj = ConstructionObject(
+        id=f"OBJ-{uuid.uuid4().hex[:8].upper()}",
+        permit_number=permit_number,
+        permit_date=str(payload.get("permit_date", "")).strip(),
+        name=name,
+        address=str(payload.get("address", "")).strip(),
+        district=str(payload.get("district", "")).strip(),
+        cadastral_number=str(payload.get("cadastral_number", "")).strip(),
+        developer=str(payload.get("developer", "")).strip(),
+        contractor=str(payload.get("contractor", "")).strip(),
+        designer=str(payload.get("designer", "")).strip(),
+        stage=str(payload.get("stage", "")).strip(),
+        planned_completion=str(payload.get("planned_completion", "")).strip(),
+        card={}, data_source="manual",
+        department=principal.department, assigned_to=principal.subject,
+        protected=bool(payload.get("protected", False)),
+    )
+    session.add(obj)
+    record(session, principal.subject, principal.roles[0] if principal.roles else "",
+          "object.create", "object", obj.id,
+          {"permit_number": permit_number, "data_source": "manual"})
+    await session.commit()
+    return _full(obj)
 
 
 @router.get("/objects/lookup", summary="Автозаполнение по номеру разрешения")

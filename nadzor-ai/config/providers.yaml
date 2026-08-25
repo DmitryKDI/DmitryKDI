@@ -17,7 +17,12 @@ providers:
     is_sovereign: true
 
   yandexgpt:
-    enabled: false
+    # Реализация в llm_core/providers/remote.py готова и ждёт только реквизиты
+    # (YANDEX_GPT_API_KEY, YANDEX_GPT_FOLDER_ID в .env). default остаётся
+    # mock — переключение на боевой провайдер делается на экране
+    # «Настройки моделей и правил» одной кнопкой, когда ключ действительно
+    # задан, а не автоматически при каждом запуске.
+    enabled: true
     model: yandexgpt/latest
     base_url: https://llm.api.cloud.yandex.net/foundationModels/v1
     api_key_env: YANDEX_GPT_API_KEY
