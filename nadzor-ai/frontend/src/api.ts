@@ -10,6 +10,25 @@ export function setToken(value: string): void {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+/** Ключ zustand-persist из store.ts. Дублируется здесь осознанно: импорт
+ *  store в api.ts создал бы цикл, а очистка сессии обязана работать даже
+ *  тогда, когда до React-слоя дело ещё не дошло. */
+const STORE_KEY = 'nadzor.app'
+
+/** Сброс сессии до конца: токен, сохранённая роль и права.
+ *
+ *  Чистить один токен недостаточно: `principal` переживает перезагрузку в
+ *  localStorage, и браузер с сессией от прошлого запуска (другая база, другой
+ *  сервер) показывал экраны, которые заведомо не могут загрузиться. Уходим на
+ *  вход через `location`, а не через роутер, — так гарантированно сбрасывается
+ *  и состояние в памяти, включая кеш запросов.
+ */
+export function clearSession(): void {
+  setToken('')
+  localStorage.removeItem(STORE_KEY)
+  if (!window.location.pathname.startsWith('/login')) window.location.replace('/login')
+}
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -27,7 +46,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.Authorization = `Bearer ${token}`
   const response = await fetch(`/api${path}`, { ...init, headers })
   if (response.status === 401) {
-    setToken('')
+    clearSession()
     throw new ApiError(401, 'Сессия завершена. Войдите заново.')
   }
   if (!response.ok) {

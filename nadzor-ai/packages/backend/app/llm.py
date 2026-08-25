@@ -22,7 +22,10 @@ import httpx
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 
 PROVIDER_DEFAULT_MODELS = {
-    "local": "qwen3:8b",
+    # Сравнение листов идёт картинками (см. vision.compare_page_pair), поэтому
+    # локальная модель по умолчанию обязана уметь зрение. Текстовая qwen3
+    # молча возвращала бы отказ на каждый чертёж.
+    "local": "qwen2.5vl:7b",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-5",
     "google": "gemini-2.5-flash",
