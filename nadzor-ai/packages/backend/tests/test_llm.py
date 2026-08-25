@@ -79,6 +79,42 @@ def test_vision_request_includes_images_for_local_provider():
     print("OK: vision call embeds 2 images as image_url blocks for local provider")
 
 
+def test_local_provider_requests_a_wider_context_than_ollamas_default():
+    """Реальный случай: два листа-картинки с промптом легко превышают
+    дефолтные 4096 токенов контекста Ollama, запрос падает 400-й ошибкой.
+    num_ctx — нестандартное поле верхнего уровня, которое Ollama понимает на
+    OpenAI-совместимом эндпоинте (не часть спецификации OpenAI)."""
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"choices": [{"message": {"content": "{}"}}]})
+
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        config = LlmConfig(provider="local", model="qwen2.5vl:7b", base_url="http://localhost:11434/v1")
+        call_llm_json(config, "system", "user")
+
+    assert captured["json"]["num_ctx"] > 4096, captured["json"]
+    print("OK: local (Ollama) requests a context window bigger than Ollama's own 4096 default")
+
+
+def test_openai_provider_does_not_send_ollama_specific_num_ctx():
+    """num_ctx — расширение Ollama, не часть OpenAI API: настоящий OpenAI
+    вернул бы ошибку на неизвестном поле, поэтому его нельзя слать всем."""
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"choices": [{"message": {"content": "{}"}}]})
+
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        config = LlmConfig(provider="openai", api_key="sk-test", model="gpt-4o-mini")
+        call_llm_json(config, "system", "user")
+
+    assert "num_ctx" not in captured["json"], captured["json"]
+    print("OK: real OpenAI requests stay free of the Ollama-only num_ctx field")
+
+
 def test_yandexgpt_reads_credentials_from_env_not_from_config(monkeypatch):
     monkeypatch.setenv("YANDEX_GPT_API_KEY", "test-key")
     monkeypatch.setenv("YANDEX_GPT_FOLDER_ID", "b1gfolder123")
@@ -135,4 +171,6 @@ if __name__ == "__main__":
     test_extract_json_object_invalid_returns_none()
     test_local_provider_request_shape_and_no_auth_header()
     test_vision_request_includes_images_for_local_provider()
+    test_local_provider_requests_a_wider_context_than_ollamas_default()
+    test_openai_provider_does_not_send_ollama_specific_num_ctx()
     print("ALL PASS (запустите pytest для тестов с monkeypatch)")

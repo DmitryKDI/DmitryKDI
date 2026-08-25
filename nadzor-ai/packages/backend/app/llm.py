@@ -22,6 +22,14 @@ import httpx
 
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 
+# Ollama обрезает контекст до 4096 токенов по умолчанию (параметр модели, не
+# сервера) — двух картинок листа с промптом хватает, чтобы в это не влезть
+# (реальный случай: 4300-5200 токенов на реальных чертежах). На
+# OpenAI-совместимом эндпоинте это лечится полем num_ctx верхнего уровня
+# тела запроса — нестандартное расширение Ollama, OpenAI его не знает,
+# поэтому только для provider == "local".
+LOCAL_NUM_CTX = 16384
+
 PROVIDER_DEFAULT_MODELS = {
     # Сравнение листов идёт картинками (см. vision.compare_page_pair), поэтому
     # локальная модель по умолчанию обязана уметь зрение. Текстовая qwen3
@@ -122,6 +130,8 @@ def call_llm_json(
             ],
             "response_format": {"type": "json_object"},
         }
+        if provider == "local":
+            body["num_ctx"] = LOCAL_NUM_CTX
         headers = {"Content-Type": "application/json"}
         if provider == "openai":
             headers["Authorization"] = f"Bearer {config.api_key}"
