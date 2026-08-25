@@ -84,6 +84,19 @@ def png_bytes_to_data_url(png_bytes: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
 
 
+def _post_json(url: str, **kwargs) -> httpx.Response:
+    """httpx.post + raise_for_status, но с телом ответа в тексте ошибки —
+    провайдер обычно объясняет причину 4xx (неверная модель, формат запроса),
+    а голый код без текста превращает диагностику в гадание вслепую (реальный
+    случай: 400 от Ollama на vision-запросе, причина ясна только из тела)."""
+    resp = httpx.post(url, **kwargs)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise httpx.HTTPStatusError(f"{e}\nОтвет провайдера: {resp.text[:2000]}", request=e.request, response=e.response) from e
+    return resp
+
+
 def call_llm_json(
     config: LlmConfig,
     system_prompt: str,
@@ -112,8 +125,7 @@ def call_llm_json(
         headers = {"Content-Type": "application/json"}
         if provider == "openai":
             headers["Authorization"] = f"Bearer {config.api_key}"
-        resp = httpx.post(f"{base_url}/chat/completions", json=body, headers=headers, timeout=timeout)
-        resp.raise_for_status()
+        resp = _post_json(f"{base_url}/chat/completions", json=body, headers=headers, timeout=timeout)
         data = resp.json()
         text = data["choices"][0]["message"]["content"]
         return extract_json_object(text)
@@ -133,8 +145,7 @@ def call_llm_json(
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        resp = httpx.post("https://api.anthropic.com/v1/messages", json=body, headers=headers, timeout=timeout)
-        resp.raise_for_status()
+        resp = _post_json("https://api.anthropic.com/v1/messages", json=body, headers=headers, timeout=timeout)
         data = resp.json()
         text = data["content"][0]["text"]
         return extract_json_object(text)
@@ -152,8 +163,7 @@ def call_llm_json(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             f"?key={config.api_key}"
         )
-        resp = httpx.post(url, json=body, timeout=timeout)
-        resp.raise_for_status()
+        resp = _post_json(url, json=body, timeout=timeout)
         data = resp.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         return extract_json_object(text)
@@ -180,11 +190,10 @@ def call_llm_json(
             ],
         }
         headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
-        resp = httpx.post(
+        resp = _post_json(
             "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
             json=body, headers=headers, timeout=timeout,
         )
-        resp.raise_for_status()
         data = resp.json()
         text = data["result"]["alternatives"][0]["message"]["text"]
         return extract_json_object(text)
