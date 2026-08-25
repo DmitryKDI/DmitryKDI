@@ -30,6 +30,37 @@ def test_inspector_can_create_and_immediately_see_own_object(client, auth):
     print("OK: чужой инспектор созданный объект не видит")
 
 
+def test_head_of_dept_can_create_object_and_department_sees_it(client, auth):
+    # Ерофеев — head_of_dept И inspector одновременно (sudir:77002); проверяем
+    # именно ветку head_of_dept в scope_objects (фильтр по department, не по
+    # assigned_to — этим она и отличается от обычного инспектора).
+    resp = client.post("/api/objects", json={
+        "permit_number": "77-000000-666666-2026", "name": "ЖК Начальника отдела",
+        "address": "г. Москва, ул. Начальственная, 2",
+    }, headers=auth("sudir:77002"))
+    assert resp.status_code == 200, resp.text
+    obj = resp.json()
+    assert obj["department"] == "Отдел надзора за жилищным строительством № 3"
+    print(f"OK: head_of_dept создал объект, department={obj['department']}")
+
+    # Сам автор видит его.
+    own = client.get("/api/objects", headers=auth("sudir:77002")).json()["items"]
+    assert any(o["id"] == obj["id"] for o in own)
+
+    # Инспектор из ТОГО ЖЕ отдела не видит: объект назначен на 77002, а
+    # scope_objects для обычного инспектора смотрит на assigned_to, не на
+    # department — то, что начальник отдела формально «свой», недостаточно.
+    same_dept_inspector = client.get("/api/objects", headers=auth("sudir:77001")).json()["items"]
+    assert not any(o["id"] == obj["id"] for o in same_dept_inspector), \
+        "обычный инспектор не должен видеть объект, назначенный не на него"
+    print("OK: рядовой инспектор того же отдела объект не видит (назначен не на него)")
+
+    # Инспектор из другого отдела тем более не видит.
+    other_dept = client.get("/api/objects", headers=auth("sudir:77007")).json()["items"]
+    assert not any(o["id"] == obj["id"] for o in other_dept)
+    print("OK: инспектор другого отдела объект не видит")
+
+
 def test_create_object_requires_permit_and_name(client, auth):
     headers = auth("sudir:77001")
     resp = client.post("/api/objects", json={"permit_number": "77-1-1-2026"}, headers=headers)
