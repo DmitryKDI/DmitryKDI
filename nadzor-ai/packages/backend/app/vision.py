@@ -191,18 +191,31 @@ def render_page_to_data_url(pdf_path: str, page_no: int, max_dim: int = VISION_M
     return png_bytes_to_data_url(render_page_to_png_bytes(pdf_path, page_no, max_dim))
 
 
+def read_stamp_by_vision(png_bytes: bytes, config: LlmConfig) -> dict:
+    """Прочитать основную надпись по картинке: код раздела И наименование
+    листа. Наименование — верхний уровень сопоставления (см. CLAUDE.md, Г.5),
+    и для РД оно доступно только так: там штамп экспортирован в кривые."""
+    data_url = png_bytes_to_data_url(png_bytes)
+    result = call_llm_json(config, STAMP_READ_SYSTEM_PROMPT,
+                           "Определи раздел и наименование листа по штампу.", images=[data_url])
+    return result or {}
+
+
 def make_llm_stamp_classifier(config: LlmConfig):
     """Возвращает функцию, совместимую с classification.classify_document's
-    vision_stamp_fn: принимает PNG-байты штампа, возвращает код раздела."""
+    vision_stamp_fn: принимает PNG-байты штампа, возвращает код раздела.
+
+    Наименование листа, которое модель возвращает тем же вызовом, доступно
+    через атрибут `.last_sheet_name` — раньше оно запрашивалось у модели и
+    молча выбрасывалось."""
 
     def classify(png_bytes: bytes) -> Optional[str]:
-        data_url = png_bytes_to_data_url(png_bytes)
-        result = call_llm_json(config, STAMP_READ_SYSTEM_PROMPT, "Определи раздел по штампу.", images=[data_url])
-        if not result:
-            return None
+        result = read_stamp_by_vision(png_bytes, config)
+        classify.last_sheet_name = result.get("sheet_name") or None
         code = result.get("discipline_code")
         return code if code else None
 
+    classify.last_sheet_name = None
     return classify
 
 

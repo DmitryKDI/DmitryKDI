@@ -12,30 +12,92 @@ from __future__ import annotations
 
 import re
 
-_ROOM_NO_RE = re.compile(r"^(\d{3,4}(?:[.,]\d{1,2})?[а-яё]?)$")
+# Номер помещения: 3–4 цифры плюс необязательный подномер через ТОЧКУ и
+# необязательная литера. Запятая-разделитель намеренно не допускается: на
+# реальных листах «1952,0» и «258,1» — это площади из экспликации, а не
+# помещения. Подномер ограничен одной цифрой по той же причине («115.59»,
+# «321.6» — измерения оборудования из прайса поставщика).
+# Подномер допустим только у трёхзначного номера и только 1–3: настоящие
+# подпомещения комплекта — 006.1, 012.1, 258.1, 331.1, 331.2. Четырёхзначное
+# с дробной частью («1254.5», «3793.1») — итоговая площадь группы помещений
+# из экспликации, а не номер.
+_NO = r"(?:\d{3}(?:\.[1-3])?|\d{4})[а-яё]?"
+_ROOM_NO_RE = re.compile(rf"^({_NO})$")
+# Групповая подпись на несколько помещений сразу: «267, 270 Раздевальная и
+# санузел для МГН» — распространённый способ подписать группу однотипных
+# помещений. Каждому номеру достаётся отдельная запись.
+_ROOM_LIST_RE = re.compile(rf"^((?:{_NO}\s*,\s*)+{_NO})$")
+_INLINE_ROW_RE = re.compile(
+    rf"^((?:{_NO}\s*,\s*)*{_NO})\s+([А-Яа-яЁё][^\d\n]{{1,90}}?)"
+    r"(?:\s+(\d+[.,]\d+))?(?:\s+([АВ]\d?))?$"
+)
 _AREA_RE = re.compile(r"^\d+[.,]\d+$")
 _CATEGORY_RE = re.compile(r"^[АВ]\d?$")
-_NAME_START_RE = re.compile(r"^[А-ЯЁ]")
-# Форма "002 Коридор" — номер и название на одной строке (короткие подписи на
-# плане чаще попадают в один текстовый блок, чем строки таблицы).
-_INLINE_ROW_RE = re.compile(
-    r"^(\d{3,4}(?:[.,]\d{1,2})?[а-яё]?)\s+([А-ЯЁ][^\d\n]{1,90}?)(?:\s+(\d+[.,]\d+))?(?:\s+([АВ]\d?))?$"
-)
+# Название помещения может начинаться и со строчной буквы: в реальной
+# экспликации встречается «140 моделирования и конструирования» — это
+# продолжение группового заголовка строкой выше.
+_NAME_START_RE = re.compile(r"^[А-Яа-яЁё]")
+# Подписи величин, а не помещений: на страницах паспортов оборудования
+# «1270 Масса, кг» и «8000 Сум. дБА» иначе попадают в реестр помещений.
+_MEASURE_RE = re.compile(
+    r"^(масса|сум\.|степень|потери|расход|мощность|напор|скорост|температур|"
+    r"длина|ширина|высота|вес|цена|сумма|итого|кол-?во|количество|давлен|"
+    r"уровень|площадь|объ[её]м|типоразмер|исполнение|сторона)", re.I)
+_UNIT_RE = re.compile(r"\b(кг|мм|м2|м3|па|квт|дба|шт|м3/ч)\b", re.I)
+# Заголовок ГРУППЫ помещений в экспликации («Медицинский блок, вестибюльная
+# группа», «Общешкольная группа помещений: столовая»). Рядом с ним стоит
+# суммарная площадь группы, которую иначе принимает за номер помещения.
+_GROUP_HEADER_RE = re.compile(
+    r"групп[аы]\s+помещений|\bблок,|в том числе|зона ожидания", re.I)
+# Служебные обрывки, которые не являются названием помещения ни при каких
+# обстоятельствах: заглушки таблиц и коды разделов.
+_STOP_TOKENS = {"недоступно", "эом", "ов", "вк", "ар", "кр", "гп", "тх", "нвк"}
+
 _MAX_NAME_LINES = 3
 
 
 def _plausible_name(name: str) -> bool:
-    """Одна заглавная буква ("А", "Р") — почти всегда обрывок обозначения оси
-    или марки, случайно совпавший с началом названия, а не реальное имя
-    помещения, поэтому это лучше отбросить, чем засорить реестр шумом."""
-    return len(name) >= 3
+    """Отсев подписей, которые не являются названием помещения.
+
+    Каждое правило поставлено по реальному ложному срабатыванию на комплекте
+    Nadzor_Sample, а не на всякий случай."""
+    if len(name) < 3:
+        return False
+    if _MEASURE_RE.match(name) or _UNIT_RE.search(name):
+        return False  # «Масса, кг», «Сум. дБА» — реквизит оборудования
+    if _GROUP_HEADER_RE.search(name):
+        return False  # заголовок группы, число рядом — её суммарная площадь
+    tokens = name.split()
+    if all(t.strip(".,:").lower() in _STOP_TOKENS for t in tokens):
+        return False  # «Недоступно Недоступно», «ЭОМ»
+    if sum(1 for t in tokens if any(c.isdigit() for c in t)) >= 2:
+        return False  # «Дн-8Л Дн-8 СС» — марки оборудования, не помещение
+        # (одна такая часть допустима: «Лестница Л-1» — настоящее название)
+    if sum(1 for t in tokens if len(t) == 1) >= 2:
+        return False  # «Р я АА» — обрывки подписей осей
+    return True
+
+
+def _split_numbers(raw: str) -> list[str]:
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+
+def _emit(facts: list[dict], numbers: list[str], name: str, area: str | None) -> None:
+    if not _plausible_name(name):
+        return
+    for key in numbers:
+        fact = {"key": key, "name": name}
+        if area:
+            fact["area"] = area.replace(",", ".")
+        facts.append(fact)
 
 
 def extract_room_facts(text: str) -> list[dict]:
-    """Возвращает [{key, name}] — номера помещений, найденные на листе.
+    """Возвращает [{key, name, area?}] — помещения, найденные на листе.
+
     Ложные срабатывания отсекаются требованием: после номера обязательно
-    идёт название, начинающееся с заглавной кириллической буквы — просто
-    число (отметка, номер оси, размер) без такого продолжения не попадает."""
+    идёт название из кириллицы — просто число (отметка, размер, масса) без
+    такого продолжения в реестр не попадает."""
     lines = [ln.strip() for ln in text.splitlines()]
     facts: list[dict] = []
     i, n = 0, len(lines)
@@ -45,19 +107,21 @@ def extract_room_facts(text: str) -> list[dict]:
             i += 1
             continue
 
-        m_number = _ROOM_NO_RE.match(line)
+        m_number = _ROOM_NO_RE.match(line) or _ROOM_LIST_RE.match(line)
         if m_number:
-            key = m_number.group(1)
+            numbers = _split_numbers(m_number.group(1))
             j = i + 1
             name_parts: list[str] = []
+            area: str | None = None
             while j < n and len(name_parts) < _MAX_NAME_LINES:
                 frag = lines[j].strip()
                 if not frag:
                     j += 1
                     continue
-                if _ROOM_NO_RE.match(frag):
+                if _ROOM_NO_RE.match(frag) or _ROOM_LIST_RE.match(frag):
                     break  # следующая запись реестра началась
                 if _AREA_RE.match(frag):
+                    area = frag
                     j += 1
                     break  # площадь — конец текущей записи
                 if _CATEGORY_RE.match(frag) and name_parts:
@@ -67,15 +131,14 @@ def extract_room_facts(text: str) -> list[dict]:
                     break  # не похоже на продолжение названия
                 name_parts.append(frag)
                 j += 1
-            name = " ".join(name_parts)
-            if _plausible_name(name):
-                facts.append({"key": key, "name": name})
+            _emit(facts, numbers, " ".join(name_parts), area)
             i = j
             continue
 
         m_inline = _INLINE_ROW_RE.match(line)
-        if m_inline and _plausible_name(m_inline.group(2).strip()):
-            facts.append({"key": m_inline.group(1), "name": m_inline.group(2).strip()})
+        if m_inline:
+            _emit(facts, _split_numbers(m_inline.group(1)),
+                  m_inline.group(2).strip(), m_inline.group(3))
         i += 1
 
     return facts
