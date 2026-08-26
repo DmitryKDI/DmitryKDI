@@ -114,6 +114,28 @@ def test_real_subrooms_and_four_digit_rooms_survive():
     print("OK: подномера .1/.2, четырёхзначные номера и «Лестница Л-2» сохранены")
 
 
+def test_room_with_inclusive_tail_is_kept():
+    """Реальный ложный отсев, найденный слепым прогоном: строка экспликации
+    «245 Актовый зал на 160 мест, в том числе / эстрада в уровне пола / 313.2»
+    отбрасывалась целиком по фразе «в том числе», и помещение 245 молча
+    выпадало из реестра — а затем всплывало кандидатом «отсутствует в РД»."""
+    facts = extract_room_facts("245\nАктовый зал на 160 мест, в том числе\n313.2")
+    assert facts and facts[0]["key"] == "245", facts
+    assert facts[0]["name"] == "Актовый зал на 160 мест", facts
+    # Площадь «313.2» здесь не извлекается: она неотличима от номера
+    # подпомещения 313.2. Помещение при этом сохранено — это и было целью;
+    # разбор такой площади требует отдельного признака и здесь не решается.
+    print("OK: «, в том числе» отрезается, помещение остаётся в реестре")
+
+
+def test_real_group_headers_still_rejected():
+    """Отмена отсева по «в том числе» не должна вернуть настоящие заголовки."""
+    for text in ("1545.8\nОбщешкольная группа помещений",
+                 "1254.5\nМедицинский блок, вестибюльная группа"):
+        assert extract_room_facts(text) == [], (text, extract_room_facts(text))
+    print("OK: настоящие заголовки групп по-прежнему отсеиваются")
+
+
 if __name__ == "__main__":
     test_multiline_table_row_number_name_area_category()
     test_inline_plan_label_number_and_name_on_one_line()
@@ -125,4 +147,6 @@ if __name__ == "__main__":
     test_area_with_comma_is_not_a_room_number()
     test_group_header_area_is_not_a_room()
     test_real_subrooms_and_four_digit_rooms_survive()
+    test_room_with_inclusive_tail_is_kept()
+    test_real_group_headers_still_rejected()
     print("ALL PASS")
