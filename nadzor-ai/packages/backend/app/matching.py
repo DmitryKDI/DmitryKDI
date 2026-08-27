@@ -42,6 +42,8 @@ class DocumentInput:
     room_facts: list[dict] = field(default_factory=list)  # [{page, key, name}]
     discipline_code: Optional[str] = None
     page_kinds: dict[int, str] = field(default_factory=dict)  # {page: 'drawing'|'text'}
+    # [{page, key, name, parent?, qty?}] — позиции ведомости оборудования (Г.20)
+    equipment_facts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -103,11 +105,24 @@ def page_token_set(entry: DocumentInput, page_no: int) -> set[str]:
             t = norm_word(w)
             if len(t) > 2:
                 tokens.add(t)
+    for fact in entry.equipment_facts:
+        if fact["page"] != page_no:
+            continue
+        if fact.get("key"):
+            tokens.add(f"equip:{fact['key']}")
+        for w in fact["name"].split():
+            t = norm_word(w)
+            if len(t) > 2:
+                tokens.add(t)
     return tokens
 
 
 def room_key_set(entry: DocumentInput, page_no: int) -> set[str]:
     return {f["key"] for f in entry.room_facts if f["page"] == page_no and f.get("key")}
+
+
+def equipment_key_set(entry: DocumentInput, page_no: int) -> set[str]:
+    return {f["key"] for f in entry.equipment_facts if f["page"] == page_no and f.get("key")}
 
 
 def _page_text(entry: DocumentInput, page_no: int) -> str:

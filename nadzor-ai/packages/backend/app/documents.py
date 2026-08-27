@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .classification import classify_page_kind, open_pdf
+from .equipment import extract_equipment_facts
 from .material import non_project_reason
 from .rooms import extract_room_facts
 from .stamp import read_stamp
@@ -22,6 +23,8 @@ class DocumentFacts:
     text_facts: list[dict]  # [{page, text}]
     room_facts: list[dict]  # [{page, key, name, area?}]
     page_kinds: dict[int, str] = field(default_factory=dict)  # {page: 'drawing'|'text'}
+    # [{page, key, name, parent?, qty?}] — позиции ведомости оборудования (Г.20)
+    equipment_facts: list[dict] = field(default_factory=list)
     # {page: {shifr, sheet_no, sheet_name}} — основная надпись, если читается текстом
     sheet_info: dict[int, dict] = field(default_factory=dict)
     # {page: причина} — лист исключён из сравнения как непроектный материал.
@@ -35,6 +38,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
     try:
         text_facts = []
         room_facts = []
+        equipment_facts = []
         page_kinds = {}
         sheet_info = {}
         excluded = {}
@@ -53,6 +57,8 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                 text_facts.append({"page": page_no, "text": text})
                 for fact in extract_room_facts(text):
                     room_facts.append({"page": page_no, **fact})
+                for fact in extract_equipment_facts(text):
+                    equipment_facts.append({"page": page_no, **fact})
 
             stamp = read_stamp(page)
             if not stamp.is_empty():
@@ -60,6 +66,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                                        "sheet_name": stamp.sheet_name}
         return DocumentFacts(name=name, pages=doc.page_count, text_facts=text_facts,
                               room_facts=room_facts, page_kinds=page_kinds,
+                              equipment_facts=equipment_facts,
                               sheet_info=sheet_info, excluded=excluded)
     finally:
         doc.close()
