@@ -234,6 +234,7 @@ def compare_page_pair(
     config: LlmConfig,
     context: str = "",
     discipline: Optional[str] = None,
+    timeout: float = 120.0,
 ) -> Optional[dict]:
     before_img = render_page_to_data_url(before_pdf, before_page)
     after_img = render_page_to_data_url(after_pdf, after_page)
@@ -241,7 +242,7 @@ def compare_page_pair(
     if context:
         user_text += f" Контекст: {context}."
     return call_llm_json(config, vision_system_prompt(discipline), user_text,
-                         images=[before_img, after_img])
+                         images=[before_img, after_img], timeout=timeout)
 
 
 def compare_text_pair(
@@ -250,6 +251,7 @@ def compare_text_pair(
     config: LlmConfig,
     context: str = "",
     discipline: Optional[str] = None,
+    timeout: float = 120.0,
 ) -> Optional[dict]:
     # Явный контейнер вокруг содержимого документа — мера Б.3.1 модели угроз:
     # инструкция в системном сообщении и данные в пользовательском разделены
@@ -260,4 +262,4 @@ def compare_text_pair(
     )
     if context:
         user_text = f"Контекст: {context}.\n\n{user_text}"
-    return call_llm_json(config, text_compare_system_prompt(discipline), user_text)
+    return call_llm_json(config, text_compare_system_prompt(discipline), user_text, timeout=timeout)

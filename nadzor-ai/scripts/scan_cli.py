@@ -54,6 +54,7 @@ def main() -> None:
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--pairs-limit", type=int, default=0, help="Разобрать только первые N пар (0 = все)")
+    parser.add_argument("--timeout", type=float, default=120.0, help="Таймаут одного вызова LLM, секунд")
     parser.add_argument("--json", dest="json_path", default="", help="Сохранить весь результат в файл")
     args = parser.parse_args()
 
@@ -86,10 +87,11 @@ def main() -> None:
                 result = compare_text_pair(
                     _page_text(before_docs, p.before_file_idx, p.before_page),
                     _page_text(after_docs, p.after_file_idx, p.after_page),
-                    config, context=context, discipline=b["discipline_code"])
+                    config, context=context, discipline=b["discipline_code"], timeout=args.timeout)
             else:
                 result = compare_page_pair(b["path"], p.before_page, a["path"], p.after_page,
-                                           config, context=context, discipline=b["discipline_code"])
+                                           config, context=context, discipline=b["discipline_code"],
+                                           timeout=args.timeout)
         except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
             print(f"  ОШИБКА: {exc}")
             results.append({"pair": i, "error": str(exc)})
