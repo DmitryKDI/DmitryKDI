@@ -21,7 +21,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from .deep_dive_checklist import DeepDiveEntry, build_deep_dive_checklist
+from .deep_dive_checklist import (
+    DEPTH_TEXT,
+    DEPTH_VISUAL,
+    DeepDiveEntry,
+    build_deep_dive_checklist,
+)
 from .matching import PagePair
 
 
@@ -77,15 +82,27 @@ class DeepDiveSession:
             room_index=self._room_idx + 1, room_total=len(entry.rooms),
         )
 
-    def resolve(self, finding: Optional[str] = None) -> None:
+    def resolve(self, depth: str, finding: Optional[str] = None) -> None:
         """Закрывает текущий пункт и продвигает сессию — единственный
-        способ дойти до следующего пункта."""
+        способ дойти до следующего пункта.
+
+        `depth` обязателен и говорит, КАК пункт закрыт: `DEPTH_TEXT`
+        (сверил название/реестр текстом) или `DEPTH_VISUAL` (вырезал зону и
+        посмотрел графику). Десятый прогон закрыл все 531 пункт, но почти
+        все — текстом, при том что реальные находки требовали кропа; одно
+        булево «проверено» это скрывало (Г.25). Параметр без значения по
+        умолчанию именно поэтому: способ должен называться явно, а не
+        подставляться молча."""
+        if depth not in (DEPTH_TEXT, DEPTH_VISUAL):
+            raise ValueError(
+                f"depth должен быть {DEPTH_TEXT!r} или {DEPTH_VISUAL!r}, получено {depth!r}")
         if self._pair_idx >= len(self._entries):
             return
         entry = self._entries[self._pair_idx]
         if entry.rooms:
             entry.rooms[self._room_idx].checked = True
             entry.rooms[self._room_idx].finding = finding
+            entry.rooms[self._room_idx].depth = depth
             self._room_idx += 1
         else:
             self._room_idx = 1
@@ -106,11 +123,21 @@ class DeepDiveSession:
     def status(self) -> str:
         """Сводка прогресса по всем парам — для отчёта в конце, не для
         навигации по ходу работы (`current()` — единственный источник
-        того, что делать дальше)."""
+        того, что делать дальше). Кроп показан отдельно от общего числа
+        закрытых пунктов: 531/531 при 4 кропах и 531/531 при 200 кропах —
+        это принципиально разные прогоны, и отчёт обязан их различать
+        (Г.25)."""
         lines = []
+        total_visual = 0
+        total_checked = 0
         for i, entry in enumerate(self._entries):
             marker = "->" if i == self._pair_idx else "  "
             lines.append(f"{marker} {i + 1}. score={entry.pair.score:.3f} {entry.progress}")
+            total_checked += sum(1 for r in entry.rooms if r.checked)
+            total_visual += sum(1 for r in entry.rooms if r.depth == DEPTH_VISUAL)
+        lines.append(
+            f"ИТОГО: закрыто {total_checked}, из них кропом {total_visual}, "
+            f"текстом {total_checked - total_visual}")
         return "\n".join(lines)
 
     def _skip_advance(self) -> None:

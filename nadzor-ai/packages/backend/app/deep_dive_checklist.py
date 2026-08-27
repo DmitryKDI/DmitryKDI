@@ -25,12 +25,22 @@ from dataclasses import dataclass, field
 from .matching import PagePair
 
 
+DEPTH_TEXT = "text_only"   # сверка по реестру/тексту — дёшево, но слепо к графике
+DEPTH_VISUAL = "visual"    # реальный кроп зоны и просмотр — то, что требует Г.7
+
+
 @dataclass
 class RoomChecklistItem:
     room_key: str
     priority: str  # 'anchor' | 'plain' — см. докстринг модуля про третий уровень
     checked: bool = False
     finding: str | None = None  # None = ещё не разобрано
+    # Каким способом закрыт пункт. Десятый прогон: все 531 пункт были
+    # «проверены», но почти все — текстовой сверкой названия, а не кропом
+    # графики, при том что все реальные нарушения требовали именно кропа.
+    # Одно булево `checked` смешивало два разных по глубине действия в одну
+    # галочку и делало отчёт неинформативным (Г.25).
+    depth: str | None = None
 
 
 @dataclass
@@ -40,8 +50,11 @@ class DeepDiveEntry:
 
     @property
     def progress(self) -> str:
+        """Прогресс с разбивкой по глубине (Г.25): «проверено» само по себе
+        не говорит, смотрели графику или сверили название текстом."""
         done = sum(1 for r in self.rooms if r.checked)
-        return f"{done}/{len(self.rooms)}"
+        visual = sum(1 for r in self.rooms if r.depth == DEPTH_VISUAL)
+        return f"{done}/{len(self.rooms)} (кроп: {visual})"
 
 
 def build_deep_dive_checklist(

@@ -4,7 +4,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.matching import PagePair
-from app.deep_dive_checklist import build_deep_dive_checklist, render_checklist_markdown
+from app.deep_dive_checklist import (
+    DEPTH_TEXT,
+    DEPTH_VISUAL,
+    build_deep_dive_checklist,
+    render_checklist_markdown,
+)
 
 
 def _pair(before_page, after_page, score):
@@ -42,14 +47,21 @@ def test_anchor_rooms_prioritized_within_pair_not_across_pairs():
     print("OK: якорь переставляет помещения внутри пары, но не сами пары")
 
 
-def test_progress_counter_reflects_checked_state():
+def test_progress_counter_reflects_checked_state_and_depth():
+    """Счётчик показывает не только сколько пунктов закрыто, но и сколько
+    из них закрыто настоящим кропом (Г.25) — иначе «проверено» означает
+    два разных по глубине действия в одной цифре."""
     pairs = [_pair(88, 20, 0.338)]
     room_facts = [{"page": 88, "key": "140"}, {"page": 88, "key": "142"}]
     entries = build_deep_dive_checklist(pairs, room_facts, set())
-    assert entries[0].progress == "0/2"
+    assert entries[0].progress == "0/2 (кроп: 0)"
     entries[0].rooms[0].checked = True
-    assert entries[0].progress == "1/2"
-    print("OK: счётчик прогресса считает отмеченные пункты честно")
+    entries[0].rooms[0].depth = DEPTH_TEXT
+    assert entries[0].progress == "1/2 (кроп: 0)"
+    entries[0].rooms[1].checked = True
+    entries[0].rooms[1].depth = DEPTH_VISUAL
+    assert entries[0].progress == "2/2 (кроп: 1)"
+    print("OK: счётчик прогресса различает текстовую сверку и визуальный кроп")
 
 
 def test_pair_with_no_room_facts_gets_empty_checklist():
@@ -73,7 +85,7 @@ def test_render_markdown_lists_pairs_in_order_with_checkboxes():
 if __name__ == "__main__":
     test_pairs_ordered_by_score_regardless_of_input_order()
     test_anchor_rooms_prioritized_within_pair_not_across_pairs()
-    test_progress_counter_reflects_checked_state()
+    test_progress_counter_reflects_checked_state_and_depth()
     test_pair_with_no_room_facts_gets_empty_checklist()
     test_render_markdown_lists_pairs_in_order_with_checkboxes()
     print("ALL PASS")
