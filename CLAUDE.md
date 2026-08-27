@@ -137,3 +137,51 @@ rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
 
 Overall average: **60-90% token reduction** on common development operations.
 <!-- /rtk-instructions -->
+
+# Everything Claude Code Toolkit
+
+Vendored from [WorldFlowAI/everything-claude-code](https://github.com/WorldFlowAI/everything-claude-code) into `.claude/` so every session in this repo has it — this environment is ephemeral, so only what's committed here survives a fresh container.
+
+## Agents (`.claude/agents/`)
+
+| Agent | Use for |
+|---|---|
+| planner | Feature implementation planning |
+| architect | System design decisions |
+| tdd-guide | Test-driven development |
+| code-reviewer | Quality and security review |
+| security-reviewer | Vulnerability analysis |
+| build-error-resolver | Diagnosing build/compile errors |
+| e2e-runner | Playwright E2E testing |
+| refactor-cleaner | Dead code cleanup |
+| doc-updater | Documentation sync |
+
+## Commands (`.claude/commands/`)
+
+`/plan` `/tdd` `/e2e` `/code-review` `/build-fix` `/refactor-clean` `/learn` `/checkpoint` `/verify` `/orchestrate` `/eval` `/setup-pm` `/test-coverage` `/update-codemaps` `/update-docs`
+
+## Skills (`.claude/skills/`)
+
+Added: `backend-patterns`, `clickhouse-io`, `coding-standards`, `continuous-learning`, `eval-harness`, `frontend-patterns`, `project-guidelines-example`, `security-review`, `strategic-compact`, `tdd-workflow`, `verification-loop` — alongside the existing HyperFrames video skills.
+
+## Rules (always-follow guidelines, loaded below)
+
+@.claude/rules/security.md
+@.claude/rules/coding-style.md
+@.claude/rules/testing.md
+@.claude/rules/git-workflow.md
+@.claude/rules/agents.md
+@.claude/rules/patterns.md
+@.claude/rules/performance.md
+@.claude/rules/hooks.md
+
+## Hooks (merged into `.claude/settings.json`)
+
+- Suggests `/compact` at logical intervals; saves state on PreCompact/SessionEnd. Note: this writes to `~/.claude/sessions/`, which does **not** persist across containers here — it only helps within a single session, not across new ones.
+- Blocks stray `.md`/`.txt` file creation **at the repo root only** — modified from upstream (which blocked everywhere) because this repo relies on nested `SKILL.md`, `STORYBOARD.md`, etc. that upstream's version would have blocked.
+- Blocks `npm run dev` / `pnpm dev` / etc. outside tmux; reminds to use tmux for long-running installs/tests/builds.
+- Auto-formats edited `.ts/.tsx/.js/.jsx` with Prettier, runs `tsc --noEmit`, warns on leftover `console.log`.
+
+## MCP configs (reference only — not enabled)
+
+`.claude/mcp-configs/mcp-servers.json` has templates (GitHub, Supabase, Vercel, Railway, etc.) with `YOUR_*_HERE` placeholders. Fill in credentials and register manually if you want to use any of them.
