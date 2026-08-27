@@ -30,8 +30,35 @@ def test_normal_project_document_is_kept():
     print("OK: проектные документы не отсеиваются")
 
 
+def test_price_table_page_without_footer_is_excluded():
+    """Реальный сбой прогона Г.28: внутренняя страница того же каталога без
+    колонтитула «Страница N из M» и без маркерных фраз — только построчные
+    цены и подытог «Итого по …» — проходила мимо обоих прежних фильтров и
+    выдавалась за обычный чертёж (топ-пара по скору в 13-м прогоне —
+    случайно оказалась именно такой страницей)."""
+    text = (
+        "17\nВнутренний блок настенный KF-IW-28\nШТ\n2,00\n63 056,10\n126 112,20\n"
+        "18\nНаружный блок KF-OH-500B\nШТ\n2,00\n1 543 181,40\n3 086 362,80\n"
+        "19\nРефнет KF-REF-01\nШТ\n8,00\n7 272,60\n58 180,80\n"
+        "Итого по Оборудование\n5 098 706,70\nИтого по К2\n5 098 706,70"
+    )
+    reason = non_project_reason(text)
+    assert reason and "смет" in reason, reason
+    print("OK: страница сметы без колонтитула отсеяна по количеству цен и подытогу")
+
+
+def test_equipment_register_without_prices_is_kept():
+    """Ведомость оборудования (Г.20) — количество, не цена — не должна
+    отсеиваться этим же правилом просто из-за подытоговой строки."""
+    text = "14\nВентилятор канальный ВК-100\n2 шт.\n15\nКлапан обратный КО-100\n1 шт.\nИтого по разделу: 3 позиции"
+    assert non_project_reason(text) is None
+    print("OK: ведомость оборудования без цен не задета новым правилом")
+
+
 if __name__ == "__main__":
     test_supplier_catalog_page_is_excluded()
     test_commercial_offer_is_excluded()
     test_normal_project_document_is_kept()
+    test_price_table_page_without_footer_is_excluded()
+    test_equipment_register_without_prices_is_kept()
     print("ALL PASS")
