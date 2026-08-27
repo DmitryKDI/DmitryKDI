@@ -38,12 +38,21 @@ def _parent_key(key: str) -> str | None:
     return None
 
 
-def extract_equipment_facts(text: str) -> list[dict]:
+def extract_equipment_facts(text: str, room_keys: set[str] | None = None) -> list[dict]:
     """Возвращает [{key, name, parent?, qty?}] — позиции ведомости
     оборудования, найденные на листе.
 
     Как и в rooms.py: PyMuPDF почти всегда разносит код, название и
-    количество по отдельным строкам, поэтому запись сначала схлопывается."""
+    количество по отдельным строкам, поэтому запись сначала схлопывается.
+
+    `room_keys` — номера помещений, уже найденные на ЭТОЙ ЖЕ странице
+    `rooms.extract_room_facts`. Регекс кода позиции и регекс номера
+    помещения оба принимают короткие числа с тем же диапазоном длины — на
+    реальном прогоне (первая слепая проверка Г.20) подавляющее большинство
+    "позиций оборудования" оказались повторно разобранными номерами
+    помещений с той же страницы (экспликация, шапка штампа). Номер
+    помещения на странице приоритетнее: если ключ уже занят помещением, это
+    не позиция ведомости."""
     lines = [ln.strip() for ln in text.splitlines()]
     facts: list[dict] = []
     i, n = 0, len(lines)
@@ -80,7 +89,7 @@ def extract_equipment_facts(text: str) -> list[dict]:
                 name_parts.append(frag)
                 j += 1
             name = " ".join(name_parts).strip()
-            if name and not _HEADER_RE.match(name):
+            if name and not _HEADER_RE.match(name) and not (room_keys and key in room_keys):
                 fact = {"key": key, "name": name}
                 parent = _parent_key(key)
                 if parent:

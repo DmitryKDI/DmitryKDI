@@ -51,6 +51,18 @@ def test_table_header_row_is_skipped_not_registered():
     print("OK: заголовок столбцов таблицы не превращается в позицию оборудования")
 
 
+def test_room_key_on_same_page_excludes_equipment_position():
+    """Реальный сбой первого слепого прогона Г.20: подавляющее большинство
+    "позиций оборудования" оказались повторно разобранными номерами
+    помещений с той же страницы. room_keys — сигнал приоритета помещения."""
+    text = "101\nТамбур\n1\n102\nВентилятор ВК-100\n2"
+    facts = extract_equipment_facts(text, room_keys={"101"})
+    keys = [f["key"] for f in facts]
+    assert "101" not in keys, keys
+    assert "102" in keys, keys
+    print("OK: позиция с ключом, уже занятым номером помещения, отсеивается")
+
+
 def test_stray_header_between_position_and_name_is_skipped():
     """На некоторых листах заголовок столбца повторяется на каждой странице
     прямо между кодом позиции и её названием (перенос таблицы) — это не
@@ -66,6 +78,7 @@ if __name__ == "__main__":
     test_child_positions_carry_parent_key()
     test_qty_with_unit_suffix_parsed()
     test_position_without_name_is_not_registered()
+    test_room_key_on_same_page_excludes_equipment_position()
     test_table_header_row_is_skipped_not_registered()
     test_stray_header_between_position_and_name_is_skipped()
     print("ALL PASS")

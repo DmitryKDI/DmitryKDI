@@ -55,9 +55,11 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
 
             if text:
                 text_facts.append({"page": page_no, "text": text})
-                for fact in extract_room_facts(text):
+                page_room_facts = extract_room_facts(text)
+                for fact in page_room_facts:
                     room_facts.append({"page": page_no, **fact})
-                for fact in extract_equipment_facts(text):
+                page_room_keys = {f["key"] for f in page_room_facts}
+                for fact in extract_equipment_facts(text, room_keys=page_room_keys):
                     equipment_facts.append({"page": page_no, **fact})
 
             stamp = read_stamp(page)
