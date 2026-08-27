@@ -109,30 +109,49 @@ def test_compare_text_pair_sends_text_not_images():
     print("OK: text-kind comparison sends plain text (no images) with both page texts and context")
 
 
-def test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline():
+def test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline(tmp_path, monkeypatch):
     """Известные нарушения из data/known_violations.json подставляются в
     системный промпт — это единственный способ, которым они влияют на анализ
     (весов модели мы не трогаем). Фильтрация обязательна: примеры для
     чертежей не должны попадать в текстовый промпт и наоборот, иначе модель
-    ищет вытяжную вентиляцию в акте освидетельствования."""
+    ищет вытяжную вентиляцию в акте освидетельствования.
+
+    Фикстура — синтетические примеры, не содержимое настоящего
+    data/known_violations.json: реальный файл сейчас (Приложение Г.24)
+    намеренно содержит только универсальные ('*') примеры без привязки к
+    разделу, поэтому проверять фильтр по discipline на нём нельзя — тест
+    должен быть независим от того, какие разделы там реально заведены."""
+    import json
+
+    import app.vision as vision_module
+
+    fixture = tmp_path / "known_violations.json"
+    fixture.write_text(json.dumps({"examples": [
+        {"discipline": "ОВ", "applies_to": "drawing", "what": "Пример чертежа раздела ОВ",
+         "how_to_spot": "маркер-drawing-ov", "severity": "критично"},
+        {"discipline": "*", "applies_to": "text", "what": "Пример текста, общий для всех разделов",
+         "how_to_spot": "маркер-text-any", "severity": "критично"},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr(vision_module, "KNOWN_VIOLATIONS_PATH", fixture)
+
     from app.vision import known_violations_block, load_known_violations, vision_system_prompt
 
     assert load_known_violations(), "файл примеров должен читаться, иначе промпт молча остаётся общим"
 
     drawing_ov = known_violations_block("drawing", "ОВ")
-    assert "венткамер" in drawing_ov.lower(), drawing_ov
-    assert "освидетельствован" not in drawing_ov.lower(), "текстовый пример утёк в чертёжный блок"
+    assert "маркер-drawing-ov" in drawing_ov, drawing_ov
+    assert "маркер-text-any" not in drawing_ov, "текстовый пример утёк в чертёжный блок"
 
     text_any = known_violations_block("text", "КР")
-    assert "освидетельствован" in text_any.lower(), text_any
-    assert "венткамер" not in text_any.lower(), "чертёжный пример утёк в текстовый блок"
+    assert "маркер-text-any" in text_any, text_any
+    assert "маркер-drawing-ov" not in text_any, "чертёжный пример утёк в текстовый блок"
 
     # Раздел ЭОМ: специфичных для ОВ примеров быть не должно, общие ('*') — должны.
     drawing_eom = known_violations_block("drawing", "ЭОМ")
-    assert "венткамер" not in drawing_eom.lower(), "пример раздела ОВ показан для ЭОМ"
+    assert "маркер-drawing-ov" not in drawing_eom, "пример раздела ОВ показан для ЭОМ"
 
     prompt = vision_system_prompt("ОВ")
-    assert "венткамер" in prompt.lower()
+    assert "маркер-drawing-ov" in prompt
     # Фигурные скобки JSON-шаблона не должны пострадать от .format()
     assert '{"significant"' in prompt, "формат ответа сломан подстановкой примеров"
     print("OK: примеры нарушений попадают в промпт с фильтром по типу листа и разделу")
@@ -151,9 +170,25 @@ def test_missing_known_violations_file_does_not_break_prompt(monkeypatch):
     print("OK: без файла примеров промпт остаётся корректным, анализ не падает")
 
 
-def test_compare_page_pair_passes_discipline_into_prompt():
+def test_compare_page_pair_passes_discipline_into_prompt(tmp_path, monkeypatch):
     """Раздел долетает из main.py до промпта — иначе фильтрация примеров
-    существует, но всегда получает None и вырождается в 'все примеры'."""
+    существует, но всегда получает None и вырождается в 'все примеры'.
+
+    Фикстура синтетическая — см. пояснение в
+    test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline:
+    реальный known_violations.json сейчас не содержит ОВ-специфичных
+    примеров (Приложение Г.24), тест не должен зависеть от этого факта."""
+    import json
+
+    import app.vision as vision_module
+
+    fixture = tmp_path / "known_violations.json"
+    fixture.write_text(json.dumps({"examples": [
+        {"discipline": "ОВ", "applies_to": "drawing", "what": "Пример чертежа раздела ОВ",
+         "how_to_spot": "маркер-drawing-ov", "severity": "критично"},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr(vision_module, "KNOWN_VIOLATIONS_PATH", fixture)
+
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
@@ -169,7 +204,7 @@ def test_compare_page_pair_passes_discipline_into_prompt():
         )
 
     system_prompt = captured["json"]["messages"][0]["content"]
-    assert "венткамер" in system_prompt.lower(), "примеры раздела ОВ не попали в системный промпт"
+    assert "маркер-drawing-ov" in system_prompt, "примеры раздела ОВ не попали в системный промпт"
     print("OK: discipline из main.py доходит до системного промпта сравнения")
 
 
