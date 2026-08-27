@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app import llm as llm_module
 from app.llm import LlmConfig, call_llm_json, extract_json_object, png_bytes_to_data_url
 
 
@@ -174,6 +175,65 @@ def test_yandexgpt_rejects_images_with_clear_error(monkeypatch):
     print("OK: попытка отправить картинку в YandexGPT — понятная ошибка, не сетевой сбой")
 
 
+def _gigachat_fake_post(calls):
+    def fake_post(url, json=None, data=None, files=None, headers=None, timeout=None, verify=None):
+        calls.append({"url": url, "json": json, "data": data, "files": files, "headers": headers})
+        if url == llm_module.GIGACHAT_OAUTH_URL:
+            return _FakeResponse({"access_token": "tok-1", "expires_at": (__import__("time").time() + 1800) * 1000})
+        if url.endswith("/files"):
+            return _FakeResponse({"id": "file-1"})
+        if url.endswith("/chat/completions"):
+            return _FakeResponse({"choices": [{"message": {"content": '{"significant": []}'}}]})
+        raise AssertionError(f"unexpected url: {url}")
+    return fake_post
+
+
+def test_gigachat_gets_token_uploads_image_then_calls_chat_with_attachment(monkeypatch):
+    """Картинка у GigaChat не инлайн, как у OpenAI/Anthropic/Google — сначала
+    отдельная загрузка файла (POST /files), потом ссылка на его id в
+    attachments сообщения (не в content)."""
+    llm_module._gigachat_token_cache.clear()
+    calls: list[dict] = []
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
+
+    with patch("app.llm.httpx.post", side_effect=_gigachat_fake_post(calls)):
+        config = LlmConfig(provider="gigachat", api_key="base64-creds", model="GigaChat-2")
+        result = call_llm_json(config, "система", "сравни", images=[png_bytes_to_data_url(png)])
+
+    assert result == {"significant": []}
+    oauth_call, upload_call, chat_call = calls
+    assert oauth_call["headers"]["Authorization"] == "Basic base64-creds"
+    assert oauth_call["data"]["scope"] == "GIGACHAT_API_PERS"
+    assert upload_call["url"].endswith("/files")
+    assert chat_call["json"]["messages"][1]["attachments"] == ["file-1"]
+    assert "attachments" not in chat_call["json"]["messages"][0]
+    print("OK: GigaChat получает токен, грузит файл и ссылается на него через attachments")
+
+
+def test_gigachat_caches_token_across_two_calls(monkeypatch):
+    llm_module._gigachat_token_cache.clear()
+    calls: list[dict] = []
+
+    with patch("app.llm.httpx.post", side_effect=_gigachat_fake_post(calls)):
+        config = LlmConfig(provider="gigachat", api_key="base64-creds", model="GigaChat-2")
+        call_llm_json(config, "система", "раз")
+        call_llm_json(config, "система", "два")
+
+    oauth_calls = [c for c in calls if c["url"] == llm_module.GIGACHAT_OAUTH_URL]
+    assert len(oauth_calls) == 1, "второй вызов должен был взять токен из кэша, не за новым"
+    print("OK: токен GigaChat кэшируется между вызовами внутри одного прогона")
+
+
+def test_gigachat_missing_api_key_raises_clear_error():
+    config = LlmConfig(provider="gigachat", model="GigaChat-2")
+    try:
+        call_llm_json(config, "система", "сравни")
+        raise AssertionError("должно было упасть без авторизационного ключа")
+    except ValueError as e:
+        assert "api_key" in str(e) or "ключ" in str(e)
+    print("OK: без авторизационного ключа GigaChat — понятная ошибка, не сетевой сбой")
+
+
 if __name__ == "__main__":
     test_extract_json_object_strips_think_block()
     test_extract_json_object_fenced()
@@ -182,4 +242,7 @@ if __name__ == "__main__":
     test_vision_request_embeds_bare_base64_images_for_local_provider()
     test_local_provider_requests_a_wider_context_than_ollamas_default()
     test_openai_provider_does_not_send_ollama_specific_num_ctx()
+    test_gigachat_gets_token_uploads_image_then_calls_chat_with_attachment(None)
+    test_gigachat_caches_token_across_two_calls(None)
+    test_gigachat_missing_api_key_raises_clear_error()
     print("ALL PASS (запустите pytest для тестов с monkeypatch)")
