@@ -7,6 +7,7 @@ from app.matching import DocumentInput
 from app.room_cross_check import cross_check_rooms
 from app.equip_cross_check import cross_check_equipment
 from app.requirement_cross_check import cross_check_requirements
+from app.requirement_registry import Requirement
 from app.triangulation import (
     CANDIDATE,
     CONFIRMED,
@@ -132,12 +133,9 @@ def test_adapter_from_equip_cross_check_feeds_triangulation():
 
 
 def test_adapter_from_requirement_cross_check_feeds_triangulation():
-    before = [DocumentInput("pd.pdf", 1, text_facts=[
-        {"page": 10, "text": "Общие указания. В помещениях для МГН (пом. 270) "
-                              "предусмотрена система подогрева полов."},
-    ])]
+    pd_requirements = [Requirement(rooms=["270"], page=10, sentence="требование без кода", code=None)]
     after = [DocumentInput("rd.pdf", 1, text_facts=[{"page": 1, "text": "ничего похожего"}])]
-    result = cross_check_requirements(before, after)
+    result = cross_check_requirements(pd_requirements, after)
     signals = signals_from_requirement_cross_check(result.findings)
     assert signals and signals[0].source == "requirement_prose"
     assert signals[0].key == "270"

@@ -1,36 +1,37 @@
-"""Сверка требований ПД против корпуса РД (Приложение Г.33 CLAUDE.md, п.41).
+"""Сверка требований ПД против корпуса РД (Приложение Г.33/Г.36 CLAUDE.md).
 
 Второй шаг механики, которую предложил пользователь в этой сессии:
 «сначала сводка из ПД по требованиям, потом в РД это сравнивается со
-сводкой». Первый шаг — `requirement_registry.py` (реестр требований из
-прозы ПД, две формы: с кодом системы и без кода). Здесь — сверка каждой
-записи реестра против полного текстового корпуса РД, по тому же
-принципу, что `room_cross_check.py`/`equip_cross_check.py`: не привязка
-к конкретной паре сопоставленных листов, а весь комплект целиком.
+сводкой». Первый шаг — извлечение реестра требований из прозы ПД,
+источник намеренно НЕ фиксирован здесь: этот модуль принимает уже готовый
+`list[Requirement]`, откуда бы он ни взялся — `requirement_llm_extract.py`
+(общий путь, ЛЛМ, работает на прозе любого формата) или
+`requirement_registry.py` (узкий regex-путь без ключа ЛЛМ, см. его
+докстринг). Развязка источника от сверки — прямое следствие того, что
+regex-экстрактор был подобран под ОДИН конкретный документ и не обобщается
+на другие форматы прозы (пользовательская поправка, Г.36); сама сверка
+против РД от формата исходной прозы ПД не зависит вообще.
 
-Две формы реестра сверяются РАЗНЫМИ методами, потому что несут разный
-по силе сигнал:
+Требование С кодом (буквенно-числовое обозначение — код системы, марка,
+позиция) сверяется присутствием этого кода как отдельного слова в полном
+тексте РД. Это единственная часть механики, которая остаётся текстовым
+поиском, и она уже сама по себе не зависит от формата документа: короткий
+буквенно-числовой токен — общий для инженерных обозначений почти любой
+дисциплины (не только ОВ), присутствие/отсутствие — да/нет по подстроке,
+без предположений о грамматике или структуре списка.
 
-  - Требование С кодом системы: код ищется как отдельное слово в полном
-    тексте РД. Ровно так была вручную сверена ролевая проверка списка
-    противодымной защиты в этой сессии (43 из 46 кодов подтвердились
-    присутствием в спецификации вентиляторов РД, «Проект: <модель>»).
-    Присутствие кода в тексте РД — сигнал «система вообще фигурирует в
-    РД», не сверка списка помещений (у РД нет реестра вида «код →
-    список помещений» в том же текстовом виде, что в прозе ПД).
-
-  - Требование БЕЗ кода (форма, которой было найдено нарушение №2 —
-    тёплые полы): сверять по коду нечего. Единственный текстовый сигнал
-    — та же форма требования (`extract_predicate_requirements`),
-    запущенная и на РД, с пересечением по номерам помещений. ВАЖНО:
-    отсутствие такого предложения в тексте РД — НЕ равно отсутствию на
-    чертеже. У нарушения №2 требование живёт в прозе ПЗ, а
-    несоответствие — на чертеже плана; текст РД мог бы вообще не
-    повторять формулировку ПЗ, даже если чертёж всё показывает верно.
-    Поэтому `predicate_missing_in_rd` — КАНДИДАТ на дальнейшую проверку
-    (эскалация в зрение по чертежу РД, см. `escalation.py`), а не
-    готовый вердикт «нарушение». Severity здесь — про то, что стоит
-    проверить, не про доказанность."""
+Требование БЕЗ кода — по определению нечего искать текстом: ни у него, ни
+у сверки нет якоря короче, чем весь текст предложения, а сверять
+предложение с предложением текстовым сравнением означает заново упереться
+в ту же проблему формата, от которой уходит этот модуль (было — сверка
+через `extract_predicate_requirements`, запущенный и на РД; убрано этим же
+изменением, потому что это тот же самый прежний regex, подобранный под
+одну грамматическую форму, только на другой стороне сравнения — не
+решение проблемы Г.36, а перенос той же проблемы на РД). Поэтому такое
+требование ВСЕГДА получает `no_code_visual_check_needed` — прямой кандидат
+на эскалацию в зрение по чертежу РД (`vision_page_compare.py`), без
+попытки текстового подтверждения. Это не значит «нарушение»: требование
+может быть выполнено на чертеже, просто текстом это не проверить."""
 from __future__ import annotations
 
 import re
@@ -38,14 +39,14 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .matching import DocumentInput
-from .requirement_registry import extract_coded_requirements, extract_predicate_requirements
+from .requirement_registry import Requirement
 
 
 @dataclass
 class RequirementFinding:
     """Находка по одному требованию из реестра ПД."""
     rooms: list[str]
-    finding_type: str  # 'code_confirmed_in_rd' | 'code_missing_in_rd' | 'predicate_confirmed_in_rd' | 'predicate_missing_in_rd'
+    finding_type: str  # 'code_confirmed_in_rd' | 'code_missing_in_rd' | 'no_code_visual_check_needed'
     detail: str = ""
     severity: str = "существенно"
     code: Optional[str] = None
@@ -57,11 +58,9 @@ class RequirementCrossCheckResult:
     """Результат сверки требований ПД↔РД."""
     findings: list[RequirementFinding] = field(default_factory=list)
     total_coded: int = 0
-    total_predicate: int = 0
+    total_no_code: int = 0
     coded_confirmed: int = 0
     coded_missing: int = 0
-    predicate_confirmed: int = 0
-    predicate_missing: int = 0
 
 
 def _code_pattern(code: str) -> re.Pattern:
@@ -73,19 +72,20 @@ def _flat_text_facts(files: list[DocumentInput]) -> list[dict]:
 
 
 def cross_check_requirements(
-    before_files: list[DocumentInput],
+    pd_requirements: list[Requirement],
     after_files: list[DocumentInput],
 ) -> RequirementCrossCheckResult:
-    """Сверка реестра требований ПД (обе формы) против полного корпуса РД."""
-    pd_text_facts = _flat_text_facts(before_files)
+    """Сверка уже извлечённого реестра требований ПД против полного
+    корпуса РД. `pd_requirements` — результат любого экстрактора
+    (`requirement_llm_extract.extract_requirements_llm` или
+    `requirement_registry.extract_requirements`), эта функция не знает и
+    не должна знать, как они были получены."""
     rd_text_facts = _flat_text_facts(after_files)
-
-    coded = extract_coded_requirements(pd_text_facts)
-    predicate = extract_predicate_requirements(pd_text_facts)
-    rd_predicate = extract_predicate_requirements(rd_text_facts)
     rd_text = "\n".join(fact["text"] for fact in rd_text_facts)
 
-    result = RequirementCrossCheckResult(total_coded=len(coded), total_predicate=len(predicate))
+    coded = [r for r in pd_requirements if r.code]
+    no_code = [r for r in pd_requirements if not r.code]
+    result = RequirementCrossCheckResult(total_coded=len(coded), total_no_code=len(no_code))
 
     seen_codes: set[str] = set()
     for req in coded:
@@ -103,30 +103,18 @@ def cross_check_requirements(
             result.coded_missing += 1
             result.findings.append(RequirementFinding(
                 rooms=req.rooms, finding_type="code_missing_in_rd", code=req.code,
-                detail=(f"{req.code}: требование из ПД (пом. {', '.join(req.rooms)}) "
+                detail=(f"{req.code}: требование из ПД (помещения: {', '.join(req.rooms)}) "
                         f"— код не найден в тексте РД"),
                 severity="существенно", sentence_pd=req.sentence,
             ))
 
-    rd_predicate_rooms = [set(r.rooms) for r in rd_predicate]
-    for req in predicate:
-        pd_rooms = set(req.rooms)
-        if any(pd_rooms & rd_rooms for rd_rooms in rd_predicate_rooms):
-            result.predicate_confirmed += 1
-            result.findings.append(RequirementFinding(
-                rooms=req.rooms, finding_type="predicate_confirmed_in_rd",
-                detail=f"пом. {', '.join(req.rooms)}: то же требование повторено в тексте РД",
-                severity="незначительно", sentence_pd=req.sentence,
-            ))
-        else:
-            result.predicate_missing += 1
-            result.findings.append(RequirementFinding(
-                rooms=req.rooms, finding_type="predicate_missing_in_rd",
-                detail=(f"пом. {', '.join(req.rooms)}: требование ПД без кода системы "
-                        f"не повторено в тексте РД — кандидат, нужна проверка по чертежу "
-                        f"(текстовое отсутствие в РД не равно отсутствию на чертеже)"),
-                severity="существенно", sentence_pd=req.sentence,
-            ))
+    for req in no_code:
+        result.findings.append(RequirementFinding(
+            rooms=req.rooms, finding_type="no_code_visual_check_needed",
+            detail=(f"помещения {', '.join(req.rooms)}: требование ПД без кода — "
+                    f"текстом в РД не проверяется, нужна проверка по чертежу"),
+            severity="существенно", sentence_pd=req.sentence,
+        ))
 
     return result
 
@@ -134,11 +122,10 @@ def cross_check_requirements(
 def render_requirement_cross_check_report(result: RequirementCrossCheckResult) -> str:
     """Печатный отчёт сверки требований."""
     lines = [
-        "=== Сверка требований ПД↔РД (Г.33) ===",
-        f"Требований с кодом системы: {result.total_coded} "
+        "=== Сверка требований ПД↔РД (Г.33/Г.36) ===",
+        f"Требований с кодом: {result.total_coded} "
         f"(подтверждено {result.coded_confirmed}, не найдено {result.coded_missing})",
-        f"Требований без кода: {result.total_predicate} "
-        f"(подтверждено {result.predicate_confirmed}, кандидатов {result.predicate_missing})",
+        f"Требований без кода: {result.total_no_code} (все — кандидаты на проверку по чертежу)",
         f"Находки: {len(result.findings)}",
     ]
 

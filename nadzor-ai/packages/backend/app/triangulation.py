@@ -135,23 +135,24 @@ def signals_from_routing_diff(diff: dict[str, list[dict]]) -> list[Signal]:
 
 def signals_from_requirement_cross_check(findings) -> list[Signal]:
     """`findings` — `RequirementCrossCheckResult.findings`
-    (requirement_cross_check.py). Только `*_missing_in_rd` — расхождение;
-    `*_confirmed_in_rd` записи в том же списке означают совпадение, а не
-    сигнал о возможном расхождении, и намеренно сюда не попадают (тот же
-    принцип, что и в остальных `signals_from_*`: сигнал — это находка о
-    несовпадении, не запись о подтверждённом соответствии).
+    (requirement_cross_check.py). `code_confirmed_in_rd` записи означают
+    совпадение, а не сигнал о возможном расхождении, и намеренно сюда не
+    попадают (тот же принцип, что и в остальных `signals_from_*`: сигнал —
+    это находка о несовпадении/неразрешённости, не запись о подтверждённом
+    соответствии).
 
-    Требование без кода (`predicate_missing_in_rd`) раскладывается на
-    отдельный сигнал по КАЖДОМУ помещению из его списка (domain="room")
-    — так это естественно складывается в триангуляции с сигналами
-    `room_registry`/`prose` по тому же номеру, что и произошло вручную с
-    нарушением №2 в этой сессии. Требование с кодом
-    (`code_missing_in_rd`) не привязано к одному номеру помещения так же
-    однозначно — сигнал по коду идёт в отдельный домен
+    Требование без кода (`no_code_visual_check_needed` — по построению
+    `requirement_cross_check.py` текстом не проверяется вообще, каждое
+    такое требование кандидат) раскладывается на отдельный сигнал по
+    КАЖДОМУ помещению из его списка (domain="room") — так это естественно
+    складывается в триангуляции с сигналами `room_registry`/`prose` по
+    тому же номеру, что и произошло вручную с нарушением №2 в этой сессии.
+    Требование с кодом (`code_missing_in_rd`) не привязано к одному номеру
+    помещения так же однозначно — сигнал по коду идёт в отдельный домен
     `requirement_code`, не смешиваясь с доменом `room`."""
     out: list[Signal] = []
     for f in findings:
-        if f.finding_type == "predicate_missing_in_rd":
+        if f.finding_type == "no_code_visual_check_needed":
             for room in f.rooms:
                 out.append(Signal(source="requirement_prose", domain="room", key=room, detail=f.detail))
         elif f.finding_type == "code_missing_in_rd":

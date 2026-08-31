@@ -10,7 +10,7 @@ from app import vision_page_compare
 from app.requirement_cross_check import RequirementFinding
 from app.vision_page_compare import (
     _candidate_pages,
-    check_predicate_missing_findings,
+    check_visual_candidates,
     check_requirement_on_page,
     render_vision_requirement_report,
 )
@@ -138,18 +138,18 @@ def test_candidate_pages_empty_when_no_room_in_index():
     print("OK: помещение, отсутствующее в реестре РД, не даёт кандидатов")
 
 
-def _rf(rooms, finding_type="predicate_missing_in_rd", sentence="требование"):
+def _rf(rooms, finding_type="no_code_visual_check_needed", sentence="требование"):
     return RequirementFinding(rooms=rooms, finding_type=finding_type, sentence_pd=sentence)
 
 
-def test_check_predicate_missing_findings_skips_other_finding_types():
+def test_check_visual_candidates_skips_other_finding_types():
     findings = [_rf(["1"], finding_type="code_missing_in_rd")]
-    out = check_predicate_missing_findings(findings, {}, config=None)
+    out = check_visual_candidates(findings, {}, config=None)
     assert out == []
     print("OK: находки с кодом системы не эскалируются в зрение этим модулем")
 
 
-def test_check_predicate_missing_findings_unclear_without_room_in_registry():
+def test_check_visual_candidates_unclear_without_room_in_registry():
     findings = [_rf(["999"])]
     called = []
 
@@ -159,7 +159,7 @@ def test_check_predicate_missing_findings_unclear_without_room_in_registry():
 
     original = _patch(vision_page_compare, "call_llm_json", fake_call_llm_json)
     try:
-        out = check_predicate_missing_findings(findings, {}, config=None)
+        out = check_visual_candidates(findings, {}, config=None)
     finally:
         vision_page_compare.call_llm_json = original
 
@@ -169,7 +169,7 @@ def test_check_predicate_missing_findings_unclear_without_room_in_registry():
     print("OK: требование без известного листа РД — unclear без обращения к модели")
 
 
-def test_check_predicate_missing_findings_first_decisive_verdict_wins():
+def test_check_visual_candidates_first_decisive_verdict_wins():
     findings = [_rf(["270"])]
     room_index = {"270": [{"path": "a.pdf", "page": 1}, {"path": "a.pdf", "page": 2}]}
     calls = []
@@ -186,7 +186,7 @@ def test_check_predicate_missing_findings_first_decisive_verdict_wins():
     orig_render = _patch(vision_page_compare, "render_page_to_data_url", fake_render)
     orig_call = _patch(vision_page_compare, "call_llm_json", fake_call_llm_json)
     try:
-        out = check_predicate_missing_findings(findings, room_index, config=None)
+        out = check_visual_candidates(findings, room_index, config=None)
     finally:
         vision_page_compare.render_page_to_data_url = orig_render
         vision_page_compare.call_llm_json = orig_call
@@ -197,7 +197,7 @@ def test_check_predicate_missing_findings_first_decisive_verdict_wins():
     print("OK: первый небезразличный вердикт (не unclear) останавливает перебор листов")
 
 
-def test_check_predicate_missing_findings_all_unclear_reports_unclear():
+def test_check_visual_candidates_all_unclear_reports_unclear():
     findings = [_rf(["270"])]
     room_index = {"270": [{"path": "a.pdf", "page": 1}]}
 
@@ -210,7 +210,7 @@ def test_check_predicate_missing_findings_all_unclear_reports_unclear():
     orig_render = _patch(vision_page_compare, "render_page_to_data_url", fake_render)
     orig_call = _patch(vision_page_compare, "call_llm_json", fake_call_llm_json)
     try:
-        out = check_predicate_missing_findings(findings, room_index, config=None)
+        out = check_visual_candidates(findings, room_index, config=None)
     finally:
         vision_page_compare.render_page_to_data_url = orig_render
         vision_page_compare.call_llm_json = orig_call
@@ -241,9 +241,9 @@ if __name__ == "__main__":
     test_candidate_pages_goes_deeper_within_budget()
     test_candidate_pages_respects_cap()
     test_candidate_pages_empty_when_no_room_in_index()
-    test_check_predicate_missing_findings_skips_other_finding_types()
-    test_check_predicate_missing_findings_unclear_without_room_in_registry()
-    test_check_predicate_missing_findings_first_decisive_verdict_wins()
-    test_check_predicate_missing_findings_all_unclear_reports_unclear()
+    test_check_visual_candidates_skips_other_finding_types()
+    test_check_visual_candidates_unclear_without_room_in_registry()
+    test_check_visual_candidates_first_decisive_verdict_wins()
+    test_check_visual_candidates_all_unclear_reports_unclear()
     test_render_report_groups_by_verdict()
     print("ALL PASS")

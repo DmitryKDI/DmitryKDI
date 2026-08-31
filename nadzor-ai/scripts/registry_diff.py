@@ -36,9 +36,11 @@ from app.requirement_cross_check import (  # noqa: E402
     cross_check_requirements,
     render_requirement_cross_check_report,
 )
+from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
+from app.requirement_registry import extract_requirements  # noqa: E402
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
-    check_predicate_missing_findings,
+    check_visual_candidates,
     render_vision_requirement_report,
 )
 
@@ -158,29 +160,40 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
 def run_requirements(
     before_paths: list[str],
     after_paths: list[str],
-    vision_config: Optional[LlmConfig] = None,
+    llm_config: Optional[LlmConfig] = None,
 ) -> None:
-    """Сверка реестра требований из прозы ПД против корпуса РД (Г.32/Г.33,
-    requirement_registry.py + requirement_cross_check.py) — не по
-    key-реестру, как rooms/equipment, а по двум формам предложений
-    прозы, поэтому отдельный путь, не через `run()`/`_registry`.
+    """Сверка реестра требований из прозы ПД против корпуса РД
+    (Г.32/Г.33/Г.36) — не по key-реестру, как rooms/equipment, а по
+    произвольной прозе, поэтому отдельный путь, не через `run()`/`_registry`.
 
-    `vision_config` — если задан, находки «predicate_missing_in_rd»
-    (требование без кода, не найденное в тексте РД — по определению
-    кандидат, не вердикт, см. requirement_cross_check.py) эскалируются в
-    зрение по листу РД, где встречается хотя бы одно из помещений
-    требования (vision_page_compare.py). Без ключа — только текстовый
-    отчёт, как раньше."""
-    before = [DocumentInput("ПД", 1, text_facts=_load_text_facts(before_paths))]
+    Извлечение требований из ПД — ДВА взаимозаменяемых пути, сверка
+    (`cross_check_requirements`) от источника не зависит:
+
+      - `llm_config` задан: `requirement_llm_extract.py` — общий путь,
+        работает на прозе любого формата и раздела, требует ключ ЛЛМ.
+      - `llm_config` не задан: `requirement_registry.py` — узкий regex-
+        путь по одному наблюдённому формату списка, без ключа ЛЛМ
+        (RUN-NO-LLM.bat); см. предупреждение в докстринге самого модуля.
+
+    Тот же `llm_config`, если задан, используется и для эскалации находок
+    «no_code_visual_check_needed» в зрение по листу РД
+    (`vision_page_compare.py`) — тот же ключ и провайдер нужны для обоих
+    шагов, отдельного флага/ключа под извлечение не заводится."""
+    pd_text_facts = _load_text_facts(before_paths)
+    if llm_config is not None:
+        pd_requirements = extract_requirements_llm(pd_text_facts, llm_config)
+    else:
+        pd_requirements = extract_requirements(pd_text_facts)
+
     after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
-    result = cross_check_requirements(before, after)
+    result = cross_check_requirements(pd_requirements, after)
     print()
     print(render_requirement_cross_check_report(result))
 
-    if vision_config is None:
+    if llm_config is None:
         return
     room_index = _registry(after_paths, "room_facts")
-    vision_results = check_predicate_missing_findings(result.findings, room_index, vision_config)
+    vision_results = check_visual_candidates(result.findings, room_index, llm_config)
     print()
     print(render_vision_requirement_report(vision_results))
 
@@ -209,7 +222,8 @@ def main() -> None:
     parser.add_argument("--verify", action="store_true",
                         help="Прогнать кандидатов «только с одной стороны» через LLM (по одной картинке) — реальная позиция или шум извлечения")
     parser.add_argument("--verify-requirements", action="store_true",
-                        help="Эскалировать требования без кода, не найденные в тексте РД (predicate_missing_in_rd), в зрение по листу РД — vision_page_compare.py")
+                        help="Требования из ПД извлекать ЛЛМ (общий путь, requirement_llm_extract.py — иначе узкий regex-путь без ключа) "
+                             "и эскалировать кандидатов без кода (no_code_visual_check_needed) в зрение по листу РД — vision_page_compare.py")
     parser.add_argument("--provider", default="gigachat", choices=["openai", "anthropic", "google", "yandexgpt", "gigachat"])
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
@@ -218,13 +232,13 @@ def main() -> None:
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
-    llm_config = LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
-    config = llm_config if args.verify else None
-    vision_config = llm_config if args.verify_requirements else None
+    provider_config = LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
+    config = provider_config if args.verify else None
+    requirements_llm_config = provider_config if args.verify_requirements else None
 
     if args.verify_requirements and not api_key:
-        print("--verify-requirements задан, но ключ не найден (ни --api-key, ни переменная окружения) — эскалация в зрение пропущена", file=sys.stderr)
-        vision_config = None
+        print("--verify-requirements задан, но ключ не найден (ни --api-key, ни переменная окружения) — извлечение и эскалация через ЛЛМ пропущены, используется regex-путь без зрения", file=sys.stderr)
+        requirements_llm_config = None
 
     if args.kind == "both":
         kinds = ["rooms", "equipment"]
@@ -236,7 +250,7 @@ def main() -> None:
         run(args.before, args.after, kind, config)
 
     if args.kind in ("requirements", "both"):
-        run_requirements(args.before, args.after, vision_config)
+        run_requirements(args.before, args.after, requirements_llm_config)
 
 
 if __name__ == "__main__":

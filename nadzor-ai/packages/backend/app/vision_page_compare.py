@@ -1,11 +1,11 @@
-"""Полностраничная проверка требования на листе РД зрением — эскалация Г.33.
+"""Полностраничная проверка требования на листе РД зрением — эскалация Г.33/Г.36.
 
-`requirement_cross_check.py` находит `predicate_missing_in_rd`: требование
-из прозы ПД (без кода системы) не повторено ТЕКСТОМ в РД. Явно
-документировано там же: это кандидат, не вердикт — несоответствие может
-жить на самом чертеже, а текст РД вовсе не обязан повторять формулировку
-ПЗ, даже если чертёж всё показывает верно. Разрешить кандидата может только
-зрение по самому листу.
+`requirement_cross_check.py` помечает КАЖДОЕ требование без кода как
+`no_code_visual_check_needed`: у требования нет буквенно-числового
+обозначения, значит текстом в РД его в принципе не проверить — не потому
+что что-то не найдено, а потому что искать нечего короче целого
+предложения. Разрешить такого кандидата может только зрение по самому
+листу.
 
 Пользовательская идея, определившая форму этого модуля: не пытаться
 заранее вычислить координатный кроп (там, где несоответствие — не в одной
@@ -33,8 +33,9 @@ REQUIREMENT_CHECK_SYSTEM_PROMPT = f"""\
 или исполнительной документации (РД/ИД).
 
 Тебе показан ОДИН лист РД/ИД целиком — план, схема или узел. Отдельно дано
-требование, сформулированное в проектной документации (ПД), и номера
-помещений, которых оно касается.
+требование, сформулированное в проектной документации (ПД), и помещения
+или зоны, которых оно касается (могут быть указаны номером, названием или
+иначе — как записано в исходном документе).
 
 {UNTRUSTED_INPUT_RULE}
 
@@ -119,13 +120,13 @@ def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pa
     return pages
 
 
-def check_predicate_missing_findings(
+def check_visual_candidates(
     findings: list,
     room_index: dict[str, list[dict]],
     config: LlmConfig,
     max_pages_per_finding: int = 3,
 ) -> list[dict]:
-    """Эскалирует находки `predicate_missing_in_rd`
+    """Эскалирует находки `no_code_visual_check_needed`
     (`RequirementCrossCheckResult.findings`) в зрение по листам РД.
 
     `room_index` — {room_key: [{path, page, ...}]}, тот же формат, что
@@ -144,7 +145,7 @@ def check_predicate_missing_findings(
     небезразличный вердикт побеждает "unclear" от предыдущих страниц)."""
     out: list[dict] = []
     for f in findings:
-        if getattr(f, "finding_type", None) != "predicate_missing_in_rd":
+        if getattr(f, "finding_type", None) != "no_code_visual_check_needed":
             continue
         pages = _candidate_pages(f.rooms, room_index, max_pages_per_finding)
         if not pages:
@@ -186,5 +187,5 @@ def render_vision_requirement_report(results: list[dict]) -> str:
         for r in group:
             rooms_str = ", ".join(r["rooms"])
             where = f" [{r['where']}]" if r.get("where") else ""
-            lines.append(f"  пом. {rooms_str}: {r['reason']}{where}")
+            lines.append(f"  помещения {rooms_str}: {r['reason']}{where}")
     return "\n".join(lines)
