@@ -153,6 +153,19 @@ Segment = tuple[Point, Point]
 KIND_ROOM = "room"
 KIND_BRANCH = "branch"
 KIND_TARGET = "target"
+# Ось/отметка (axes.py) как якорь, когда на листе нет экспликации помещений
+# (Г.5: «план ↔ план (КР, КЖ, КМ) — оси + отметка»). Значение строки
+# намеренно совпадает с `axes.KIND_AXIS`/`axes.KIND_ELEVATION`, чтобы
+# `AxisAnchor`, обёрнутый в `Label`, не требовал перевода констант.
+KIND_AXIS = "axis"
+KIND_ELEVATION = "elevation"
+# Типы якоря, которые по умолчанию участвуют в поиске «ближайшего» для
+# привязки цепи маршрута к месту. Отметка высоты (KIND_ELEVATION) сюда
+# намеренно НЕ входит: это указатель уровня/этажа для листа в целом, а не
+# точечный ориентир в плане XY — как ближайший сосед для конкретной цепи
+# она не осмыслена, в отличие от номера помещения или оси. Передать её
+# явно через `anchor_kinds` вызывающий код всё равно может.
+DEFAULT_ANCHOR_KINDS: tuple[str, ...] = (KIND_ROOM, KIND_AXIS)
 
 # Код распределительной ветки на схеме: «В2.7», «П3.1», «К6.2». Точка с
 # цифрой обязательна — без неё под шаблон попадает графа «Кат. пом.»
@@ -575,17 +588,26 @@ def collect_labels(
 # Построение графа
 # --------------------------------------------------------------------------
 
-def _nearest_rooms(
-    rooms: Sequence[Label], points: Sequence[Point], margin: float,
+def _nearest_anchor(
+    anchors: Sequence[Label], points: Sequence[Point], margin: float,
 ) -> tuple[str | None, tuple[str, ...]]:
-    """Ближайший к цепи номер помещения. Если второй по близости отстоит
-    меньше чем на `margin` — различить их по близости нельзя, оба уходят в
-    кандидаты, а room_key остаётся пустым (Г.10: неоднозначность видна)."""
-    if not rooms or not points:
+    """Ближайший к цепи якорь — номер помещения ПО УМОЛЧАНИЮ, но геометрия
+    одинакова для любого источника меток (ось из `axes.py`, обёрнутая в
+    `Label(kind=KIND_AXIS)`, работает тем же кодом без изменений — общий
+    механизм для листов без экспликации помещений, Г.5). Если второй по
+    близости отстоит меньше чем на `margin` — различить их по близости
+    нельзя, оба уходят в кандидаты, а ключ остаётся пустым (Г.10:
+    неоднозначность видна).
+
+    Статус n=1 для случая якоря-оси: код идентичен уже проверенному пути
+    для помещений, но сам путь «нет room_keys → в ход идёт ось» ни разу не
+    прогонялся на реальном листе без экспликации — только теоретически
+    обобщён из общего механизма `axes.py`."""
+    if not anchors or not points:
         return None, ()
     scored: list[tuple[float, str]] = []
-    for room in rooms:
-        scored.append((min(_bbox_distance(pt, room.bbox) for pt in points), room.text))
+    for anchor in anchors:
+        scored.append((min(_bbox_distance(pt, anchor.bbox) for pt in points), anchor.text))
     scored.sort()
     if len(scored) > 1 and scored[1][1] != scored[0][1] and scored[1][0] - scored[0][0] < margin:
         return None, tuple(sorted({scored[0][1], scored[1][1]}))
@@ -602,19 +624,38 @@ def build_routing_graph(
     join_radius: float = DEFAULT_JOIN_RADIUS,
     min_chain_nodes: int = DEFAULT_MIN_CHAIN_NODES,
     room_margin: float = DEFAULT_ROOM_MARGIN,
+    anchor_kinds: Sequence[str] = DEFAULT_ANCHOR_KINDS,
 ) -> RoutingGraph:
-    """Граф `room_key → branch_code → target_code` для одного листа.
+    """Граф `anchor_key → branch_code → target_code` для одного листа (поле
+    результата по-прежнему называется `room_key` — не переименовано, чтобы
+    не ломать уже существующих потребителей (`diff_routing_graphs`,
+    `triangulation.py`), но по смыслу это «ключ ближайшего якоря», не
+    обязательно номер помещения).
 
-    `labels=None` — подписи берутся из текстового слоя (`collect_labels`).
-    Явно переданный список позволяет подать подписи из другого источника
-    (очередь на зрение по Г.30 п.5, ручной замер) — геометрия та же."""
+    `labels=None` — подписи берутся из текстового слоя (`collect_labels`,
+    только помещения/ветки/точки сбора — ось `collect_labels` не читает,
+    её даёт `axes.py` отдельно). Явно переданный список позволяет подать
+    подписи из любого источника (очередь на зрение по Г.30 п.5, ручной
+    замер, `axes.py` для листа без экспликации — обернуть каждый
+    `AxisAnchor` в `Label(a.text, a.bbox, routing_graph.KIND_AXIS)` и
+    передать вместе с остальными метками) — геометрия та же.
+
+    `anchor_kinds` — какие типы меток считаются кандидатом на «ближайший
+    якорь» (по умолчанию помещение и ось, см. `DEFAULT_ANCHOR_KINDS`);
+    несколько типов участвуют в поиске ближайшего ОДНОВРЕМЕННО, не по
+    очереди — если рядом с веткой есть и номер помещения, и осевая метка,
+    выигрывает тот, что физически ближе. На листе без единого помещения
+    (room_keys пуст, в `labels` нет меток KIND_ROOM) это естественным
+    образом отдаёт роль якоря оси без отдельной ветки кода "если пусто —
+    попробовать другое"."""
     segments = page_segments(page, clip)
     network = SegmentNetwork(segments, snap=snap)
     if labels is None:
         labels = collect_labels(page, room_keys=room_keys, clip=clip)
     labels = tuple(labels)
 
-    rooms = [lb for lb in labels if lb.kind == KIND_ROOM]
+    anchor_kind_set = set(anchor_kinds)
+    rooms = [lb for lb in labels if lb.kind in anchor_kind_set]
     branches = [lb for lb in labels if lb.kind == KIND_BRANCH]
     targets = [lb for lb in labels if lb.kind == KIND_TARGET]
 
@@ -628,7 +669,8 @@ def build_routing_graph(
         notes.append("подписи точек сбора в источнике отсутствуют: концы веток "
                      "определить не с чем, все рёбра останутся неразрешёнными")
     if not rooms:
-        notes.append("номеров помещений в источнике нет: рёбра будут без room_key")
+        notes.append(f"якорей типа {sorted(anchor_kind_set)} в источнике нет: "
+                     "рёбра будут без room_key")
 
     def chain_of(label: Label):
         return trace_label(network, label, touch_tolerance, join_radius, min_chain_nodes)
@@ -679,7 +721,7 @@ def build_routing_graph(
             continue
         root = found[0][0]
         size = network.component_size(root)
-        room_key, room_candidates = _nearest_rooms(
+        room_key, room_candidates = _nearest_anchor(
             rooms, network.component_points(root), room_margin)
         reached = target_chains.get(root, [])
         if len(reached) == 1:

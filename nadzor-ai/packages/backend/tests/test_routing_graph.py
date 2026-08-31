@@ -15,6 +15,7 @@ import pymupdf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.routing_graph import (  # noqa: E402
+    KIND_AXIS,
     KIND_BRANCH,
     KIND_ROOM,
     KIND_TARGET,
@@ -94,6 +95,72 @@ def test_branch_reaches_target_through_duct():
     finally:
         doc.close()
     print("OK: ветка, подведённая к магистрали, доходит до точки сбора")
+
+
+def test_axis_label_used_as_anchor_when_no_room_present():
+    """Обобщение на листы без экспликации помещений (Г.5): если меток
+    KIND_ROOM нет вообще, ближайшая ось (`axes.py`) даёт ключ ровно тем же
+    механизмом — geometry не различает источник метки, только kind."""
+    doc, page = _new_page()
+    try:
+        _duct(page)
+        _text(page, (100, 100), "В2.7")
+        _polyline(page, [(99, 97), (55, 97)])
+        _text(page, (350, 300), "М.О. поз.169")
+        _polyline(page, [(349, 297), (295, 297)])
+
+        labels = list(collect_labels(page)) + [Label("АБ", (150, 215, 165, 225), KIND_AXIS)]
+        graph = build_routing_graph(page, labels=labels)
+        assert len(graph.edges) == 1, graph.edges
+        edge = graph.edges[0]
+        assert edge.resolved, edge
+        assert edge.room_key == "АБ", edge
+    finally:
+        doc.close()
+    print("OK: при пустом реестре помещений якорем становится ось, тем же кодом")
+
+
+def test_room_wins_over_axis_when_physically_closer():
+    """Оба типа якоря участвуют в поиске ближайшего ОДНОВРЕМЕННО (не по
+    очереди) — при прочих равных выигрывает физически более близкий, а не
+    тот, что стоит раньше в anchor_kinds."""
+    doc, page = _new_page()
+    try:
+        _duct(page)
+        _text(page, (100, 100), "В2.7")
+        _polyline(page, [(99, 97), (55, 97)])
+        _text(page, (350, 300), "М.О. поз.169")
+        _polyline(page, [(349, 297), (295, 297)])
+
+        labels = list(collect_labels(page, room_keys={"141"})) + [
+            Label("141", (150, 215, 165, 225), KIND_ROOM),
+            Label("АБ", (500, 500, 515, 510), KIND_AXIS),  # намеренно далеко от цепи
+        ]
+        graph = build_routing_graph(page, labels=labels)
+        assert graph.edges[0].room_key == "141", graph.edges
+    finally:
+        doc.close()
+    print("OK: физически более близкий якорь побеждает независимо от типа")
+
+
+def test_anchor_kinds_restricts_candidates():
+    """Явно ограниченный `anchor_kinds` исключает ось из поиска даже когда
+    она физически ближе всего — вызывающий код может сузить якорь до
+    только помещений, если хочет прежнее поведение."""
+    doc, page = _new_page()
+    try:
+        _duct(page)
+        _text(page, (100, 100), "В2.7")
+        _polyline(page, [(99, 97), (55, 97)])
+        _text(page, (350, 300), "М.О. поз.169")
+        _polyline(page, [(349, 297), (295, 297)])
+
+        labels = list(collect_labels(page)) + [Label("АБ", (150, 215, 165, 225), KIND_AXIS)]
+        graph = build_routing_graph(page, labels=labels, anchor_kinds=(KIND_ROOM,))
+        assert graph.edges[0].room_key is None, graph.edges
+    finally:
+        doc.close()
+    print("OK: anchor_kinds сужает поиск якоря до явно указанных типов")
 
 
 def test_branch_without_leader_is_visible_not_silent():
@@ -399,6 +466,9 @@ def test_real_sheet_network_does_not_collapse_into_one_blob():
 
 if __name__ == "__main__":
     test_branch_reaches_target_through_duct()
+    test_axis_label_used_as_anchor_when_no_room_present()
+    test_room_wins_over_axis_when_physically_closer()
+    test_anchor_kinds_restricts_candidates()
     test_branch_without_leader_is_visible_not_silent()
     test_two_leaders_to_different_chains_is_ambiguous()
     test_two_targets_on_one_chain_is_ambiguous()
