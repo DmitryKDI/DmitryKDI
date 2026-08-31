@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+vision-keys.env
 data/demo/generated/
 data/storage/
 *.db

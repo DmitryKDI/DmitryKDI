@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -36,6 +37,21 @@ from app.requirement_cross_check import (  # noqa: E402
     render_requirement_cross_check_report,
 )
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
+from app.vision_page_compare import (  # noqa: E402
+    check_predicate_missing_findings,
+    render_vision_requirement_report,
+)
+
+# Провайдер -> имя переменной окружения с ключом, то же имя, что в
+# nadzor-ai/.env.example (GIGACHAT_CREDENTIALS уже используется полным
+# приложением, scripts/start-all.sh). Явный --api-key всегда в приоритете —
+# переменная окружения только избавляет от необходимости передавать ключ
+# аргументом командной строки (виден в истории shell/процессов).
+_PROVIDER_ENV_KEY = {
+    "gigachat": "GIGACHAT_CREDENTIALS",
+    "yandexgpt": "YANDEX_GPT_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
 
 _KIND_ATTR = {"rooms": "room_facts", "equipment": "equipment_facts"}
 _KIND_LABEL = {"rooms": "помещений", "equipment": "оборудования"}
@@ -139,16 +155,34 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     return out
 
 
-def run_requirements(before_paths: list[str], after_paths: list[str]) -> None:
+def run_requirements(
+    before_paths: list[str],
+    after_paths: list[str],
+    vision_config: Optional[LlmConfig] = None,
+) -> None:
     """Сверка реестра требований из прозы ПД против корпуса РД (Г.32/Г.33,
     requirement_registry.py + requirement_cross_check.py) — не по
     key-реестру, как rooms/equipment, а по двум формам предложений
-    прозы, поэтому отдельный путь, не через `run()`/`_registry`."""
+    прозы, поэтому отдельный путь, не через `run()`/`_registry`.
+
+    `vision_config` — если задан, находки «predicate_missing_in_rd»
+    (требование без кода, не найденное в тексте РД — по определению
+    кандидат, не вердикт, см. requirement_cross_check.py) эскалируются в
+    зрение по листу РД, где встречается хотя бы одно из помещений
+    требования (vision_page_compare.py). Без ключа — только текстовый
+    отчёт, как раньше."""
     before = [DocumentInput("ПД", 1, text_facts=_load_text_facts(before_paths))]
     after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
     result = cross_check_requirements(before, after)
     print()
     print(render_requirement_cross_check_report(result))
+
+    if vision_config is None:
+        return
+    room_index = _registry(after_paths, "room_facts")
+    vision_results = check_predicate_missing_findings(result.findings, room_index, vision_config)
+    print()
+    print(render_vision_requirement_report(vision_results))
 
 
 def run(before_paths: list[str], after_paths: list[str], kind: str, config: Optional[LlmConfig]) -> None:
@@ -174,13 +208,23 @@ def main() -> None:
     parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "both"], default="both")
     parser.add_argument("--verify", action="store_true",
                         help="Прогнать кандидатов «только с одной стороны» через LLM (по одной картинке) — реальная позиция или шум извлечения")
+    parser.add_argument("--verify-requirements", action="store_true",
+                        help="Эскалировать требования без кода, не найденные в тексте РД (predicate_missing_in_rd), в зрение по листу РД — vision_page_compare.py")
     parser.add_argument("--provider", default="gigachat", choices=["openai", "anthropic", "google", "yandexgpt", "gigachat"])
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
-    parser.add_argument("--api-key", default="")
+    parser.add_argument("--api-key", default="",
+                        help=f"По умолчанию берётся из переменной окружения по провайдеру ({', '.join(_PROVIDER_ENV_KEY.values())}), если не передан явно")
     args = parser.parse_args()
 
-    config = LlmConfig(provider=args.provider, api_key=args.api_key, base_url=args.base_url, model=args.model) if args.verify else None
+    api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
+    llm_config = LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
+    config = llm_config if args.verify else None
+    vision_config = llm_config if args.verify_requirements else None
+
+    if args.verify_requirements and not api_key:
+        print("--verify-requirements задан, но ключ не найден (ни --api-key, ни переменная окружения) — эскалация в зрение пропущена", file=sys.stderr)
+        vision_config = None
 
     if args.kind == "both":
         kinds = ["rooms", "equipment"]
@@ -192,7 +236,7 @@ def main() -> None:
         run(args.before, args.after, kind, config)
 
     if args.kind in ("requirements", "both"):
-        run_requirements(args.before, args.after)
+        run_requirements(args.before, args.after, vision_config)
 
 
 if __name__ == "__main__":

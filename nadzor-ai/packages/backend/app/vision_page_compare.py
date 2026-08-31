@@ -1,0 +1,190 @@
+"""Полностраничная проверка требования на листе РД зрением — эскалация Г.33.
+
+`requirement_cross_check.py` находит `predicate_missing_in_rd`: требование
+из прозы ПД (без кода системы) не повторено ТЕКСТОМ в РД. Явно
+документировано там же: это кандидат, не вердикт — несоответствие может
+жить на самом чертеже, а текст РД вовсе не обязан повторять формулировку
+ПЗ, даже если чертёж всё показывает верно. Разрешить кандидата может только
+зрение по самому листу.
+
+Пользовательская идея, определившая форму этого модуля: не пытаться
+заранее вычислить координатный кроп (там, где несоответствие — не в одной
+точке, а разлито по всему помещению на плане, у кропа физически может не
+быть той рамки, где искать), а отдать модели ВЕСЬ лист целиком — тот же
+рендер, что уже используют `compare_page_pair`/`verify_candidate`
+(`render_page_to_data_url`, `vision.py`), без новой геометрии.
+
+Формат вердикта — три состояния, не бинарный да/нет: "confirmed" (на листе
+видно, что требование выполнено), "absent" (видно, что не выполнено —
+кандидат на настоящую находку), "unclear" (лист не позволяет судить — не то
+что нужно смотреть, качество скана и т.п.). Модель прямо предупреждена не
+гадать при "unclear" — ложный "absent" на скудном листе хуже, чем честное
+«не могу сказать» и следующая попытка на другом листе."""
+from __future__ import annotations
+
+from typing import Optional
+
+from .llm import LlmConfig, call_llm_json
+from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
+
+REQUIREMENT_CHECK_SYSTEM_PROMPT = f"""\
+Ты помогаешь инспектору государственного строительного надзора проверить,
+выполнено ли конкретное требование проектной документации на листе рабочей
+или исполнительной документации (РД/ИД).
+
+Тебе показан ОДИН лист РД/ИД целиком — план, схема или узел. Отдельно дано
+требование, сформулированное в проектной документации (ПД), и номера
+помещений, которых оно касается.
+
+{UNTRUSTED_INPUT_RULE}
+
+Три возможных вывода:
+  "confirmed" — на листе видно, что требование выполнено (нужный элемент/
+                система/параметр присутствует именно там, где указано);
+  "absent"    — лист однозначно показывает нужную зону, но требуемого на
+                нём НЕТ — реальный кандидат на находку;
+  "unclear"   — по этому листу нельзя судить: не та зона, лист обрезан,
+                элемент физически не может быть виден на плане такого
+                масштаба, качество рендера не позволяет разобрать детали.
+
+Не выбирай "absent", если сомневаешься — это должно быть видно на листе, а
+не предположено. Ложное "absent" отправит инспектора искать нарушение там,
+где его нет.
+
+Отвечай только JSON без пояснений вне JSON:
+{{"verdict": "confirmed"|"absent"|"unclear",
+ "reason": "одна-две строки — что видно на листе и почему такой вывод",
+ "where": "координатный ориентир на листе (оси, номер помещения, зона), если применимо"}}"""
+
+
+def check_requirement_on_page(
+    rd_pdf_path: str,
+    rd_page_no: int,
+    requirement_text: str,
+    rooms: list[str],
+    config: LlmConfig,
+    timeout: float = 120.0,
+) -> dict:
+    """Один лист, одно требование. Возвращает {verdict, reason, where} —
+    "unclear" с объяснением, если модель не дала разбираемый JSON, а не
+    молчаливая пустая находка (Г.10)."""
+    rooms_str = ", ".join(rooms) if rooms else "не указаны"
+    user_text = (
+        f"Требование из проектной документации: «{requirement_text}»\n"
+        f"Касается помещений: {rooms_str}.\n"
+        f"Проверь по этому листу РД/ИД, выполняется ли оно."
+    )
+    try:
+        img = render_page_to_data_url(rd_pdf_path, rd_page_no)
+        result = call_llm_json(config, REQUIREMENT_CHECK_SYSTEM_PROMPT, user_text, images=[img], timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — сбой одного листа (сеть, провайдер, рендер) не должен ронять весь прогон, см. registry_diff._verify_group
+        return {"verdict": "unclear", "reason": f"ОШИБКА: {exc}", "where": ""}
+    if not result or "verdict" not in result:
+        return {"verdict": "unclear", "reason": "ИИ не дал разбираемый ответ", "where": ""}
+    return result
+
+
+def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pages: int) -> list[dict]:
+    """Страницы-кандидаты РД для списка помещений — В ШИРИНУ по помещениям,
+    не в глубину по одному: сначала первая известная страница каждого
+    помещения из списка, потом (если бюджет ещё есть) вторая страница
+    каждого, и так далее. Одно и то же помещение с десятками упоминаний не
+    исчерпывает лимit листов раньше, чем проверка доберётся до следующего
+    помещения требования (при нескольких помещениях) — но требование с
+    ОДНИМ помещением всё равно может получить вторую попытку на другом
+    листе того же помещения, если первый лист оказался "unclear" (реальный
+    случай: план и узел одного помещения на разных листах одного раздела).
+    Без дублей по (path, page), с общим потолком на находку."""
+    seen: set[tuple[str, int]] = set()
+    pages: list[dict] = []
+    lists = [room_index.get(room, []) for room in rooms]
+    depth = 0
+    while len(pages) < max_pages:
+        added_this_round = False
+        for lst in lists:
+            if depth >= len(lst):
+                continue
+            entry = lst[depth]
+            key = (entry["path"], entry["page"])
+            if key in seen:
+                continue
+            seen.add(key)
+            pages.append(entry)
+            added_this_round = True
+            if len(pages) >= max_pages:
+                return pages
+        if not added_this_round:
+            break
+        depth += 1
+    return pages
+
+
+def check_predicate_missing_findings(
+    findings: list,
+    room_index: dict[str, list[dict]],
+    config: LlmConfig,
+    max_pages_per_finding: int = 3,
+) -> list[dict]:
+    """Эскалирует находки `predicate_missing_in_rd`
+    (`RequirementCrossCheckResult.findings`) в зрение по листам РД.
+
+    `room_index` — {room_key: [{path, page, ...}]}, тот же формат, что
+    строит `_registry(paths, "room_facts")` в `scripts/registry_diff.py`:
+    для помещений из требования ищутся страницы РД, где они встречаются
+    (единственный способ узнать, какой лист вообще смотреть — у требования
+    без кода нет строки реестра, которая сама указала бы лист).
+
+    Требование без единого известного номера помещения в реестре РД —
+    "unclear" без вызова модели: смотреть решительно не на чем, а не
+    случайная страница ради видимости проверки.
+
+    Возвращает список {rooms, sentence, verdict, reason, where, pages_checked}
+    — по записи на находку, не на страницу: если хотя бы одна проверенная
+    страница даёт "confirmed"/"absent", это и есть итог находки (первый
+    небезразличный вердикт побеждает "unclear" от предыдущих страниц)."""
+    out: list[dict] = []
+    for f in findings:
+        if getattr(f, "finding_type", None) != "predicate_missing_in_rd":
+            continue
+        pages = _candidate_pages(f.rooms, room_index, max_pages_per_finding)
+        if not pages:
+            out.append({
+                "rooms": f.rooms, "sentence": f.sentence_pd,
+                "verdict": "unclear", "reason": "ни одно из помещений требования не найдено в реестре РД — нет листа для проверки",
+                "where": "", "pages_checked": 0,
+            })
+            continue
+        verdict = "unclear"
+        reason = ""
+        where = ""
+        checked = 0
+        for entry in pages:
+            checked += 1
+            result = check_requirement_on_page(entry["path"], entry["page"], f.sentence_pd, f.rooms, config)
+            if result.get("verdict") in ("confirmed", "absent"):
+                verdict, reason, where = result["verdict"], result.get("reason", ""), result.get("where", "")
+                break
+            reason = result.get("reason", reason)
+        out.append({
+            "rooms": f.rooms, "sentence": f.sentence_pd,
+            "verdict": verdict, "reason": reason, "where": where, "pages_checked": checked,
+        })
+    return out
+
+
+def render_vision_requirement_report(results: list[dict]) -> str:
+    lines = ["=== Проверка кандидатов зрением по листу РД (эскалация Г.33) ===",
+             f"Проверено находок: {len(results)}"]
+    by_verdict: dict[str, list[dict]] = {}
+    for r in results:
+        by_verdict.setdefault(r["verdict"], []).append(r)
+    for verdict in ("absent", "confirmed", "unclear"):
+        group = by_verdict.get(verdict, [])
+        if not group:
+            continue
+        lines.append(f"\n--- {verdict} ({len(group)}) ---")
+        for r in group:
+            rooms_str = ", ".join(r["rooms"])
+            where = f" [{r['where']}]" if r.get("where") else ""
+            lines.append(f"  пом. {rooms_str}: {r['reason']}{where}")
+    return "\n".join(lines)
