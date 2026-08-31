@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backe
 from app.classification import classify_document  # noqa: E402
 from app.documents import extract_document_facts  # noqa: E402
 from app.matching import DocumentInput, match_page_pairs  # noqa: E402
+from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
 from app.room_cross_check import cross_check_rooms, render_cross_check_report  # noqa: E402
 from app.router import classify_all_pairs, render_report  # noqa: E402
 
@@ -180,6 +181,20 @@ def main() -> None:
         for key in sorted(cross_result.missing_anchors):
             finding = next((f for f in cross_result.findings if f.room_key == key), None)
             print(f"  • {key} «{finding.room_name_pd if finding else '?'}»")
+
+    # === КРОСС-ПРОВЕРКА ОБОРУДОВАНИЯ ПО ВСЕМУ КОМПЛЕКТУ (equip_cross_check.py) ===
+    print("\n=== КРОСС-ПРОВЕРКА ОБОРУДОВАНИЯ (Г.20) ===")
+    equip_result = cross_check_equipment(before_inputs, after_inputs)
+    print(render_equip_cross_check_report(equip_result))
+
+    if equip_result.missing_in_rd:
+        print(f"\n{'=' * 60}")
+        print(f"НАЙДЕНО: {len(equip_result.missing_in_rd)} позиций оборудования из ПД отсутствуют в РД")
+        print(f"{'=' * 60}")
+        for key in sorted(equip_result.missing_in_rd):
+            finding = next((f for f in equip_result.findings if f.equip_key == key
+                           and f.finding_type == "missing_in_rd"), None)
+            print(f"  • {key} «{finding.equip_name_pd if finding else '?'}»")
 
     if args.no_llm:
         print(f"\n{'=' * 60}")
