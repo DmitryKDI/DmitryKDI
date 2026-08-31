@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.matching import DocumentInput
 from app.room_cross_check import cross_check_rooms
 from app.equip_cross_check import cross_check_equipment
+from app.requirement_cross_check import cross_check_requirements
 from app.triangulation import (
     CANDIDATE,
     CONFIRMED,
@@ -16,6 +17,7 @@ from app.triangulation import (
     signal_from_vision_verdict,
     signals_from_anchor_prose,
     signals_from_equip_cross_check,
+    signals_from_requirement_cross_check,
     signals_from_room_cross_check,
     signals_from_routing_diff,
     triangulate,
@@ -129,6 +131,20 @@ def test_adapter_from_equip_cross_check_feeds_triangulation():
     print("OK: адаптер equip_cross_check отдаёт корректно оформленные сигналы")
 
 
+def test_adapter_from_requirement_cross_check_feeds_triangulation():
+    before = [DocumentInput("pd.pdf", 1, text_facts=[
+        {"page": 10, "text": "Общие указания. В помещениях для МГН (пом. 270) "
+                              "предусмотрена система подогрева полов."},
+    ])]
+    after = [DocumentInput("rd.pdf", 1, text_facts=[{"page": 1, "text": "ничего похожего"}])]
+    result = cross_check_requirements(before, after)
+    signals = signals_from_requirement_cross_check(result.findings)
+    assert signals and signals[0].source == "requirement_prose"
+    assert signals[0].key == "270"
+    assert signals[0].domain == "room"
+    print("OK: адаптер requirement_cross_check отдаёт корректно оформленные сигналы")
+
+
 def test_adapter_from_anchor_prose():
     hits = [{"page": 5, "anchor": "140", "paragraph": "В помещении 140 заменена система"}]
     signals = signals_from_anchor_prose(hits)
@@ -191,6 +207,7 @@ if __name__ == "__main__":
     test_confirmed_only_and_candidates_only_filters()
     test_adapter_from_room_cross_check_feeds_triangulation()
     test_adapter_from_equip_cross_check_feeds_triangulation()
+    test_adapter_from_requirement_cross_check_feeds_triangulation()
     test_adapter_from_anchor_prose()
     test_adapter_from_routing_diff_only_uses_finding_categories()
     test_end_to_end_two_independent_modules_confirm_same_room()

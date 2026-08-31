@@ -133,6 +133,32 @@ def signals_from_routing_diff(diff: dict[str, list[dict]]) -> list[Signal]:
     return out
 
 
+def signals_from_requirement_cross_check(findings) -> list[Signal]:
+    """`findings` — `RequirementCrossCheckResult.findings`
+    (requirement_cross_check.py). Только `*_missing_in_rd` — расхождение;
+    `*_confirmed_in_rd` записи в том же списке означают совпадение, а не
+    сигнал о возможном расхождении, и намеренно сюда не попадают (тот же
+    принцип, что и в остальных `signals_from_*`: сигнал — это находка о
+    несовпадении, не запись о подтверждённом соответствии).
+
+    Требование без кода (`predicate_missing_in_rd`) раскладывается на
+    отдельный сигнал по КАЖДОМУ помещению из его списка (domain="room")
+    — так это естественно складывается в триангуляции с сигналами
+    `room_registry`/`prose` по тому же номеру, что и произошло вручную с
+    нарушением №2 в этой сессии. Требование с кодом
+    (`code_missing_in_rd`) не привязано к одному номеру помещения так же
+    однозначно — сигнал по коду идёт в отдельный домен
+    `requirement_code`, не смешиваясь с доменом `room`."""
+    out: list[Signal] = []
+    for f in findings:
+        if f.finding_type == "predicate_missing_in_rd":
+            for room in f.rooms:
+                out.append(Signal(source="requirement_prose", domain="room", key=room, detail=f.detail))
+        elif f.finding_type == "code_missing_in_rd":
+            out.append(Signal(source="requirement_prose", domain="requirement_code", key=f.code, detail=f.detail))
+    return out
+
+
 def signal_from_vision_verdict(room_key: str, detail: str = "") -> Signal:
     """Для сигнала из LLM-сравнения схем (`vision.compare_page_pair` и
     аналоги) — единственный источник без готового адаптера, потому что сам

@@ -24,10 +24,17 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
+import pymupdf
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
 from app.documents import extract_document_facts  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
+from app.matching import DocumentInput  # noqa: E402
+from app.requirement_cross_check import (  # noqa: E402
+    cross_check_requirements,
+    render_requirement_cross_check_report,
+)
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
 
 _KIND_ATTR = {"rooms": "room_facts", "equipment": "equipment_facts"}
@@ -92,6 +99,58 @@ def _verify_group(title: str, keys: set, registry: dict[str, list[dict]], kind: 
         print(f"  {key}\t[{mark}]\t{result.get('reason', '')}")
 
 
+def _load_text_facts(paths: list[str]) -> list[dict]:
+    """[{page, text}] по ВСЕМ страницам всех файлов одной стороны — включая
+    страницы, которые `extract_document_facts`/`material.py` исключил бы из
+    сравнения как каталог поставщика.
+
+    Намеренно НЕ `facts.text_facts` (см. `_registry` выше, для rooms/equipment
+    он там правильный). Реальное измерение на этом же комплекте (Г.34):
+    таблица подбора вентиляторов «Проект: <модель>», которая несёт код
+    системы (ВД1, ПД22, ...) — единственный текстовый след кода в РД, —
+    физически подшита ВНУТРИ 419-страничного коммерческого предложения
+    поставщика (том РД-ОВ1, часть 2). material.py правильно исключает эти
+    страницы из реестров помещений/оборудования (иначе туда прорвётся
+    прайс-лист) — но узкий поиск присутствия короткого кода-токена
+    («ВД1» как отдельное слово) на этих же страницах не несёт того риска
+    шума, ради которого страница исключена: это не парсинг строки реестра,
+    а да/нет по конкретной подстроке. Применить тот же фильтр здесь —
+    значит потерять единственный источник подтверждения кода в РД (в
+    прогоне на реальном комплекте без этого — 0 из 27 подтверждено вместо
+    27 из 27, при том что сами коды физически присутствуют в файле)."""
+    out: list[dict] = []
+    for path in paths:
+        p = Path(path)
+        if not p.is_file():
+            print(f"пропущен (не найден): {path}", file=sys.stderr)
+            continue
+        try:
+            doc = pymupdf.open(str(p))
+        except Exception as exc:  # noqa: BLE001 — один битый файл не должен ронять весь прогон
+            print(f"пропущен ({exc}): {path}", file=sys.stderr)
+            continue
+        try:
+            for i in range(doc.page_count):
+                text = doc[i].get_text("text").strip()
+                if text:
+                    out.append({"page": i + 1, "text": text})
+        finally:
+            doc.close()
+    return out
+
+
+def run_requirements(before_paths: list[str], after_paths: list[str]) -> None:
+    """Сверка реестра требований из прозы ПД против корпуса РД (Г.32/Г.33,
+    requirement_registry.py + requirement_cross_check.py) — не по
+    key-реестру, как rooms/equipment, а по двум формам предложений
+    прозы, поэтому отдельный путь, не через `run()`/`_registry`."""
+    before = [DocumentInput("ПД", 1, text_facts=_load_text_facts(before_paths))]
+    after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
+    result = cross_check_requirements(before, after)
+    print()
+    print(render_requirement_cross_check_report(result))
+
+
 def run(before_paths: list[str], after_paths: list[str], kind: str, config: Optional[LlmConfig]) -> None:
     attr = _KIND_ATTR[kind]
     before = _registry(before_paths, attr)
@@ -112,7 +171,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Алгоритмический diff реестров ПД/РД (без LLM, опционально с триажем ИИ)")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--kind", choices=["rooms", "equipment", "both"], default="both")
+    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "both"], default="both")
     parser.add_argument("--verify", action="store_true",
                         help="Прогнать кандидатов «только с одной стороны» через LLM (по одной картинке) — реальная позиция или шум извлечения")
     parser.add_argument("--provider", default="gigachat", choices=["openai", "anthropic", "google", "yandexgpt", "gigachat"])
@@ -123,9 +182,17 @@ def main() -> None:
 
     config = LlmConfig(provider=args.provider, api_key=args.api_key, base_url=args.base_url, model=args.model) if args.verify else None
 
-    kinds = ["rooms", "equipment"] if args.kind == "both" else [args.kind]
+    if args.kind == "both":
+        kinds = ["rooms", "equipment"]
+    elif args.kind == "requirements":
+        kinds = []
+    else:
+        kinds = [args.kind]
     for kind in kinds:
         run(args.before, args.after, kind, config)
+
+    if args.kind in ("requirements", "both"):
+        run_requirements(args.before, args.after)
 
 
 if __name__ == "__main__":
