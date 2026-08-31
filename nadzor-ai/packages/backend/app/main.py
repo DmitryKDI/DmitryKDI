@@ -189,12 +189,12 @@ def _run_analysis(run_id: int) -> None:
 
         before_inputs = [
             DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code,
-                          f.page_kinds, f.equipment_facts)
+                          f.page_kinds, f.equipment_facts, f.balance_facts)
             for d, f in zip(before_docs, before_facts)
         ]
         after_inputs = [
             DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code,
-                          f.page_kinds, f.equipment_facts)
+                          f.page_kinds, f.equipment_facts, f.balance_facts)
             for d, f in zip(after_docs, after_facts)
         ]
         pairs = match_page_pairs(before_inputs, after_inputs)

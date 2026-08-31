@@ -58,7 +58,7 @@ def _load_side(paths: list[str], vision_fn=None):
                      "facts": facts})
         inputs.append(DocumentInput(name, facts.pages, facts.text_facts, facts.room_facts,
                                     classification.discipline_code, facts.page_kinds,
-                                    facts.equipment_facts))
+                                    facts.equipment_facts, facts.balance_facts))
         print(f"  {name}: {facts.pages} стр., раздел={classification.discipline_code or '?'}, "
               f"исключено {len(facts.excluded)} листов")
     return docs, inputs

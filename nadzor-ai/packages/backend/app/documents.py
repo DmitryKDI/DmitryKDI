@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .balance_box import extract_balance_facts
 from .classification import classify_page_kind, open_pdf
 from .equipment import extract_equipment_facts
 from .material import non_project_reason
@@ -25,6 +26,11 @@ class DocumentFacts:
     page_kinds: dict[int, str] = field(default_factory=dict)  # {page: 'drawing'|'text'}
     # [{page, key, name, parent?, qty?}] — позиции ведомости оборудования (Г.20)
     equipment_facts: list[dict] = field(default_factory=list)
+    # [{page, room_key, system_code?, приток_м3ч?, вытяжка_м3ч?}] — баланс-рамка
+    # у номера помещения (Г.30, п.1); на реальных CAD-листах почти всегда
+    # пуст текстовым путём (см. balance_box.py) — пусто здесь не значит
+    # «нет рамки на листе», значит «текстовый путь её не нашёл» (Г.10).
+    balance_facts: list[dict] = field(default_factory=list)
     # {page: {shifr, sheet_no, sheet_name}} — основная надпись, если читается текстом
     sheet_info: dict[int, dict] = field(default_factory=dict)
     # {page: причина} — лист исключён из сравнения как непроектный материал.
@@ -39,6 +45,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
         text_facts = []
         room_facts = []
         equipment_facts = []
+        balance_facts = []
         page_kinds = {}
         sheet_info = {}
         excluded = {}
@@ -61,6 +68,8 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                 page_room_keys = {f["key"] for f in page_room_facts}
                 for fact in extract_equipment_facts(text, room_keys=page_room_keys):
                     equipment_facts.append({"page": page_no, **fact})
+                for fact in extract_balance_facts(text, room_keys=page_room_keys):
+                    balance_facts.append({"page": page_no, **fact})
 
             stamp = read_stamp(page)
             if not stamp.is_empty():
@@ -68,7 +77,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                                        "sheet_name": stamp.sheet_name}
         return DocumentFacts(name=name, pages=doc.page_count, text_facts=text_facts,
                               room_facts=room_facts, page_kinds=page_kinds,
-                              equipment_facts=equipment_facts,
+                              equipment_facts=equipment_facts, balance_facts=balance_facts,
                               sheet_info=sheet_info, excluded=excluded)
     finally:
         doc.close()

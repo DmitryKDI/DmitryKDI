@@ -44,6 +44,9 @@ class DocumentInput:
     page_kinds: dict[int, str] = field(default_factory=dict)  # {page: 'drawing'|'text'}
     # [{page, key, name, parent?, qty?}] — позиции ведомости оборудования (Г.20)
     equipment_facts: list[dict] = field(default_factory=list)
+    # [{page, room_key, system_code?, приток_м3ч?, вытяжка_м3ч?}] — баланс-рамка
+    # у номера помещения (Г.30, п.1)
+    balance_facts: list[dict] = field(default_factory=list)
 
 
 @dataclass

@@ -1,0 +1,87 @@
+"""Баланс притока/вытяжки у номера помещения (Г.30, п.1) — числовая пара
+рядом с кружком номера помещения на схеме вентиляции/отопления, вида
+«П2/ВЕ» + «+400 м³/ч» (приток) + «−400 м³/ч» (вытяжка).
+
+Важная поправка к первоначальному плану (Г.30): на реальном комплекте эта
+рамка НЕ извлекается текстом почти никогда. Прямой замер листа, где рамка
+видна на рендере, показал: в `page.get_text()` нет ни кода системы, ни
+чисел притока/вытяжки вообще — при 164 000+ векторных путей на той же
+странице (Г.13, CAD-текст в кривых). Первоначальное утверждение, что баланс
+«извлекается чистым текстом», было ошибочным — сделано по прочтению
+рендера глазами, а не по факту текстового извлечения; поправлено здесь.
+
+Отсюда — два пути, а не один:
+  1. `extract_balance_facts` (этот модуль) — текстовый быстрый путь на
+     случай, если конкретный лист (другой автор, другой экспорт CAD) всё
+     же несёт эти данные текстом. На проверенном реальном комплекте не
+     сработает почти никогда — это ожидаемый, видимый пустой результат
+     (Г.10), а не признак поломки.
+  2. `balance_vision.py` — основной путь для CAD-текста-в-кривых: рендер
+     зоны вокруг номера помещения и чтение моделью, по образцу
+     `stamp_vision.py`.
+
+Формат текстового пути (на случай, если он всё же сработает) — по
+визуальному образцу рамки: код системы («П2/ВЕ»), приток со знаком «+»,
+вытяжка со знаком «−»/«-», единица «м³/ч» или «м3/ч» после каждого числа."""
+from __future__ import annotations
+
+import re
+
+_SYSTEM_RE = re.compile(r"^[А-Яа-я]?\d*/?(?:ВЕ|ВЫТ|ПРИТ)$", re.I)
+_SIGNED_QTY_RE = re.compile(r"^([+−-])\s*(\d+)$")
+_UNIT_RE = re.compile(r"^м.?/ч$", re.I)
+
+
+def extract_balance_facts(text: str, room_keys: set[str] | None = None) -> list[dict]:
+    """Возвращает [{room_key, system_code?, приток?, вытяжка?}] — баланс-рамки,
+    найденные в текстовом слое листа. room_keys — уже известные номера
+    помещений этой страницы (rooms.py); ищем баланс только у ключа, который
+    реально является номером помещения, а не у случайного числа рядом."""
+    if not room_keys:
+        return []
+    lines = [ln.strip() for ln in text.splitlines()]
+    facts: list[dict] = []
+    n = len(lines)
+    for i, line in enumerate(lines):
+        if line not in room_keys:
+            continue
+        system_code: str | None = None
+        pritok: str | None = None
+        vytyazhka: str | None = None
+        j = i + 1
+        window_end = min(n, i + 6)
+        while j < window_end:
+            frag = lines[j]
+            if not frag:
+                j += 1
+                continue
+            if _SYSTEM_RE.match(frag):
+                system_code = frag
+                j += 1
+                continue
+            m_qty = _SIGNED_QTY_RE.match(frag)
+            if m_qty:
+                sign, value = m_qty.groups()
+                # следующая непустая строка — единица измерения, иначе это
+                # не баланс-рамка, а случайное число со знаком
+                k = j + 1
+                while k < window_end and not lines[k]:
+                    k += 1
+                if k < window_end and _UNIT_RE.match(lines[k]):
+                    if sign == "+":
+                        pritok = value
+                    else:
+                        vytyazhka = value
+                    j = k + 1
+                    continue
+            j += 1
+        if system_code or pritok or vytyazhka:
+            fact: dict = {"room_key": line}
+            if system_code:
+                fact["system_code"] = system_code
+            if pritok:
+                fact["приток_м3ч"] = pritok
+            if vytyazhka:
+                fact["вытяжка_м3ч"] = vytyazhka
+            facts.append(fact)
+    return facts
