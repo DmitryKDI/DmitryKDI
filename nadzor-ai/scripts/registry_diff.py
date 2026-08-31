@@ -115,7 +115,7 @@ def main() -> None:
     parser.add_argument("--kind", choices=["rooms", "equipment", "both"], default="both")
     parser.add_argument("--verify", action="store_true",
                         help="Прогнать кандидатов «только с одной стороны» через LLM (по одной картинке) — реальная позиция или шум извлечения")
-    parser.add_argument("--provider", default="local", choices=["local", "openai", "anthropic", "google", "yandexgpt", "gigachat"])
+    parser.add_argument("--provider", default="gigachat", choices=["openai", "anthropic", "google", "yandexgpt", "gigachat"])
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="")

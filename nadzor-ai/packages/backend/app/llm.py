@@ -44,7 +44,11 @@ PROVIDER_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-5",
     "google": "gemini-2.5-flash",
     "yandexgpt": "yandexgpt/latest",
-    "gigachat": "GigaChat-2",
+    # Базовая GigaChat-2 отвечает 422 "Model does not support image" на
+    # vision-запрос (реальный случай) — раз сравнение листов всегда идёт
+    # картинками, дефолт обязан быть Pro/Max-тиром, иначе каждое сравнение
+    # молча падает.
+    "gigachat": "GigaChat-2-Pro",
 }
 
 # GigaChat: OAuth-эндпоинт и сама API — разные хосты, оба фиксированы
