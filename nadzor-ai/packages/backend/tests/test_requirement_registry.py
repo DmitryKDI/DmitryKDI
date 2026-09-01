@@ -8,6 +8,7 @@ from app.requirement_registry import (
     extract_coded_requirements,
     extract_predicate_requirements,
     extract_requirements,
+    render_requirements_summary,
 )
 
 SAMPLE_DIR = Path("/home/user/nadzor_sample")
@@ -167,6 +168,24 @@ def test_real_pz_yields_both_forms():
     print(f"OK: реальный ПЗ — {len(coded)} пунктов с кодом, {len(predicate)} без кода")
 
 
+def test_render_requirements_summary_lists_every_requirement_with_page_and_rooms():
+    reqs = [
+        Requirement(rooms=["108", "201"], page=12, sentence="...(ВД1);", code="ВД1"),
+        Requirement(rooms=["270"], page=21, sentence="В помещении 270 предусмотрен тёплый пол.", code=None),
+    ]
+    text = render_requirements_summary(reqs)
+    assert "извлечено: 2" in text
+    assert "стр.12" in text and "[ВД1]" in text and "108, 201" in text
+    assert "стр.21" in text and "270" in text
+    assert "предусмотрен тёплый пол" in text
+    assert "[ВД1]" not in text.split("стр.21")[1].split("\n")[0]
+
+
+def test_render_requirements_summary_handles_empty_list():
+    text = render_requirements_summary([])
+    assert "извлечено: 0" in text
+
+
 if __name__ == "__main__":
     test_coded_item_extracts_rooms_and_code()
     test_coded_item_merges_multiple_pom_runs_in_one_item()
@@ -178,4 +197,6 @@ if __name__ == "__main__":
     test_table_legend_caption_is_not_a_requirement()
     test_extract_requirements_combines_both_forms()
     test_real_pz_yields_both_forms()
+    test_render_requirements_summary_lists_every_requirement_with_page_and_rooms()
+    test_render_requirements_summary_handles_empty_list()
     print("ALL PASS")

@@ -54,8 +54,10 @@ fi
 PY=./.venv/bin/python3
 [ -x "$PY" ] || PY=python3
 
+OUT_FILE="${AFTER_DIR}/../requirements_summary.txt"
 echo "ПД: ${#before_args[@]} файл(ов), РД: ${#after_args[@]} файл(ов)"
+echo "Сводка требований и вердикты пишутся по мере готовности в: $OUT_FILE"
 echo
 
 "$PY" scripts/registry_diff.py "${before_args[@]}" "${after_args[@]}" \
-  --kind requirements --verify-requirements --provider gigachat
+  --kind requirements --verify-requirements --provider gigachat --out "$OUT_FILE"

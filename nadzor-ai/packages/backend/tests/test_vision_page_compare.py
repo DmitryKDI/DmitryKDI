@@ -12,6 +12,7 @@ from app.vision_page_compare import (
     _candidate_pages,
     check_visual_candidates,
     check_requirement_on_page,
+    render_vision_finding_line,
     render_vision_requirement_report,
     requirement_check_system_prompt,
 )
@@ -261,6 +262,44 @@ def test_render_report_groups_by_verdict():
     print("OK: отчёт группирует находки по вердикту")
 
 
+def test_render_vision_finding_line_includes_verdict_rooms_and_where():
+    r = {"rooms": ["270"], "verdict": "absent", "reason": "нет обогрева", "where": "пом. 270", "pages_checked": 1}
+    line = render_vision_finding_line(r)
+    assert line.startswith("[absent]")
+    assert "270" in line and "нет обогрева" in line and "[пом. 270]" in line
+    print("OK: однострочный рендер несёт вердикт, помещения, причину и координату")
+
+
+def test_check_visual_candidates_calls_on_result_per_finding_as_they_complete():
+    """on_result должен вызываться сразу после КАЖДОЙ находки, не одним
+    списком после последнего вызова модели — иначе поток на диск (для
+    которого этот параметр и заведён) ничем не отличался бы от записи в
+    самом конце прогона."""
+    findings = [_rf(["108"], sentence="первое требование"), _rf(["999"], sentence="второе требование")]
+    room_index = {"108": [{"path": "a.pdf", "page": 1}]}
+    seen: list[dict] = []
+
+    def fake_render(path, page, max_dim=2200):
+        return "data:image/png;base64,fake"
+
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+        return {"verdict": "confirmed", "reason": "видно на плане"}
+
+    orig_render = _patch(vision_page_compare, "render_page_to_data_url", fake_render)
+    orig_call = _patch(vision_page_compare, "call_llm_json", fake_call_llm_json)
+    try:
+        out = check_visual_candidates(findings, room_index, config=None, on_result=lambda r: seen.append(r))
+    finally:
+        vision_page_compare.render_page_to_data_url = orig_render
+        vision_page_compare.call_llm_json = orig_call
+
+    assert len(seen) == 2, "callback должен сработать на обе находки, включая ту, что не найдена в реестре"
+    assert seen == out, "callback получает те же записи, что попадают в итоговый список"
+    assert seen[0]["sentence"] == "первое требование"
+    assert seen[1]["sentence"] == "второе требование"
+    print("OK: on_result вызывается по одной записи на находку, по мере готовности")
+
+
 if __name__ == "__main__":
     test_system_prompt_includes_known_violations_block()
     test_system_prompt_valid_json_schema_after_substitution()
@@ -277,4 +316,6 @@ if __name__ == "__main__":
     test_check_visual_candidates_first_decisive_verdict_wins()
     test_check_visual_candidates_all_unclear_reports_unclear()
     test_render_report_groups_by_verdict()
+    test_render_vision_finding_line_includes_verdict_rooms_and_where()
+    test_check_visual_candidates_calls_on_result_per_finding_as_they_complete()
     print("ALL PASS")

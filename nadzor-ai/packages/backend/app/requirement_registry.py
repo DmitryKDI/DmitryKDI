@@ -140,3 +140,20 @@ def extract_predicate_requirements(text_facts: list[dict]) -> list[Requirement]:
 def extract_requirements(text_facts: list[dict]) -> list[Requirement]:
     """Обе формы вместе — полный реестр требований из прозы ПД."""
     return extract_coded_requirements(text_facts) + extract_predicate_requirements(text_facts)
+
+
+def render_requirements_summary(requirements: list[Requirement]) -> str:
+    """«Сводка требований ПД» — печатный список того, что извлечено из
+    прозы ПД, ДО всякой сверки с РД. Существует не только для контроля
+    (проверить, что извлечение вообще что-то нашло), но и как отдельный
+    артефакт: то, что человек делает вручную при сверке ПД↔РД (сначала
+    выписать, что где требуется — см. докстринг модуля выше), теперь можно
+    прочитать напрямую, не запуская весь конвейер заново и не держа список
+    в контексте разговора."""
+    lines = [f"=== Сводка требований ПД (Г.32) — извлечено: {len(requirements)} ==="]
+    for i, req in enumerate(requirements, 1):
+        code = f" [{req.code}]" if req.code else ""
+        rooms = ", ".join(req.rooms) if req.rooms else "не указаны"
+        lines.append(f"{i}. стр.{req.page}{code} — помещения: {rooms}")
+        lines.append(f"   «{req.sentence}»")
+    return "\n".join(lines)

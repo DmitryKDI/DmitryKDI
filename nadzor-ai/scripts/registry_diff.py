@@ -38,10 +38,11 @@ from app.requirement_cross_check import (  # noqa: E402
 )
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
-from app.requirement_registry import extract_requirements  # noqa: E402
+from app.requirement_registry import extract_requirements, render_requirements_summary  # noqa: E402
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
+    render_vision_finding_line,
     render_vision_requirement_report,
 )
 
@@ -162,6 +163,7 @@ def run_requirements(
     before_paths: list[str],
     after_paths: list[str],
     llm_config: Optional[LlmConfig] = None,
+    out_path: Optional[str] = None,
 ) -> None:
     """Сверка реестра требований из прозы ПД против корпуса РД
     (Г.32/Г.33/Г.36) — не по key-реестру, как rooms/equipment, а по
@@ -179,25 +181,54 @@ def run_requirements(
     Тот же `llm_config`, если задан, используется и для эскалации находок
     «no_code_visual_check_needed» в зрение по листу РД
     (`vision_page_compare.py`) — тот же ключ и провайдер нужны для обоих
-    шагов, отдельного флага/ключа под извлечение не заводится."""
-    pd_text_facts = _load_text_facts(before_paths)
-    if llm_config is not None:
-        pd_requirements = extract_requirements_llm(pd_text_facts, llm_config)
-    else:
-        pd_requirements = extract_requirements(pd_text_facts)
+    шагов, отдельного флага/ключа под извлечение не заводится.
 
-    after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
-    result = cross_check_requirements(pd_requirements, after)
-    print()
-    print(render_requirement_cross_check_report(result))
+    `out_path`, если задан, дублирует весь вывод в файл — не только в
+    конце, а по мере готовности каждой части (сводка требований сразу
+    после извлечения, вердикт зрения сразу после каждой находки, а не
+    списком после последнего вызова модели). Причина: извлечение и особенно
+    vision-эскалация занимают минуты на десятках находок, и если прогон
+    прервётся или ведущий его агент потеряет промежуточный вывод из виду —
+    то, что уже посчитано, должно остаться читаемым на диске, а не только
+    в уже прокрученном выводе терминала. Файл же годится и для ручного
+    поиска — сводка требований по всем страницам ПД в одном месте, без
+    повторного запуска конвейера."""
+    out_f = open(out_path, "w", encoding="utf-8") if out_path else None
 
-    if llm_config is None:
-        return
-    room_index = _registry(after_paths, "room_facts")
-    room_index = augment_room_index_with_level_fallback(room_index, after_paths)
-    vision_results = check_visual_candidates(result.findings, room_index, llm_config)
-    print()
-    print(render_vision_requirement_report(vision_results))
+    def _emit(text: str) -> None:
+        print(text)
+        if out_f:
+            out_f.write(text + "\n")
+            out_f.flush()
+
+    try:
+        pd_text_facts = _load_text_facts(before_paths)
+        if llm_config is not None:
+            pd_requirements = extract_requirements_llm(pd_text_facts, llm_config)
+        else:
+            pd_requirements = extract_requirements(pd_text_facts)
+        _emit(render_requirements_summary(pd_requirements))
+
+        after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
+        result = cross_check_requirements(pd_requirements, after)
+        _emit("")
+        _emit(render_requirement_cross_check_report(result))
+
+        if llm_config is None:
+            return
+        room_index = _registry(after_paths, "room_facts")
+        room_index = augment_room_index_with_level_fallback(room_index, after_paths)
+        _emit("")
+        _emit("=== Проверка кандидатов зрением по листу РД (эскалация Г.33) — по мере готовности ===")
+        vision_results = check_visual_candidates(
+            result.findings, room_index, llm_config,
+            on_result=lambda r: _emit(render_vision_finding_line(r)),
+        )
+        _emit("")
+        _emit(render_vision_requirement_report(vision_results))
+    finally:
+        if out_f:
+            out_f.close()
 
 
 def run(before_paths: list[str], after_paths: list[str], kind: str, config: Optional[LlmConfig]) -> None:
@@ -231,6 +262,9 @@ def main() -> None:
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="",
                         help=f"По умолчанию берётся из переменной окружения по провайдеру ({', '.join(_PROVIDER_ENV_KEY.values())}), если не передан явно")
+    parser.add_argument("--out", default="",
+                        help="Путь к файлу для --kind requirements: сводка требований ПД и вердикты зрения пишутся туда "
+                             "по мере готовности (не только в конце), не только в stdout")
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
@@ -252,7 +286,7 @@ def main() -> None:
         run(args.before, args.after, kind, config)
 
     if args.kind in ("requirements", "both"):
-        run_requirements(args.before, args.after, requirements_llm_config)
+        run_requirements(args.before, args.after, requirements_llm_config, out_path=args.out or None)
 
 
 if __name__ == "__main__":

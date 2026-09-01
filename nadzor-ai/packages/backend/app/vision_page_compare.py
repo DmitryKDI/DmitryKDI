@@ -136,6 +136,7 @@ def check_visual_candidates(
     config: LlmConfig,
     discipline: Optional[str] = None,
     max_pages_per_finding: int = 3,
+    on_result=None,
 ) -> list[dict]:
     """Эскалирует находки `no_code_visual_check_needed`
     (`RequirementCrossCheckResult.findings`) в зрение по листам РД.
@@ -150,6 +151,15 @@ def check_visual_candidates(
     "unclear" без вызова модели: смотреть решительно не на чем, а не
     случайная страница ради видимости проверки.
 
+    `on_result`, если задан, вызывается с готовым `{rooms, sentence, verdict,
+    reason, where, pages_checked}` сразу после КАЖДОЙ находки, не после всех
+    сразу — так вызывающий код может писать результат на диск по мере
+    появления (см. `registry_diff.run_requirements`), а не только вернуть
+    список после последнего вызова модели: прогон на десятках находок
+    занимает минуты, и сбой/остановка посреди него не должна стирать уже
+    полученные вердикты (тот же принцип, что Г.10 — прогресс должен быть
+    видимым состоянием, а не всё-или-ничего).
+
     Возвращает список {rooms, sentence, verdict, reason, where, pages_checked}
     — по записи на находку, не на страницу: если хотя бы одна проверенная
     страница даёт "confirmed"/"absent", это и есть итог находки (первый
@@ -160,11 +170,14 @@ def check_visual_candidates(
             continue
         pages = _candidate_pages(f.rooms, room_index, max_pages_per_finding)
         if not pages:
-            out.append({
+            entry_result = {
                 "rooms": f.rooms, "sentence": f.sentence_pd,
                 "verdict": "unclear", "reason": "ни одно из помещений требования не найдено в реестре РД — нет листа для проверки",
                 "where": "", "pages_checked": 0,
-            })
+            }
+            out.append(entry_result)
+            if on_result:
+                on_result(entry_result)
             continue
         verdict = "unclear"
         reason = ""
@@ -177,11 +190,24 @@ def check_visual_candidates(
                 verdict, reason, where = result["verdict"], result.get("reason", ""), result.get("where", "")
                 break
             reason = result.get("reason", reason)
-        out.append({
+        entry_result = {
             "rooms": f.rooms, "sentence": f.sentence_pd,
             "verdict": verdict, "reason": reason, "where": where, "pages_checked": checked,
-        })
+        }
+        out.append(entry_result)
+        if on_result:
+            on_result(entry_result)
     return out
+
+
+def render_vision_finding_line(r: dict) -> str:
+    """Одна находка — одна строка, для потоковой записи по мере готовности
+    (см. `on_result` в `check_visual_candidates`), тот же текст, что попадёт
+    в группу результата `render_vision_requirement_report`, просто без
+    ожидания конца всего прогона."""
+    rooms_str = ", ".join(r["rooms"])
+    where = f" [{r['where']}]" if r.get("where") else ""
+    return f"[{r['verdict']}] помещения {rooms_str}: {r['reason']}{where}"
 
 
 def render_vision_requirement_report(results: list[dict]) -> str:
