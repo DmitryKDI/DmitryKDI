@@ -55,7 +55,8 @@ PROVIDER_DEFAULT_MODELS = {
 # (Сбер), настраивать через LlmConfig.base_url незачем — переопределить
 # можно точку API целиком через переменную окружения, если понадобится.
 GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-GIGACHAT_API_BASE = os.environ.get("GIGACHAT_API_BASE", "https://gigachat.devices.sberbank.ru/api/v1")
+# Целевой URL с 16 июля 2026 — единый для всех пользователей
+GIGACHAT_API_BASE = os.environ.get("GIGACHAT_API_BASE", "https://api.giga.chat")
 # Личный/бизнес — тариф аккаунта, не модели; задаётся авторизационным ключом.
 GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 # TLS-сертификат хостов Сбера обычно подписан НУЦ Минцифры — вне России это
@@ -68,8 +69,10 @@ _gigachat_token_cache: dict[str, tuple[str, float]] = {}  # api_key -> (token, �
 
 
 def _gigachat_token(api_key: str) -> str:
-    """Токен живёт 30 минут — кэшируем по ключу с запасом в минуту, чтобы не
-    получать новый на каждый вызов внутри одного прогона."""
+    """Токен живёт 30 минут — кэшируем по ключу с запасом в 10 минут, чтобы не
+    получать новый на каждый вызов внутри одного прогона. api_key — это уже
+    готовая Base64-строка "client_id:client_secret" (Authorization key из
+    личного кабинета), передаётся в Basic как есть, без повторной кодировки."""
     cached = _gigachat_token_cache.get(api_key)
     if cached and cached[1] > time.monotonic():
         return cached[0]
@@ -87,19 +90,20 @@ def _gigachat_token(api_key: str) -> str:
     data = resp.json()
     token = data["access_token"]
     # expires_at приходит в мс от эпохи — переводим в остаток жизни от сейчас
-    expires_in = max(60.0, data.get("expires_at", 0) / 1000 - time.time())
-    _gigachat_token_cache[api_key] = (token, time.monotonic() + expires_in - 60)
+    expires_at_ms = data.get("expires_at", int(time.time() * 1000) + 1800000)
+    expires_in = max(60.0, expires_at_ms / 1000 - time.time())
+    _gigachat_token_cache[api_key] = (token, time.monotonic() + expires_in - 600)
     return token
 
 
 def _gigachat_upload_image(access_token: str, data_url: str) -> str:
     """Картинка передаётся не инлайн (как у OpenAI/Anthropic/Google), а через
     отдельную загрузку файла: POST /files -> id, id -> attachments сообщения.
-    Другой контракт, не вариант общего _image_content_block."""
+    Другой контракт, не вариант общего inline image_url."""
     _, b64data = data_url.split(",", 1)
     raw = base64.b64decode(b64data)
     resp = _post_json(
-        f"{GIGACHAT_API_BASE}/files",
+        f"{GIGACHAT_API_BASE}/v1/files",
         files={"file": ("page.png", raw, "image/png")},
         data={"purpose": "general"},
         headers={"Authorization": f"Bearer {access_token}"},
@@ -306,9 +310,10 @@ def call_llm_json(
         body = {
             "model": model,
             "messages": [{"role": "system", "content": system_prompt}, message],
+            "response_format": {"type": "json_object"},
         }
         resp = _post_json(
-            f"{GIGACHAT_API_BASE}/chat/completions",
+            f"{GIGACHAT_API_BASE}/v1/chat/completions",
             json=body, headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
             timeout=timeout, verify=GIGACHAT_CA_BUNDLE,
         )

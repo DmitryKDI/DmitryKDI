@@ -124,47 +124,88 @@ class OpenAICompatProvider(_Base):
 
 
 class GigaChatProvider(_Base):
-    """GigaChat. Доступ по OAuth-токену, выдаваемому по клиентским реквизитам."""
+    """GigaChat 2 про. Доступ по OAuth-токену, выдаваемому по Client ID и Client Secret.
+
+    API v2 поддерживает vision (изображения листов) и строгий JSON-вывод.
+    Целевой URL: https://api.giga.chat (с 16 июля 2026 — единый для всех).
+    OAuth: POST https://ngw.devices.sberbank.ru:9443/api/v2/oauth
+    Токен действует 30 минут, обновляется за 10 минут до истечения.
+    """
 
     name = "gigachat"
     is_sovereign = True
+    supports_vision = True
     _token: str = ""
     _token_expires: float = 0.0
+    _oauth_url: str = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    _api_url: str = "https://api.giga.chat"
 
     async def _access_token(self) -> str:
-        if self._token and time.time() < self._token_expires - 30:
+        # Обновляем за 10 минут до истечения (токен действует 30 минут)
+        if self._token and time.time() < self._token_expires - 600:
             return self._token
-        creds = os.environ.get(self.cfg.get("credentials_env", "GIGACHAT_CREDENTIALS"), "")
-        if not creds:
-            raise RuntimeError("Не заданы реквизиты доступа к GigaChat.")
-        url = self.cfg.get("oauth_url", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
+        client_id = os.environ.get(self.cfg.get("client_id_env", "GIGACHAT_CLIENT_ID"), "")
+        client_secret = os.environ.get(self.cfg.get("client_secret_env", "GIGACHAT_CLIENT_SECRET"), "")
+        if not client_id or not client_secret:
+            raise RuntimeError("Не заданы Client ID/Secret для GigaChat.")
+        creds = f"{client_id}:{client_secret}"
+        url = self.cfg.get("oauth_url", self._oauth_url)
         headers = {"Authorization": f"Basic {creds}", "RqUID": str(uuid.uuid4()),
-                   "Content-Type": "application/x-www-form-urlencoded"}
-        scope = self.cfg.get("scope", "GIGACHAT_API_CORP")
+                   "Content-Type": "application/x-www-form-urlencoded",
+                   "Accept": "application/json"}
+        scope = self.cfg.get("scope", "GIGACHAT_API_PERS")
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.post(url, headers=headers, data={"scope": scope})
             self._raise_for_status(r)
             data = r.json()
         self._token = data["access_token"]
-        self._token_expires = data.get("expires_at", time.time() + 1500) / 1000
+        # expires_at — timestamp в миллисекундах
+        expires_at = data.get("expires_at", int(time.time() * 1000) + 1800000)
+        self._token_expires = expires_at / 1000
         return self._token
 
     async def complete(self, req: CompletionRequest) -> CompletionResponse:
         started = time.monotonic()
-        system, user = _messages(req)
         token = await self._access_token()
-        payload = {"model": self.model,
-                   "messages": [{"role": "system", "content": system},
-                                {"role": "user", "content": user}],
-                   "temperature": max(req.temperature, 0.01),
-                   "max_tokens": req.max_tokens}
+        system, user = _messages(req)
+        api_url = self.cfg.get("api_url", self._api_url)
+        attachments = []
+        if self.supports_vision and req.images:
+            attachments = [await self._upload_image(api_url, token, img) for img in req.images]
+        message: dict = {"role": "user", "content": user}
+        if attachments:
+            message["attachments"] = attachments
+        payload: dict = {
+            "model": self.model,
+            "temperature": max(req.temperature, 0.01),
+            "max_tokens": req.max_tokens,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": system}, message],
+        }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            r = await client.post(f"{self.base_url}/chat/completions", json=payload,
+            r = await client.post(f"{api_url}/v1/chat/completions", json=payload,
                                   headers={"Authorization": f"Bearer {token}"})
             self._raise_for_status(r)
             data = r.json()
         return self._response(data["choices"][0]["message"]["content"], req, started,
                               data.get("usage"))
+
+    @staticmethod
+    async def _upload_image(api_url: str, token: str, image: ImageBlock) -> str:
+        """Картинка не инлайн, как у OpenAI/Anthropic/Google — отдельная
+        загрузка файла: POST /v1/files -> id, id передаётся в attachments
+        сообщения (не в content). Тот же контракт, что packages/backend/app/llm.py."""
+        import base64
+        raw = base64.b64decode(image.data_b64)
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                f"{api_url}/v1/files",
+                files={"file": ("page.png", raw, image.media_type)},
+                data={"purpose": "general"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            GigaChatProvider._raise_for_status(r)
+            return r.json()["id"]
 
 
 class YandexGPTProvider(_Base):

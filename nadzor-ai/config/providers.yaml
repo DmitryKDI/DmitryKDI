@@ -9,10 +9,15 @@ verifier: mock           # провайдер перепроверки; обяз
 
 providers:
   gigachat:
-    enabled: false
+    enabled: true
     model: GigaChat-Pro
-    base_url: https://gigachat.devices.sberbank.ru/api/v1
-    credentials_env: GIGACHAT_CREDENTIALS
+    # Целевой URL с 16 июля 2026 — единый для всех пользователей
+    api_url: https://api.giga.chat
+    # OAuth-эндпоинт для получения токена (не меняется)
+    oauth_url: https://ngw.devices.sberbank.ru:9443/api/v2/oauth
+    client_id_env: GIGACHAT_CLIENT_ID
+    client_secret_env: GIGACHAT_CLIENT_SECRET
+    scope: GIGACHAT_API_PERS
     max_context_tokens: 32000
     is_sovereign: true
 
