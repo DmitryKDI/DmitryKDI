@@ -39,6 +39,12 @@ from app.requirement_cross_check import (  # noqa: E402
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
 from app.requirement_registry import extract_requirements, render_requirements_summary  # noqa: E402
+from app.set_overview import (  # noqa: E402
+    compare_section_coverage,
+    render_section_coverage_report,
+    render_volume_summary,
+    summarize_set,
+)
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
@@ -159,6 +165,38 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     return out
 
 
+def run_overview(before_paths: list[str], after_paths: list[str], out_path: Optional[str] = None) -> None:
+    """Обзор комплекта (см. `set_overview.py`): краткая сводка по каждому
+    тому и сравнение разделов ПД↔РД по составу — печатается ПЕРВЫМ делом,
+    до любого --kind, дешёво и без LLM (только классификация раздела +
+    уже существующие текстовые экстракторы). Пользовательский запрос:
+    разбор не должен ощущаться «зашитым под один раздел» — этот обзор
+    первым показывает, что вообще пришло с обеих сторон, ДО погружения в
+    сравнение содержимого одного раздела.
+
+    Открывает `out_path` в режиме "w" (создаёт файл заново) — это первая
+    запись во всём прогоне `main()`; `run_requirements`, если тоже вызван
+    следом с тем же путём, дописывает в этот же файл (режим "a"), не
+    затирает обзор."""
+    out_f = open(out_path, "w", encoding="utf-8") if out_path else None
+
+    def _emit(text: str) -> None:
+        print(text)
+        if out_f:
+            out_f.write(text + "\n")
+            out_f.flush()
+
+    try:
+        before = summarize_set(before_paths)
+        after = summarize_set(after_paths)
+        _emit(render_volume_summary(before, "ПД"))
+        _emit(render_volume_summary(after, "РД/ИД"))
+        _emit(render_section_coverage_report(compare_section_coverage(before, after)))
+    finally:
+        if out_f:
+            out_f.close()
+
+
 def run_requirements(
     before_paths: list[str],
     after_paths: list[str],
@@ -192,8 +230,10 @@ def run_requirements(
     то, что уже посчитано, должно остаться читаемым на диске, а не только
     в уже прокрученном выводе терминала. Файл же годится и для ручного
     поиска — сводка требований по всем страницам ПД в одном месте, без
-    повторного запуска конвейера."""
-    out_f = open(out_path, "w", encoding="utf-8") if out_path else None
+    повторного запуска конвейера. Файл открывается на ДОЗАПИСЬ ("a") — если
+    в этом же прогоне уже писал `run_overview` с тем же путём, обзор
+    комплекта остаётся в начале файла, а не затирается."""
+    out_f = open(out_path, "a", encoding="utf-8") if out_path else None
 
     def _emit(text: str) -> None:
         print(text)
@@ -263,8 +303,10 @@ def main() -> None:
     parser.add_argument("--api-key", default="",
                         help=f"По умолчанию берётся из переменной окружения по провайдеру ({', '.join(_PROVIDER_ENV_KEY.values())}), если не передан явно")
     parser.add_argument("--out", default="",
-                        help="Путь к файлу для --kind requirements: сводка требований ПД и вердикты зрения пишутся туда "
-                             "по мере готовности (не только в конце), не только в stdout")
+                        help="Путь к файлу: обзор комплекта и (для --kind requirements) сводка требований ПД и вердикты "
+                             "зрения пишутся туда по мере готовности (не только в конце), не только в stdout")
+    parser.add_argument("--no-overview", action="store_true",
+                        help="Не печатать обзор комплекта (сводка по каждому тому + сравнение разделов ПД↔РД) в начале")
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
@@ -275,6 +317,9 @@ def main() -> None:
     if args.verify_requirements and not api_key:
         print("--verify-requirements задан, но ключ не найден (ни --api-key, ни переменная окружения) — извлечение и эскалация через ЛЛМ пропущены, используется regex-путь без зрения", file=sys.stderr)
         requirements_llm_config = None
+
+    if not args.no_overview:
+        run_overview(args.before, args.after, out_path=args.out or None)
 
     if args.kind == "both":
         kinds = ["rooms", "equipment"]
