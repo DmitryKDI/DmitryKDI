@@ -39,6 +39,7 @@ from app.requirement_cross_check import (  # noqa: E402
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
 from app.requirement_registry import extract_requirements, render_requirements_summary  # noqa: E402
+from app.routing_diff import diff_room_routing, render_routing_diff_report  # noqa: E402
 from app.set_overview import (  # noqa: E402
     compare_section_coverage,
     render_section_coverage_report,
@@ -291,7 +292,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Алгоритмический diff реестров ПД/РД (без LLM, опционально с триажем ИИ)")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "both"], default="both")
+    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "both"], default="both")
+    parser.add_argument("--rooms", default="",
+                        help="Для --kind routing: список номеров помещений через запятую — прицельная сверка графа "
+                             "маршрутизации ПД↔РД (routing_diff.py, Г.30, без LLM). Обязателен для --kind routing.")
     parser.add_argument("--verify", action="store_true",
                         help="Прогнать кандидатов «только с одной стороны» через LLM (по одной картинке) — реальная позиция или шум извлечения")
     parser.add_argument("--verify-requirements", action="store_true",
@@ -323,12 +327,21 @@ def main() -> None:
 
     if args.kind == "both":
         kinds = ["rooms", "equipment"]
-    elif args.kind == "requirements":
+    elif args.kind in ("requirements", "routing"):
         kinds = []
     else:
         kinds = [args.kind]
     for kind in kinds:
         run(args.before, args.after, kind, config)
+
+    if args.kind == "routing":
+        room_keys = [r.strip() for r in args.rooms.split(",") if r.strip()]
+        if not room_keys:
+            print("--kind routing требует --rooms с непустым списком номеров помещений через запятую", file=sys.stderr)
+            return
+        diff = diff_room_routing(args.before, args.after, room_keys)
+        print()
+        print(render_routing_diff_report(diff))
 
     if args.kind in ("requirements", "both"):
         run_requirements(args.before, args.after, requirements_llm_config, out_path=args.out or None)
