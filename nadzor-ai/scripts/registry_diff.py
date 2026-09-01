@@ -36,6 +36,7 @@ from app.requirement_cross_check import (  # noqa: E402
     cross_check_requirements,
     render_requirement_cross_check_report,
 )
+from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
 from app.requirement_registry import extract_requirements  # noqa: E402
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
@@ -193,6 +194,7 @@ def run_requirements(
     if llm_config is None:
         return
     room_index = _registry(after_paths, "room_facts")
+    room_index = augment_room_index_with_level_fallback(room_index, after_paths)
     vision_results = check_visual_candidates(result.findings, room_index, llm_config)
     print()
     print(render_vision_requirement_report(vision_results))
