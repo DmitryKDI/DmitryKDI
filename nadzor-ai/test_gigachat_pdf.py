@@ -66,7 +66,7 @@ async def test_gigachat_with_pdfs(pdf_dir: str):
     config = LlmConfig(
         provider="gigachat",
         api_key=api_key,
-        model="GigaChat-Pro",
+        model="GigaChat-2-Pro",
     )
 
     pdf_a = pdf_files[0]
@@ -74,6 +74,18 @@ async def test_gigachat_with_pdfs(pdf_dir: str):
     print(f"Сравниваю: {pdf_a.name} (стр. 1) vs {pdf_b.name} (стр. 1)")
 
     try:
+        # Сначала тест без изображений — просто текстовый запрос
+        print("Тест 1: текстовый запрос...")
+        result = call_llm_json(
+            config=config,
+            system_prompt="Ты — тестовый бот. Отвечай JSON: {\"test\": true}",
+            user_text="Привет, ответь JSON.",
+            timeout=60.0,
+        )
+        print(f"Текстовый результат: {json.dumps(result, ensure_ascii=False, indent=2) if result else 'None'}")
+
+        # Теперь с изображениями — GigaChat требует загрузки файлов через API
+        print("\nТест 2: vision-запрос...")
         result = call_llm_json(
             config=config,
             system_prompt=SYSTEM_PROMPT,

@@ -63,19 +63,38 @@ GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 # не в системном доверенном наборе. Отключать проверку (verify=False) нельзя
 # (действующая политика безопасности проекта) — вместо этого путь к
 # сертификату задаётся явно через переменную окружения, если он нужен.
-GIGACHAT_CA_BUNDLE = os.environ.get("GIGACHAT_CA_BUNDLE") or True
+# По умолчанию — True (проверять). Отключить можно только явно:
+# GIGACHAT_CA_BUNDLE=false (или 0, no).
+_GIGACHAT_CA_RAW = os.environ.get("GIGACHAT_CA_BUNDLE", "")
+if _GIGACHAT_CA_RAW.lower() in ("false", "0", "no"):
+    GIGACHAT_CA_BUNDLE = False
+else:
+    GIGACHAT_CA_BUNDLE = _GIGACHAT_CA_RAW or True
 
 _gigachat_token_cache: dict[str, tuple[str, float]] = {}  # api_key -> (token, истекает_в_monotonic)
 
 
-def _gigachat_token(api_key: str) -> str:
-    """Токен живёт 30 минут — кэшируем по ключу с запасом в 10 минут, чтобы не
-    получать новый на каждый вызов внутри одного прогона. api_key — это уже
-    готовая Base64-строка "client_id:client_secret" (Authorization key из
-    личного кабинета), передаётся в Basic как есть, без повторной кодировки."""
-    cached = _gigachat_token_cache.get(api_key)
+def _gigachat_upload_image(access_token: str, png_bytes: bytes) -> str:
+    """Загрузить картинку в хранилище GigaChat и вернуть file_id для attachments."""
+    resp = _post_json(
+        f"{GIGACHAT_API_BASE}/v1/files",
+        files={"file": ("page.png", png_bytes, "image/png")},
+        data={"purpose": "general"},
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=60.0, verify=GIGACHAT_CA_BUNDLE,
+    )
+    return resp.json()["id"]
+
+
+def _gigachat_token(client_id: str, client_secret: str) -> str:
+    """Токен живёт 30 минут — кэшируем по паре client_id:client_secret с запасом
+    в 10 минут, чтобы не получать новый на каждый вызов внутри одного прогона."""
+    cache_key = f"{client_id}:{client_secret}"
+    cached = _gigachat_token_cache.get(cache_key)
     if cached and cached[1] > time.monotonic():
         return cached[0]
+    import base64
+    creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     resp = _post_json(
         GIGACHAT_OAUTH_URL,
         data={"scope": GIGACHAT_SCOPE},
@@ -83,33 +102,16 @@ def _gigachat_token(api_key: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
             "RqUID": str(uuid.uuid4()),
-            "Authorization": f"Basic {api_key}",
+            "Authorization": f"Basic {creds}",
         },
         timeout=30.0, verify=GIGACHAT_CA_BUNDLE,
     )
     data = resp.json()
     token = data["access_token"]
-    # expires_at приходит в мс от эпохи — переводим в остаток жизни от сейчас
     expires_at_ms = data.get("expires_at", int(time.time() * 1000) + 1800000)
     expires_in = max(60.0, expires_at_ms / 1000 - time.time())
-    _gigachat_token_cache[api_key] = (token, time.monotonic() + expires_in - 600)
+    _gigachat_token_cache[cache_key] = (token, time.monotonic() + expires_in - 600)
     return token
-
-
-def _gigachat_upload_image(access_token: str, data_url: str) -> str:
-    """Картинка передаётся не инлайн (как у OpenAI/Anthropic/Google), а через
-    отдельную загрузку файла: POST /files -> id, id -> attachments сообщения.
-    Другой контракт, не вариант общего inline image_url."""
-    _, b64data = data_url.split(",", 1)
-    raw = base64.b64decode(b64data)
-    resp = _post_json(
-        f"{GIGACHAT_API_BASE}/v1/files",
-        files={"file": ("page.png", raw, "image/png")},
-        data={"purpose": "general"},
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=60.0, verify=GIGACHAT_CA_BUNDLE,
-    )
-    return resp.json()["id"]
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -300,17 +302,34 @@ def call_llm_json(
         return extract_json_object(text)
 
     if provider == "gigachat":
+        # GigaChat 2 про: клиентские реквизиты в формате Client ID:Client Secret
         if not config.api_key:
-            raise ValueError("не задан GigaChat api_key (авторизационный ключ, Base64 client_id:client_secret)")
-        access_token = _gigachat_token(config.api_key)
-        attachments = [_gigachat_upload_image(access_token, img) for img in images]
+            raise ValueError("не задан GigaChat api_key (Base64-строка Client ID:Client Secret)")
+        import base64
+        try:
+            decoded = base64.b64decode(config.api_key).decode()
+            parts = decoded.split(":", 1)
+            if len(parts) != 2:
+                raise ValueError("api_key должен быть Base64 от 'client_id:client_secret'")
+            client_id, client_secret = parts
+        except Exception as exc:
+            raise ValueError(f"Не удалось разобрать api_key: {exc}") from None
+        access_token = _gigachat_token(client_id, client_secret)
+        # GigaChat не поддерживает response_format и inline image_url —
+        # изображения загружаются в хранилище через /files и передаются как attachments.
+        attachments = []
+        if images:
+            for img in images:
+                _, b64data = img.split(",", 1)
+                png_bytes = base64.b64decode(b64data)
+                file_id = _gigachat_upload_image(access_token, png_bytes)
+                attachments.append(file_id)
         message: dict = {"role": "user", "content": user_text}
         if attachments:
             message["attachments"] = attachments
         body = {
             "model": model,
             "messages": [{"role": "system", "content": system_prompt}, message],
-            "response_format": {"type": "json_object"},
         }
         resp = _post_json(
             f"{GIGACHAT_API_BASE}/v1/chat/completions",

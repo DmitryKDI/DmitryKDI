@@ -10,7 +10,7 @@ verifier: mock           # провайдер перепроверки; обяз
 providers:
   gigachat:
     enabled: true
-    model: GigaChat-Pro
+    model: GigaChat-2-Pro
     # Целевой URL с 16 июля 2026 — единый для всех пользователей
     api_url: https://api.giga.chat
     # OAuth-эндпоинт для получения токена (не меняется)

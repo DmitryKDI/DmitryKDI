@@ -196,13 +196,14 @@ def test_gigachat_gets_token_uploads_image_then_calls_chat_with_attachment(monke
     calls: list[dict] = []
     png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
 
+    api_key = "dGVzdC1pZDp0ZXN0LXNlY3JldA=="  # Base64("test-id:test-secret")
     with patch("app.llm.httpx.post", side_effect=_gigachat_fake_post(calls)):
-        config = LlmConfig(provider="gigachat", api_key="base64-creds", model="GigaChat-2")
+        config = LlmConfig(provider="gigachat", api_key=api_key, model="GigaChat-2")
         result = call_llm_json(config, "система", "сравни", images=[png_bytes_to_data_url(png)])
 
     assert result == {"significant": []}
     oauth_call, upload_call, chat_call = calls
-    assert oauth_call["headers"]["Authorization"] == "Basic base64-creds"
+    assert oauth_call["headers"]["Authorization"] == f"Basic {api_key}"
     assert oauth_call["data"]["scope"] == "GIGACHAT_API_PERS"
     assert upload_call["url"].endswith("/files")
     assert chat_call["json"]["messages"][1]["attachments"] == ["file-1"]
@@ -215,7 +216,7 @@ def test_gigachat_caches_token_across_two_calls(monkeypatch):
     calls: list[dict] = []
 
     with patch("app.llm.httpx.post", side_effect=_gigachat_fake_post(calls)):
-        config = LlmConfig(provider="gigachat", api_key="base64-creds", model="GigaChat-2")
+        config = LlmConfig(provider="gigachat", api_key="dGVzdC1pZDp0ZXN0LXNlY3JldA==", model="GigaChat-2")
         call_llm_json(config, "система", "раз")
         call_llm_json(config, "система", "два")
 
