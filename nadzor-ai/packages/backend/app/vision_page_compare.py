@@ -25,9 +25,9 @@ from __future__ import annotations
 from typing import Optional
 
 from .llm import LlmConfig, call_llm_json
-from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
+from .vision import UNTRUSTED_INPUT_RULE, known_violations_block, render_page_to_data_url
 
-REQUIREMENT_CHECK_SYSTEM_PROMPT = f"""\
+_REQUIREMENT_CHECK_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора проверить,
 выполнено ли конкретное требование проектной документации на листе рабочей
 или исполнительной документации (РД/ИД).
@@ -51,11 +51,19 @@ REQUIREMENT_CHECK_SYSTEM_PROMPT = f"""\
 Не выбирай "absent", если сомневаешься — это должно быть видно на листе, а
 не предположено. Ложное "absent" отправит инспектора искать нарушение там,
 где его нет.
-
+{{known}}
 Отвечай только JSON без пояснений вне JSON:
-{{"verdict": "confirmed"|"absent"|"unclear",
+{{{{"verdict": "confirmed"|"absent"|"unclear",
  "reason": "одна-две строки — что видно на листе и почему такой вывод",
- "where": "координатный ориентир на листе (оси, номер помещения, зона), если применимо"}}"""
+ "where": "координатный ориентир на листе (оси, номер помещения, зона), если применимо"}}}}"""
+
+
+def requirement_check_system_prompt(discipline: Optional[str] = None) -> str:
+    """Промпт проверки требования по листу плюс блок известных нарушений
+    (`known_violations.json`, applies_to="drawing") — тот же механизм
+    few-shot-примеров, что `vision_system_prompt` в vision.py (см. тот же
+    пропуск в requirement_llm_extract.py, исправленный там же)."""
+    return _REQUIREMENT_CHECK_TEMPLATE.format(known=known_violations_block("drawing", discipline))
 
 
 def check_requirement_on_page(
@@ -64,6 +72,7 @@ def check_requirement_on_page(
     requirement_text: str,
     rooms: list[str],
     config: LlmConfig,
+    discipline: Optional[str] = None,
     timeout: float = 120.0,
 ) -> dict:
     """Один лист, одно требование. Возвращает {verdict, reason, where} —
@@ -77,7 +86,8 @@ def check_requirement_on_page(
     )
     try:
         img = render_page_to_data_url(rd_pdf_path, rd_page_no)
-        result = call_llm_json(config, REQUIREMENT_CHECK_SYSTEM_PROMPT, user_text, images=[img], timeout=timeout)
+        system_prompt = requirement_check_system_prompt(discipline)
+        result = call_llm_json(config, system_prompt, user_text, images=[img], timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — сбой одного листа (сеть, провайдер, рендер) не должен ронять весь прогон, см. registry_diff._verify_group
         return {"verdict": "unclear", "reason": f"ОШИБКА: {exc}", "where": ""}
     if not result or "verdict" not in result:
@@ -124,6 +134,7 @@ def check_visual_candidates(
     findings: list,
     room_index: dict[str, list[dict]],
     config: LlmConfig,
+    discipline: Optional[str] = None,
     max_pages_per_finding: int = 3,
 ) -> list[dict]:
     """Эскалирует находки `no_code_visual_check_needed`
@@ -161,7 +172,7 @@ def check_visual_candidates(
         checked = 0
         for entry in pages:
             checked += 1
-            result = check_requirement_on_page(entry["path"], entry["page"], f.sentence_pd, f.rooms, config)
+            result = check_requirement_on_page(entry["path"], entry["page"], f.sentence_pd, f.rooms, config, discipline)
             if result.get("verdict") in ("confirmed", "absent"):
                 verdict, reason, where = result["verdict"], result.get("reason", ""), result.get("where", "")
                 break

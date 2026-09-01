@@ -13,6 +13,7 @@ from app.vision_page_compare import (
     check_visual_candidates,
     check_requirement_on_page,
     render_vision_requirement_report,
+    requirement_check_system_prompt,
 )
 
 
@@ -29,6 +30,34 @@ def _patch(module, name, fake):
     original = getattr(module, name)
     setattr(module, name, fake)
     return original
+
+
+def test_system_prompt_includes_known_violations_block():
+    """Промпт проверки листа обязан звать known_violations_block("drawing",
+    ...) — тот же механизм few-shot-примеров, что vision_system_prompt в
+    vision.py (Г.36: этот модуль изначально его не подключал, забытая
+    часть уже существующей механики, не новая идея)."""
+    def fake_known_violations_block(applies_to, discipline=None):
+        assert applies_to == "drawing"
+        return "\nПРИМЕР ИЗ ПРАКТИКИ: сентинел-строка для проверки подключения.\n"
+
+    original = _patch(vision_page_compare, "known_violations_block", fake_known_violations_block)
+    try:
+        prompt = requirement_check_system_prompt()
+    finally:
+        vision_page_compare.known_violations_block = original
+
+    assert "ПРИМЕР ИЗ ПРАКТИКИ" in prompt
+    print("OK: блок known_violations.json (applies_to=drawing) подключён к промпту")
+
+
+def test_system_prompt_valid_json_schema_after_substitution():
+    """Регресс на конкретную ошибку экранирования скобок: JSON-схема ответа
+    не должна пострадать от второго прохода .format() при подстановке
+    known-блока."""
+    prompt = requirement_check_system_prompt()
+    assert '{"verdict": "confirmed"|"absent"|"unclear"' in prompt
+    print("OK: JSON-схема вердикта в промпте не искажена вторым проходом .format()")
 
 
 def test_check_requirement_on_page_returns_model_verdict():
@@ -233,6 +262,8 @@ def test_render_report_groups_by_verdict():
 
 
 if __name__ == "__main__":
+    test_system_prompt_includes_known_violations_block()
+    test_system_prompt_valid_json_schema_after_substitution()
     test_check_requirement_on_page_returns_model_verdict()
     test_check_requirement_on_page_unclear_when_model_fails()
     test_check_requirement_on_page_unclear_when_model_call_raises()

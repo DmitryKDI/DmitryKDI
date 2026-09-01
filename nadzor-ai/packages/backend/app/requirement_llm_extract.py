@@ -26,11 +26,13 @@
 умолчанию, когда ключ есть (RUN-VISION.bat)."""
 from __future__ import annotations
 
+from typing import Optional
+
 from .llm import LlmConfig, call_llm_json
 from .requirement_registry import Requirement
-from .vision import UNTRUSTED_INPUT_RULE
+from .vision import UNTRUSTED_INPUT_RULE, known_violations_block
 
-REQUIREMENT_EXTRACTION_SYSTEM_PROMPT = f"""\
+_REQUIREMENT_EXTRACTION_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора составить
 сводку требований из текста проектной документации (пояснительной записки
 или другого текстового раздела ЛЮБОЙ дисциплины — не только инженерных
@@ -59,16 +61,27 @@ REQUIREMENT_EXTRACTION_SYSTEM_PROMPT = f"""\
 местоположение объекта, а не формулирует обязывающее требование к
 помещению (например, «установка находится в подвале» — не требование;
 «для помещений N, N предусмотреть систему X» — требование).
-
+{{known}}
 Отвечай только JSON без пояснений вне JSON:
-{{"requirements": [
-  {{"rooms": ["как записано в тексте, каждое отдельным элементом"],
+{{{{"requirements": [
+  {{{{"rooms": ["как записано в тексте, каждое отдельным элементом"],
    "code": "короткое обозначение рядом с требованием, или null, если его нет",
    "requirement": "краткий пересказ сути требования, одно предложение",
    "sentence": "дословная цитата или близкий к дословному фрагмент исходного текста",
-   "page": <int, номер страницы из метки>}}
-]}}
-Если требований на этих страницах нет — верни {{"requirements": []}}."""
+   "page": <int, номер страницы из метки>}}}}
+]}}}}
+Если требований на этих страницах нет — верни {{{{"requirements": []}}}}."""
+
+
+def requirement_extraction_system_prompt(discipline: Optional[str] = None) -> str:
+    """Промпт извлечения требований плюс блок известных нарушений
+    (`known_violations.json`, applies_to="text") — тот же механизм
+    few-shot-примеров, что уже используют `vision_system_prompt`/
+    `text_compare_system_prompt` в vision.py, просто не был подключён
+    сюда при первой версии этого модуля (Г.32→Г.36: сама механика
+    «сводка требований из прозы» — новая в этой сессии, а известные
+    нарушения — не новые, просто забыли протянуть до нового промпта)."""
+    return _REQUIREMENT_EXTRACTION_TEMPLATE.format(known=known_violations_block("text", discipline))
 
 
 def _chunk_text_facts(text_facts: list[dict], max_chars: int) -> list[list[dict]]:
@@ -97,6 +110,7 @@ def _render_chunk(chunk: list[dict]) -> str:
 def extract_requirements_llm(
     text_facts: list[dict],
     config: LlmConfig,
+    discipline: Optional[str] = None,
     max_chars_per_call: int = 6000,
     timeout: float = 120.0,
 ) -> list[Requirement]:
@@ -104,12 +118,17 @@ def extract_requirements_llm(
     символов, каждая пачка отдельным вызовом ЛЛМ. Сбой одной пачки (сеть,
     провайдер, неразбираемый ответ) не должен ронять извлечение по
     остальным — пропускается с пустым результатом для этой пачки, как и
-    в остальных vision-путях этого пакета (Г.10)."""
+    в остальных vision-путях этого пакета (Г.10).
+
+    `discipline` — код раздела (ОВ, ЭОМ, КР…), если известен: фильтрует
+    блок известных нарушений в промпте (`known_violations.json`) до
+    относящихся к этому разделу и общих; без него — только общие (`*`)."""
+    system_prompt = requirement_extraction_system_prompt(discipline)
     out: list[Requirement] = []
     for chunk in _chunk_text_facts(text_facts, max_chars_per_call):
         user_text = _render_chunk(chunk)
         try:
-            result = call_llm_json(config, REQUIREMENT_EXTRACTION_SYSTEM_PROMPT, user_text, timeout=timeout)
+            result = call_llm_json(config, system_prompt, user_text, timeout=timeout)
         except Exception:  # noqa: BLE001 — сбой одной пачки не должен ронять извлечение по остальным
             continue
         if not result:

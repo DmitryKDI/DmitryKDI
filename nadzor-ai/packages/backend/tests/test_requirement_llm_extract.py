@@ -15,7 +15,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import requirement_llm_extract
-from app.requirement_llm_extract import _chunk_text_facts, extract_requirements_llm
+from app.requirement_llm_extract import (
+    _chunk_text_facts,
+    extract_requirements_llm,
+    requirement_extraction_system_prompt,
+)
 
 
 def _patch(module, name, fake):
@@ -26,6 +30,27 @@ def _patch(module, name, fake):
 
 def tf(page, text):
     return {"page": page, "text": text}
+
+
+def test_system_prompt_carries_known_violations_block():
+    """known_violations.json уже несёт общие (discipline='*') примеры —
+    промпт извлечения требований обязан их включать, тем же механизмом,
+    что vision_system_prompt/text_compare_system_prompt в vision.py (Г.36:
+    этот модуль был написан с нуля и забыл про существующий механизм
+    few-shot-примеров, что и обнаружилось при проверке)."""
+    prompt = requirement_extraction_system_prompt()
+    assert "хронология освидетельствования" in prompt or "материала" in prompt or "Объём работ" in prompt
+    print("OK: известные нарушения из known_violations.json попадают в промпт извлечения требований")
+
+
+def test_system_prompt_valid_json_schema_after_substitution():
+    """Регресс на конкретную ошибку экранирования фигурных скобок при
+    добавлении known_violations (KeyError на '\"requirements\"' —
+    .format() принял JSON-скобки схемы за поля подстановки)."""
+    prompt = requirement_extraction_system_prompt()
+    assert '{"requirements": [' in prompt
+    assert '{"rooms": [' in prompt
+    print("OK: JSON-схема в промпте не искажена вторым проходом .format()")
 
 
 def test_chunk_text_facts_respects_char_budget():
@@ -165,6 +190,8 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
 
 
 if __name__ == "__main__":
+    test_system_prompt_carries_known_violations_block()
+    test_system_prompt_valid_json_schema_after_substitution()
     test_chunk_text_facts_respects_char_budget()
     test_chunk_text_facts_groups_small_pages_together()
     test_extract_parses_requirement_with_different_room_marker_and_verb()
