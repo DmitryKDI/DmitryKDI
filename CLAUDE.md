@@ -162,7 +162,7 @@ Vendored from [WorldFlowAI/everything-claude-code](https://github.com/WorldFlowA
 
 ## Skills (`.claude/skills/`)
 
-Added: `backend-patterns`, `clickhouse-io`, `coding-standards`, `continuous-learning`, `eval-harness`, `frontend-patterns`, `project-guidelines-example`, `security-review`, `strategic-compact`, `tdd-workflow`, `verification-loop` — alongside the existing HyperFrames video skills.
+Added: `backend-patterns`, `clickhouse-io`, `coding-standards`, `continuous-learning`, `eval-harness`, `frontend-patterns`, `project-guidelines-example`, `security-review`, `strategic-compact`, `tdd-workflow`, `verification-loop`.
 
 ## Rules (always-follow guidelines, loaded below)
 
