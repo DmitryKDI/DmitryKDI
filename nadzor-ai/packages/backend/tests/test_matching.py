@@ -177,6 +177,30 @@ def test_subsystem_keyword_conflict_breaks_a_room_number_tie():
     print("OK: matching subsystem vocabulary breaks a room-number tie between heating and ventilation volumes")
 
 
+def test_subsystem_keyword_heuristic_does_not_apply_outside_ov():
+    """Явление «два тома одной подсистемы с общими номерами помещений»
+    специфично для раздела ОВ (см. subsystem.py) — на другом разделе те же
+    слова могут встретиться случайно (текстовое примечание, соседнее
+    помещение) и не должны штрафовать иначе лучшую пару по номеру
+    помещения."""
+    before = [DocumentInput(
+        "pd.pdf", 1,
+        [tf(1, "отопление радиатор стояк отопления теплоснабжение элеватор")],
+        [rf(1, "012", "Техническое помещение")],
+        "КР",
+    )]
+    after = [DocumentInput(
+        "rd.pdf", 1,
+        [tf(1, "вентиляция воздуховод приточная вытяжная калорифер")],
+        [rf(1, "012", "Техническое помещение")],
+        "КР",
+    )]
+    pairs = match_page_pairs(before, after)
+    assert len(pairs) == 1
+    assert pairs[0].matched_by == "text", "совпадение номера помещения не должно штрафоваться вне ОВ"
+    print("OK: subsystem_lean heuristic is inert outside the ОВ discipline")
+
+
 def test_page_kind_gating_even_when_one_side_has_no_text_pages():
     """Если у ПД нет текстовых листов вообще (только чертежи), а у РД есть и
     то, и другое — текстовые листы РД просто не с чем сравнивать, и они не

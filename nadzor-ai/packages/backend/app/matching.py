@@ -236,14 +236,26 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
     before_codes = [f.discipline_code for f in before_files]
     after_codes = [f.discipline_code for f in after_files]
 
+    # subsystem_lean (вентиляция/отопление по ключевым словам) — эвристика
+    # ТОЛЬКО для раздела ОВ (см. её докстринг): код раздела не различает эти
+    # подсистемы, само деление на них существует только там. На любом другом
+    # разделе (КР, ЭОМ, ВК...) эти слова могут встретиться случайно (в
+    # текстовом примечании, названии смежного помещения) и дать ложный сигнал
+    # там, где самого явления «два тома одной подсистемы» не существует —
+    # поэтому вычисляется только для файлов с discipline_code == "ОВ", для
+    # остальных лишний штраф просто не может сработать (лежит None).
+    #
     # Файл РД/ИД внутри раздела ОВ почти всегда посвящён одной подсистеме
     # целиком (см. subsystem.py) — уровень файла даёт достаточно текста для
     # надёжного сигнала, отдельная страница может быть слишком скудной.
-    after_file_leans = [subsystem_lean(" ".join(f["text"] for f in entry.text_facts)) for entry in after_files]
+    after_file_leans = [
+        subsystem_lean(" ".join(f["text"] for f in entry.text_facts)) if code == "ОВ" else None
+        for entry, code in zip(after_files, after_codes)
+    ]
 
     before_pages = [
         _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT),
-                 room_key_set(entry, p), subsystem_lean(_page_text(entry, p)))
+                 room_key_set(entry, p), subsystem_lean(_page_text(entry, p)) if before_codes[fi] == "ОВ" else None)
         for fi, entry in enumerate(before_files)
         for p in range(1, entry.pages + 1)
     ]
