@@ -9,6 +9,7 @@ from app.ventilation_mo import (
     cross_check_mo_branches,
     extract_branch_locations,
     extract_mo_table_page,
+    find_uncovered_rooms,
     is_mo_table_page,
     render_mo_cross_check_report,
 )
@@ -86,33 +87,58 @@ def test_is_mo_table_page_matches_other_authors_wording():
 def test_extract_mo_table_page_parses_rooms():
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
         assert images and len(images) == 1
-        return {"rooms": [
-            {"room": "140", "name": "физического эксперимента", "supply_system": "П6",
-             "exhaust_system": "ВЕ", "mo_branches": ["В2.7", "В2.8", "В2.9"], "mo_note": "950+950+950"},
-        ]}
+        return {
+            "rooms_seen": ["140", "141"],
+            "rooms": [
+                {"room": "140", "name": "физического эксперимента", "supply_system": "П6",
+                 "exhaust_system": "ВЕ", "mo_branches": ["В2.7", "В2.8", "В2.9"], "mo_note": "950+950+950"},
+            ],
+        }
     orig = _patch(ventilation_mo, "call_llm_json", fake_call_llm_json)
     orig_render = _patch(ventilation_mo, "render_page_to_data_url", lambda *a, **kw: "data:image/png;base64,x")
     try:
-        rooms = extract_mo_table_page("pd.pdf", 79, config=None)
+        result = extract_mo_table_page("pd.pdf", 79, config=None)
     finally:
         ventilation_mo.call_llm_json = orig
         ventilation_mo.render_page_to_data_url = orig_render
-    assert len(rooms) == 1
-    assert rooms[0]["room"] == "140"
-    assert rooms[0]["mo_branches"] == ["В2.7", "В2.8", "В2.9"]
-    print("OK: таблица воздухообменов разбирается в список помещений с ветками М.О.")
+    assert len(result["rooms"]) == 1
+    assert result["rooms"][0]["room"] == "140"
+    assert result["rooms"][0]["mo_branches"] == ["В2.7", "В2.8", "В2.9"]
+    assert result["rooms_seen"] == ["140", "141"]
+    print("OK: таблица воздухообменов разбирается в помещения с М.О. и полный список номеров на листе")
 
 
 def test_extract_mo_table_page_empty_when_response_unusable():
     orig = _patch(ventilation_mo, "call_llm_json", lambda *a, **kw: {"unrelated": True})
     orig_render = _patch(ventilation_mo, "render_page_to_data_url", lambda *a, **kw: "data:image/png;base64,x")
     try:
-        rooms = extract_mo_table_page("pd.pdf", 79, config=None)
+        result = extract_mo_table_page("pd.pdf", 79, config=None)
     finally:
         ventilation_mo.call_llm_json = orig
         ventilation_mo.render_page_to_data_url = orig_render
-    assert rooms == []
-    print("OK: неразбираемый ответ даёт пустой список, не падает")
+    assert result == {"rooms": [], "rooms_seen": []}
+    print("OK: неразбираемый ответ даёт пустые списки, не падает")
+
+
+def test_find_uncovered_rooms_flags_room_314_missing_from_real_table():
+    """Реальный случай (Г.60): в разобранном ПД таблица воздухообменов
+    (стр. 79-81) перечисляет строкой помещения группы «Робо-класс» с 301
+    по 306, затем сразу 317 — номера 307-316 (включая 314, требуемое
+    пользователем) в этой таблице не строкой вообще, не «пустой столбец
+    М.О.»."""
+    rooms_seen_all = (
+        {"140", "141", "142", "147", "198"}
+        | {str(n) for n in range(301, 307)}
+        | {str(n) for n in range(317, 331)}
+    )
+    uncovered = find_uncovered_rooms(["140", "142", "147", "198", "314"], rooms_seen_all)
+    assert uncovered == ["314"]
+    print("OK: помещение 314 помечено как не покрытое этой таблицей вообще")
+
+
+def test_find_uncovered_rooms_empty_when_all_present():
+    assert find_uncovered_rooms(["140", "142"], {"140", "141", "142"}) == []
+    print("OK: все запрошенные помещения есть в таблице — список пуст")
 
 
 def test_extract_branch_locations_parses_branches():
@@ -200,6 +226,8 @@ if __name__ == "__main__":
     test_is_mo_table_page_matches_other_authors_wording()
     test_extract_mo_table_page_parses_rooms()
     test_extract_mo_table_page_empty_when_response_unusable()
+    test_find_uncovered_rooms_flags_room_314_missing_from_real_table()
+    test_find_uncovered_rooms_empty_when_all_present()
     test_extract_branch_locations_parses_branches()
     test_cross_check_detects_system_mismatch()
     test_cross_check_detects_branch_relocated()

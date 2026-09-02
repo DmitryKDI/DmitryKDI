@@ -78,6 +78,7 @@ from app.ventilation_mo import (  # noqa: E402
     cross_check_mo_branches,
     extract_branch_locations,
     extract_mo_table_page,
+    find_uncovered_rooms,
     is_mo_table_page,
     render_mo_cross_check_report,
 )
@@ -700,6 +701,7 @@ def run_mo_check(
 
     try:
         pd_entries: list[dict] = []
+        rooms_seen_all: set[str] = set()
         table_pages_found = 0
         for path in before_paths:
             text_facts = _load_text_facts([path])
@@ -708,13 +710,20 @@ def run_mo_check(
                 if not is_mo_table_page(text_facts, page):
                     continue
                 table_pages_found += 1
-                rooms = extract_mo_table_page(path, page, llm_config)
-                pd_entries.extend(rooms)
+                page_result = extract_mo_table_page(path, page, llm_config)
+                pd_entries.extend(page_result["rooms"])
+                rooms_seen_all.update(page_result["rooms_seen"])
         if room_keys:
             pd_entries = [r for r in pd_entries if r.get("room") in room_keys]
         _emit(f"=== Сверка местных отсосов ПД↔РД (Г.58) ===")
         _emit(f"Листов «Таблица воздухообменов» найдено: {table_pages_found}, "
               f"помещений с местными отсосами: {len(pd_entries)}")
+        if room_keys:
+            uncovered = find_uncovered_rooms(room_keys, rooms_seen_all)
+            if uncovered:
+                _emit(f"Запрошенные помещения не найдены в таблице воздухообменов "
+                      f"ВООБЩЕ (не строкой, а не пустым столбцом М.О. — Г.60, нужен "
+                      f"другой источник ПД): {', '.join(uncovered)}")
         if not pd_entries:
             _emit("Ни одного помещения с местными отсосами не найдено "
                   "(нет таблицы воздухообменов в ПД, либо у запрошенных "
