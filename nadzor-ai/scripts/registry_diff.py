@@ -88,6 +88,10 @@ from app.vision_page_compare import (  # noqa: E402
     render_vision_finding_line,
     render_vision_requirement_report,
 )
+from app.verdict_synthesis import (  # noqa: E402
+    render_verdict_report,
+    synthesize_all,
+)
 
 # Провайдер -> имя переменной окружения с ключом, то же имя, что в
 # nadzor-ai/.env.example (GIGACHAT_CREDENTIALS уже используется полным
@@ -546,6 +550,17 @@ def run_triangulated(
         tickets = build_tickets(candidates)
         _emit("")
         _emit(render_tickets_markdown(tickets))
+
+        if requirements_llm_config is not None and signals:
+            _emit("")
+            _emit("=== Сводный вердикт по источникам (Г.61) — по мере готовности ===")
+            verdicts = synthesize_all(
+                signals, requirements_llm_config,
+                on_result=lambda v: _emit(f"  [{v.verdict}] {v.domain} {v.key} "
+                                           f"({', '.join(v.sources)}): {v.reasoning}"),
+            )
+            _emit("")
+            _emit(render_verdict_report(verdicts))
     finally:
         if out_f:
             out_f.close()

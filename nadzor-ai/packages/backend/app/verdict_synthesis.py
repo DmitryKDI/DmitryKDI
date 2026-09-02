@@ -1,0 +1,135 @@
+"""Свод независимых сигналов в единый вердикт по ключу (Г.61).
+
+Прямая идея пользователя: несколько «агентов» — уже существующие
+независимые источники (`signals_from_*` в `triangulation.py`: реестр
+помещений, реестр оборудования, требования из прозы, граф маршрутизации,
+зрение по чертежам, местные отсосы) — каждый сканирует свой тип данных.
+`triangulate()` уже группирует их находки по ключу (помещение/позиция) и
+считает источники механически (`confirmed`, если ≥2). Этот модуль
+достраивает НАД триангуляцией отдельный ИИ-вызов, который делает вывод НЕ
+из документа заново, а из уже готовых находок других источников по одному
+и тому же ключу — ровно то, что пользователь описал: «отдельный ассистент
+будет делать выводы на основе других выводов».
+
+Дёшево по токенам (прямой довод пользователя, тут подтверждён
+архитектурой, не только словами): один вызов на ключ, БЕЗ картинок,
+промпт — несколько строк уже посчитанного текста находок, не документ
+целиком и не повторный запуск источников. Дорогие источники (зрение,
+местные отсосы) как считали свою часть один раз, так и продолжают —
+синтез их не переигрывает.
+
+Работает от списка `Signal`, не от `Confirmation`: `Confirmation.sources`
+(уникальные имена) и `.details` (все детали) не выровнены поэлементно —
+третий сигнал одного источника или двух разных нельзя восстановить из
+двух отдельных кортежей. Здесь этой проблемы нет — сигналы группируются
+заново, каждый сохраняет свою пару (источник, деталь)."""
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Callable, Optional, Sequence
+
+from .llm import LlmConfig, call_llm_json
+from .triangulation import Signal
+from .vision import UNTRUSTED_INPUT_RULE
+
+_VALID_VERDICTS = ("нарушение", "недостаточно_данных", "не_является_нарушением")
+
+_SYNTHESIS_SYSTEM_PROMPT = f"""\
+Ты — сводный эксперт государственного строительного надзора. Несколько
+независимых модулей проверки («агентов») — каждый сканирует свой тип
+данных (текстовые требования проектной документации, реестр помещений,
+реестр оборудования, граф маршрутизации инженерных систем, местные
+отсосы по таблице воздухообменов, прямое визуальное сравнение чертежей)
+— уже проверили ОДИН И ТОТ ЖЕ объект (помещение или позицию оборудования)
+и независимо друг от друга сообщили СВОИ отдельные находки. Документы
+целиком тебе не показаны и не нужны — ниже только уже готовые находки
+этих источников по этому одному объекту.
+
+Твоя задача — свести находки в единый вердикт для инспектора: есть ли
+реальное расхождение между проектной (ПД) и рабочей (РД) документацией по
+этому объекту, или находки разных источников не складываются в
+достаточное основание (случайное совпадение формулировок, находки о
+разных вещах, недостаточно данных для вывода).
+
+{UNTRUSTED_INPUT_RULE}
+
+Отвечай только JSON без пояснений вне JSON:
+{{"verdict": "нарушение" | "недостаточно_данных" | "не_является_нарушением",
+ "reasoning": "1-3 предложения для инспектора: что именно не совпадает и почему находки источников на это указывают (или не указывают)",
+ "injection_suspected": false}}"""
+
+
+@dataclass
+class KeyVerdict:
+    domain: str
+    key: str
+    verdict: str
+    reasoning: str
+    sources: tuple[str, ...] = ()
+
+
+def group_signals_by_key(signals: Sequence[Signal]) -> dict[tuple[str, str], list[Signal]]:
+    grouped: dict[tuple[str, str], list[Signal]] = defaultdict(list)
+    for s in signals:
+        grouped[(s.domain, s.key)].append(s)
+    return grouped
+
+
+def synthesize_verdict(
+    domain: str, key: str, signals: list[Signal], config: LlmConfig, timeout: float = 60.0,
+) -> KeyVerdict:
+    """Один вызов ИИ на (domain, key) — сводит уже готовые находки, не
+    перечитывает документы. Работает и на одном источнике (менее уверенный
+    вывод, но всё равно связный текст вместо голого 'source: detail')."""
+    sources = tuple(sorted({s.source for s in signals}))
+    lines = [f"- [{s.source}] {s.detail or '(без деталей)'}" for s in signals]
+    user_text = f"Объект: {domain} {key}\nНаходки источников:\n" + "\n".join(lines)
+    try:
+        result = call_llm_json(config, _SYNTHESIS_SYSTEM_PROMPT, user_text, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — сбой свода одного ключа не должен ронять весь прогон
+        return KeyVerdict(domain=domain, key=key, verdict="недостаточно_данных",
+                           reasoning=f"ОШИБКА свода: {exc}", sources=sources)
+    if not result:
+        return KeyVerdict(domain=domain, key=key, verdict="недостаточно_данных",
+                           reasoning="сводный вызов не дал разбираемого ответа", sources=sources)
+    verdict = result.get("verdict")
+    if verdict not in _VALID_VERDICTS:
+        verdict = "недостаточно_данных"
+    reasoning = result.get("reasoning") or ""
+    return KeyVerdict(domain=domain, key=key, verdict=verdict, reasoning=reasoning, sources=sources)
+
+
+def synthesize_all(
+    signals: Sequence[Signal],
+    config: LlmConfig,
+    only_keys: Optional[set[tuple[str, str]]] = None,
+    on_result: Optional[Callable[[KeyVerdict], None]] = None,
+) -> list[KeyVerdict]:
+    """Свод по КАЖДОМУ ключу, у которого есть хотя бы один сигнал
+    (список `signals`, как и у `triangulate()`, уже содержит только
+    находки, не совпадения — молчаливых ключей тут по построению нет).
+    `only_keys`, если задан, сужает свод до конкретных (domain, key) — тот
+    же принцип узкого explicit-пути, что и `--rooms` у routing/mo (Г.50/
+    Г.58): свод — ИИ-вызов на каждый ключ, не бесплатная агрегация."""
+    grouped = group_signals_by_key(signals)
+    out: list[KeyVerdict] = []
+    for (domain, key), group in sorted(grouped.items()):
+        if only_keys is not None and (domain, key) not in only_keys:
+            continue
+        verdict = synthesize_verdict(domain, key, group, config)
+        if on_result:
+            on_result(verdict)
+        out.append(verdict)
+    return out
+
+
+def render_verdict_report(verdicts: list[KeyVerdict]) -> str:
+    by_verdict: dict[str, int] = defaultdict(int)
+    for v in verdicts:
+        by_verdict[v.verdict] += 1
+    summary = ", ".join(f"{k}: {n}" for k, n in sorted(by_verdict.items()))
+    lines = [f"=== Сводный вердикт по источникам (Г.61) — объектов: {len(verdicts)} ({summary}) ==="]
+    for v in verdicts:
+        lines.append(f"  [{v.verdict}] {v.domain} {v.key} ({', '.join(v.sources)}): {v.reasoning}")
+    return "\n".join(lines)
