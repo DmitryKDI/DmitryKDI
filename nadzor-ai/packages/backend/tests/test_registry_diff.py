@@ -174,8 +174,130 @@ def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_
     print("OK: комплексный прогон с ключом сам выбирает помещения для routing_diff без --rooms")
 
 
+# --------------------------------------------------------------------------
+# run_page_pair_comparison (Г.51) — прямое сравнение листов ПД↔РД
+# --------------------------------------------------------------------------
+
+def _pair_doc(name, text, room_key=None, room_name="А"):
+    from app.matching import DocumentInput
+    room_facts = [{"page": 1, "key": room_key, "name": room_name}] if room_key else []
+    return DocumentInput(name=name, pages=1, text_facts=[{"page": 1, "text": text}],
+                         room_facts=room_facts, page_kinds={1: "text"})
+
+
+def test_page_pair_comparison_skips_pair_with_matching_registries(monkeypatch):
+    """Уровень 0 (Г.23/25/28, router.py): реестры страницы совпали —
+    пропуск без единого обращения к ИИ. router.py был построен и
+    протестирован ещё в другой сессии, но ни разу не вызывался ни отсюда,
+    ни из main.py (Г.46) — это первое реальное подключение."""
+    before = [_pair_doc("pd.pdf", "Помещение 140 отопление", room_key="140", room_name="Венткамера")]
+    after = [_pair_doc("rd.pdf", "Помещение 140 отопление", room_key="140", room_name="Венткамера")]
+
+    calls = []
+
+    def fake_compare_text_pair(*a, **kw):
+        calls.append(a)
+        return {"significant": []}
+
+    monkeypatch.setattr(registry_diff, "compare_text_pair", fake_compare_text_pair)
+    results = registry_diff.run_page_pair_comparison(
+        before, ["pd.pdf"], after, ["rd.pdf"], config=None)
+
+    assert calls == [], "реестры совпали — пара уровня 0, ИИ не должен вызываться"
+    assert results == []
+    print("OK: пара с совпавшими реестрами (уровень 0) пропущена без вызова ИИ")
+
+
+def test_page_pair_comparison_calls_llm_on_mismatched_registry(monkeypatch):
+    """Уровень 2: реестр помещений страницы не совпал (разное название) —
+    ИИ обязателен, находки из `significant` (только с change=true)
+    попадают в результат."""
+    before = [_pair_doc("pd.pdf", "Помещение 140 отопление", room_key="140", room_name="Венткамера")]
+    after = [_pair_doc("rd.pdf", "Помещение 140 отопление", room_key="140", room_name="Насосная")]
+
+    def fake_compare_text_pair(before_text, after_text, config, context="", discipline=None, timeout=120.0):
+        assert "140" in before_text
+        return {"significant": [
+            {"label": "Название", "change": "Венткамера -> Насосная", "severity": "существенно"},
+            {"label": "Шум", "change": ""},  # change="" -> не находка
+        ]}
+
+    monkeypatch.setattr(registry_diff, "compare_text_pair", fake_compare_text_pair)
+    results = registry_diff.run_page_pair_comparison(
+        before, ["pd.pdf"], after, ["rd.pdf"], config=None)
+
+    assert len(results) == 1
+    assert results[0]["status"] == "ok"
+    assert results[0]["level"] == 2
+    assert len(results[0]["findings"]) == 1
+    assert results[0]["findings"][0]["change"] == "Венткамера -> Насосная"
+    print("OK: расхождение в реестре — уровень 2, ИИ вызван, находка с change извлечена")
+
+
+def test_page_pair_comparison_reports_failed_call_not_silent(monkeypatch):
+    """Сорванный вызов (сеть, провайдер) не роняет прогон и не выглядит
+    как «различий нет» — status="error" с причиной (Г.10)."""
+    before = [_pair_doc("pd.pdf", "Помещение 5", room_key="5", room_name="А")]
+    after = [_pair_doc("rd.pdf", "Помещение 5", room_key="5", room_name="Б")]
+
+    def fake_compare_text_pair(*a, **kw):
+        raise RuntimeError("сеть недоступна")
+
+    monkeypatch.setattr(registry_diff, "compare_text_pair", fake_compare_text_pair)
+    results = registry_diff.run_page_pair_comparison(
+        before, ["pd.pdf"], after, ["rd.pdf"], config=None)
+
+    assert len(results) == 1
+    assert results[0]["status"] == "error"
+    assert "сеть недоступна" in results[0]["error"]
+    assert results[0]["findings"] == []
+    print("OK: сорванный вызов даёт видимый status=error, не пустой молчаливый результат")
+
+
+def test_page_pair_comparison_captures_injection_suspected(monkeypatch):
+    before = [_pair_doc("pd.pdf", "Помещение 9", room_key="9", room_name="А")]
+    after = [_pair_doc("rd.pdf", "Помещение 9", room_key="9", room_name="Б")]
+
+    monkeypatch.setattr(registry_diff, "compare_text_pair",
+                        lambda *a, **kw: {"significant": [], "injection_suspected": True})
+    results = registry_diff.run_page_pair_comparison(
+        before, ["pd.pdf"], after, ["rd.pdf"], config=None)
+
+    assert results[0]["injection_suspected"] is True
+    print("OK: injection_suspected из ответа модели прокидывается в результат")
+
+
+def test_page_pair_comparison_on_result_fires_per_pair(monkeypatch):
+    before = [_pair_doc("pd.pdf", "Помещение 7", room_key="7", room_name="А")]
+    after = [_pair_doc("rd.pdf", "Помещение 7", room_key="7", room_name="Б")]
+    seen = []
+
+    monkeypatch.setattr(registry_diff, "compare_text_pair", lambda *a, **kw: {"significant": []})
+    registry_diff.run_page_pair_comparison(
+        before, ["pd.pdf"], after, ["rd.pdf"], config=None, on_result=seen.append)
+
+    assert len(seen) == 1 and seen[0]["level"] == 2
+    print("OK: on_result вызывается по мере готовности каждой пары")
+
+
+def test_render_page_pair_report_shows_counts_and_only_notable_lines():
+    entries = [
+        {"before_path": "pd.pdf", "before_page": 1, "after_path": "rd.pdf", "after_page": 1,
+         "page_kind": "text", "level": 2, "status": "ok", "error": "",
+         "findings": [{"label": "X", "change": "Y"}], "injection_suspected": False},
+        {"before_path": "pd.pdf", "before_page": 2, "after_path": "rd.pdf", "after_page": 2,
+         "page_kind": "text", "level": 2, "status": "ok", "error": "",
+         "findings": [], "injection_suspected": False},
+    ]
+    report = registry_diff.render_page_pair_report(entries)
+    assert "Пар проверено: 2" in report and "находок: 1" in report
+    assert "X: Y" in report
+    print("OK: отчёт по прямому сравнению листов считает пары и показывает находки")
+
+
 if __name__ == "__main__":
     test_diff_splits_into_three_categories()
     test_diff_empty_sides_do_not_crash()
     test_load_text_facts_includes_catalog_pages_that_extract_document_facts_excludes()
+    test_render_page_pair_report_shows_counts_and_only_notable_lines()
     print("ALL PASS (запустите pytest для тестов с capsys/monkeypatch/tmp_path)")

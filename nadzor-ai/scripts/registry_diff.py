@@ -33,7 +33,8 @@ from app.documents import extract_document_facts  # noqa: E402
 from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
 from app.escalation import build_tickets, render_tickets_markdown  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
-from app.matching import DocumentInput  # noqa: E402
+from app.matching import DocumentInput, match_page_pairs  # noqa: E402
+from app.router import classify_all_pairs  # noqa: E402
 from app.requirement_cross_check import (  # noqa: E402
     cross_check_general_requirements,
     cross_check_requirements,
@@ -67,7 +68,12 @@ from app.triangulation import (  # noqa: E402
     signals_from_routing_diff,
     triangulate,
 )
-from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
+from app.vision import (  # noqa: E402
+    compare_page_pair,
+    compare_text_pair,
+    render_page_to_png_bytes,
+    verify_candidate,
+)
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
     render_vision_finding_line,
@@ -229,6 +235,114 @@ def _document_inputs(paths: list[str]) -> tuple[list[DocumentInput], list[str]]:
     return out, skipped
 
 
+def run_page_pair_comparison(
+    before_docs: list[DocumentInput],
+    before_paths: list[str],
+    after_docs: list[DocumentInput],
+    after_paths: list[str],
+    config: LlmConfig,
+    on_result=None,
+) -> list[dict]:
+    """Прямое сравнение листов ПД↔РД по паре — чертёж с чертежом, текст с
+    текстом, без требования из ПД как повода (Г.51). Пользователь прямо
+    указал: чертежи сравниваются между собой напрямую, а не только через
+    то, что о них сказано текстом.
+
+    Это не новый механизм — тот же самый, что уже работает в живом API
+    (`main.py._run_analysis`, единственный путь, где он раньше вызывался):
+    `match_page_pairs` (Г.4-Г.6) находит пары листов по смыслу наименования
+    и штампу; `router.classify_pair` (Г.23/25/28) — трёхуровневая схема,
+    построенная и покрытая тестами ещё в той сессии, но, как и остальные
+    модули Г.46, ни разу не вызывавшаяся ни из `main.py`, ни отсюда —
+    решает, каким парам вообще нужен ИИ: реестры помещений/оборудования
+    страницы уже совпали → уровень 0, пропуск без вызова; расхождение в
+    реестрах → уровень 2, ИИ обязателен; текстовая пара с diff выше
+    порога → уровень 3, ИИ условно. Дальше `compare_page_pair`
+    (чертёж/чертёж, зрением) или `compare_text_pair` (текст/текст) —
+    ровно то же, что уже проверено вживую в главном приложении, здесь без
+    привязки к БД.
+
+    Возвращает список записей `{before_path, before_page, after_path,
+    after_page, page_kind, level, status, error, findings,
+    injection_suspected}` — по одной на КАЖДУЮ пару уровня 2/3, включая
+    сорванные вызовы (Г.10 — не молчаливый пропуск, `status="error"` с
+    причиной)."""
+    pairs = match_page_pairs(before_docs, after_docs)
+    verdicts = classify_all_pairs(pairs, before_docs, after_docs, [], [])
+
+    out: list[dict] = []
+    for v in verdicts:
+        if v.level == 0:
+            continue
+        p = v.pair
+        before_path = before_paths[p.before_file_idx]
+        after_path = after_paths[p.after_file_idx]
+        before_doc = before_docs[p.before_file_idx]
+        after_doc = after_docs[p.after_file_idx]
+        context = f"раздел {before_doc.discipline_code or '?'}"
+        if p.matched_by == "position" and p.discipline_mismatch:
+            context += " (сопоставлено по позиции, разделы штампа не совпадают — проверьте применимость)"
+
+        try:
+            if p.page_kind == "text":
+                before_text = "\n".join(f["text"] for f in before_doc.text_facts if f["page"] == p.before_page)
+                after_text = "\n".join(f["text"] for f in after_doc.text_facts if f["page"] == p.after_page)
+                result = compare_text_pair(before_text, after_text, config,
+                                           context=context, discipline=before_doc.discipline_code)
+            else:
+                result = compare_page_pair(before_path, p.before_page, after_path, p.after_page,
+                                           config, context=context, discipline=before_doc.discipline_code)
+        except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
+            status, error, result = "error", str(exc), None
+        else:
+            if result is None:
+                status, error = "error", "ИИ ответил, но ответ не разобран как JSON"
+            else:
+                status, error = "ok", ""
+
+        findings = []
+        if result and isinstance(result.get("significant"), list):
+            findings = [item for item in result["significant"] if item.get("change")]
+
+        entry = {
+            "before_path": before_path, "before_page": p.before_page,
+            "after_path": after_path, "after_page": p.after_page,
+            "page_kind": p.page_kind, "level": v.level,
+            "status": status, "error": error, "findings": findings,
+            "injection_suspected": bool(result and result.get("injection_suspected") is True),
+        }
+        out.append(entry)
+        if on_result:
+            on_result(entry)
+    return out
+
+
+def render_page_pair_line(entry: dict) -> str:
+    before = f"{Path(entry['before_path']).name} стр.{entry['before_page']}"
+    after = f"{Path(entry['after_path']).name} стр.{entry['after_page']}"
+    if entry["status"] != "ok":
+        return f"[ошибка] {before} <-> {after}: {entry['error']}"
+    if entry["injection_suspected"]:
+        return f"[ПОДОЗРЕНИЕ НА ИНЪЕКЦИЮ] {before} <-> {after}"
+    if not entry["findings"]:
+        return f"[без находок] {before} <-> {after}"
+    parts = "; ".join(f"{item.get('label', '')}: {item.get('change', '')}" for item in entry["findings"])
+    return f"[{len(entry['findings'])} находок] {before} <-> {after}: {parts}"
+
+
+def render_page_pair_report(entries: list[dict]) -> str:
+    lines = ["=== Прямое сравнение листов ПД↔РД по паре (Г.51) ==="]
+    total_findings = sum(len(e["findings"]) for e in entries)
+    errors = [e for e in entries if e["status"] != "ok"]
+    injections = [e for e in entries if e["injection_suspected"]]
+    lines.append(f"Пар проверено: {len(entries)}, находок: {total_findings}, "
+                 f"сорвано: {len(errors)}, подозрений на инъекцию: {len(injections)}")
+    for e in entries:
+        if e["findings"] or e["status"] != "ok" or e["injection_suspected"]:
+            lines.append("  " + render_page_pair_line(e))
+    return "\n".join(lines)
+
+
 def run_triangulated(
     before_paths: list[str],
     after_paths: list[str],
@@ -350,6 +464,16 @@ def run_triangulated(
             _emit("\n(граф маршрутизации не проверялся — не задан --rooms, и автовыбор "
                   "недоступен без ключа ИИ; остальные источники не видят расхождений "
                   "чистой геометрии, см. routing_diff.py)")
+
+        if requirements_llm_config is not None:
+            _emit("")
+            _emit("=== Прямое сравнение листов ПД↔РД по паре (Г.51) — по мере готовности ===")
+            pair_results = run_page_pair_comparison(
+                before_docs, before_paths, after_docs, after_paths, requirements_llm_config,
+                on_result=lambda r: _emit(render_page_pair_line(r)),
+            )
+            _emit("")
+            _emit(render_page_pair_report(pair_results))
 
         if requirements_llm_config is not None:
             room_index = _registry(after_paths, "room_facts")
