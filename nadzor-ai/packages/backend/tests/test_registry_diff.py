@@ -119,6 +119,61 @@ def test_run_triangulated_wires_room_and_equipment_cross_checks_into_escalation(
     print("OK: run_triangulated сводит реестры помещений/оборудования в общую триангуляцию и эскалацию")
 
 
+def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_not_given(
+    tmp_path, monkeypatch, capsys,
+):
+    """Комплексный прогон с ключом ИИ (Г.50): без явного --rooms граф
+    маршрутизации раньше просто пропускался, даже когда ключ есть, — прямая
+    претензия пользователя («система должна работать комплексно», не
+    только по тексту). Без --rooms, но С ключом, routing_diff должен
+    получить автоматически выбранные помещения — ТОЛЬКО те, что уже
+    отмечены расхождением в реестре (Г.9), не весь комплект."""
+    from app.documents import DocumentFacts
+    from app.llm import LlmConfig
+
+    pd_facts = DocumentFacts(
+        name="pd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Комната А", "area": "10"},
+                    {"page": 1, "key": "150", "name": "Комната Б", "area": "12"}],
+    )
+    rd_facts = DocumentFacts(
+        name="rd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Другое имя", "area": "10"},
+                    {"page": 1, "key": "150", "name": "Комната Б", "area": "12"}],
+    )
+
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    pd_path.touch()
+    rd_path.touch()
+
+    def fake_extract_document_facts(path, name):
+        return pd_facts if str(path) == str(pd_path) else rd_facts
+
+    routing_calls = []
+
+    def fake_diff_room_routing(before_paths, after_paths, room_keys):
+        routing_calls.append(list(room_keys))
+        return {"renumbered": [], "retargeted": [], "connection_count_changed": [],
+                "unchanged": [], "unusable": [], "room_only_before": [], "room_only_after": []}
+
+    monkeypatch.setattr(registry_diff, "extract_document_facts", fake_extract_document_facts)
+    monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: [])
+    monkeypatch.setattr(registry_diff, "extract_requirements_llm", lambda facts, cfg, **kw: [])
+    monkeypatch.setattr(registry_diff, "diff_room_routing", fake_diff_room_routing)
+    monkeypatch.setattr(registry_diff, "check_visual_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(registry_diff, "verify_general_requirements_llm", lambda *a, **kw: [])
+
+    fake_config = LlmConfig(provider="gigachat", api_key="fake", base_url="", model="")
+    registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[],
+                                    requirements_llm_config=fake_config)
+
+    out = capsys.readouterr().out
+    assert routing_calls == [["140"]], routing_calls  # только "140" — расхождение в реестре, "150" совпало
+    assert "--rooms не задан — граф маршрутизации автоматически проверен" in out
+    print("OK: комплексный прогон с ключом сам выбирает помещения для routing_diff без --rooms")
+
+
 if __name__ == "__main__":
     test_diff_splits_into_three_categories()
     test_diff_empty_sides_do_not_crash()

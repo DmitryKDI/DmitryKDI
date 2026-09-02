@@ -88,6 +88,12 @@ _PROVIDER_ENV_KEY = {
 _KIND_ATTR = {"rooms": "room_facts", "equipment": "equipment_facts"}
 _KIND_LABEL = {"rooms": "помещений", "equipment": "оборудования"}
 
+# Верхняя граница автовыбора помещений для routing_diff.py в run_triangulated
+# (Г.50), когда --rooms не задан явно, но есть ключ ИИ: ~6 с/лист (Г.30) на
+# кандидатную страницу — без потолка авто-прогон на комплекте с десятками
+# отмеченных помещений растянется на много минут просто на геометрию.
+MAX_AUTO_ROUTING_ROOMS = 15
+
 
 def _registry(paths: list[str], fact_attr: str) -> dict[str, list[dict]]:
     """key -> [{name, doc, path, page}] по всем страницам всех файлов одной
@@ -295,14 +301,32 @@ def run_triangulated(
         signals += signals_from_equip_cross_check(equip_result.findings)
         signals += signals_from_requirement_cross_check(req_result.findings)
 
-        if room_keys:
-            routing_diff = diff_room_routing(before_paths, after_paths, room_keys)
+        routing_room_keys = room_keys
+        auto_selected = False
+        if not routing_room_keys and requirements_llm_config is not None:
+            # Комплексный прогон (реальный ключ, Г.50): без --rooms граф
+            # маршрутизации раньше просто пропускался — а именно в таком
+            # прогоне пользователь ожидает проверку "и по тексту, и по
+            # чертежу" разом (~6 с/лист, Г.30, поэтому без ключа остаётся
+            # опциональным через явный --rooms, а не включается всегда).
+            # Кандидаты — только помещения, УЖЕ отмеченные расхождением в
+            # реестре (Г.9/room_cross_check) — точечно, не весь комплект.
+            candidates = sorted({f.room_key for f in room_result.findings})
+            routing_room_keys = candidates[:MAX_AUTO_ROUTING_ROOMS]
+            auto_selected = True
+
+        if routing_room_keys:
+            if auto_selected:
+                _emit(f"\n(--rooms не задан — граф маршрутизации автоматически проверен для "
+                      f"{len(routing_room_keys)} из {len(candidates)} помещений с расхождением "
+                      f"в реестре Г.9: {', '.join(routing_room_keys)})")
+            routing_diff = diff_room_routing(before_paths, after_paths, routing_room_keys)
             _emit(render_routing_diff_report(routing_diff))
             signals += signals_from_routing_diff(routing_diff)
         else:
-            _emit("\n(граф маршрутизации не проверялся — не задан --rooms; "
-                  "остальные источники не видят расхождений чистой геометрии, "
-                  "см. routing_diff.py)")
+            _emit("\n(граф маршрутизации не проверялся — не задан --rooms, и автовыбор "
+                  "недоступен без ключа ИИ; остальные источники не видят расхождений "
+                  "чистой геометрии, см. routing_diff.py)")
 
         if requirements_llm_config is not None:
             room_index = _registry(after_paths, "room_facts")
