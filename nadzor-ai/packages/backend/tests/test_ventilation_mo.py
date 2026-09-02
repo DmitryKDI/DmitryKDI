@@ -31,9 +31,56 @@ def test_is_mo_table_page_detects_real_title():
 
 
 def test_is_mo_table_page_false_for_other_pages():
+    """Реальный сосед по документу: «Таблица теплоизбытков помещений»
+    (стр. 82 разобранного ПД) — похожий заголовок, другая таблица, не
+    должна давать ложное срабатывание."""
     text_facts = [{"page": 82, "text": "Таблица теплоизбытков помещений (начало)"}]
     assert is_mo_table_page(text_facts, 82) is False
-    print("OK: другой заголовок листа не считается таблицей воздухообменов")
+    print("OK: соседняя таблица теплоизбытков не считается таблицей воздухообменов")
+
+
+def test_is_mo_table_page_false_for_contents_list_mention():
+    """Реальный ложный срабатыватель, найденный при первой же проверке
+    обобщённого корня (Г.59) на настоящем ПД: страница «Содержание тома»
+    перечисляет заголовок листа («Таблица воздухообменов помещений
+    (начало)») в списке чертежей — термин есть, а самой таблицы на
+    странице нет. Отличается длиной: страница содержания длинная (список
+    из десятков строк), настоящий лист таблицы — короткий (только штамп)."""
+    text_facts = [{"page": 7, "text": (
+        "СОДЕРЖАНИЕ ТОМА\n" + "Лист\n" * 200 +
+        "Таблица воздухообменов помещений (начало)\n"
+        "Таблица воздухообменов помещений (продолжение)\n"
+    )}]
+    assert is_mo_table_page(text_facts, 7) is False
+    print("OK: упоминание в содержании тома не считается самой таблицей")
+
+
+def test_is_mo_table_page_false_for_prose_mention():
+    """Реальный случай: обычное предложение ПЗ («Воздухообмен в столовой
+    и горячем цехе рассчитан на...») содержит корень термина, но это не
+    лист таблицы — отсекается той же проверкой длины."""
+    text_facts = [{"page": 14, "text": (
+        "Воздухообмен в столовой и горячем цехе рассчитан на поглощение "
+        "выделяемых технологическим оборудованием избытков тепла и влаги. " * 15
+    )}]
+    assert is_mo_table_page(text_facts, 14) is False
+    print("OK: упоминание термина в прозе ПЗ не считается самой таблицей")
+
+
+def test_is_mo_table_page_matches_other_authors_wording():
+    """Г.59 — механизм не должен переноситься только на дословную фразу
+    ЭТОГО документа: другие формы того же термина СП 60.13330 (другой
+    порядок слов, другое число/падеж) обязаны находиться тоже."""
+    variants = [
+        "Ведомость воздухообмена",
+        "Расчёт воздухообменов помещений",
+        "ТАБЛИЦА ВОЗДУХООБМЕНА ПОМЕЩЕНИЙ 1 ЭТАЖА",
+        "Кратность воздухообмена по помещениям",
+    ]
+    for title in variants:
+        text_facts = [{"page": 1, "text": title}]
+        assert is_mo_table_page(text_facts, 1) is True, title
+    print("OK: разные формулировки того же термина СП 60.13330 распознаются одинаково")
 
 
 def test_extract_mo_table_page_parses_rooms():
@@ -148,6 +195,9 @@ def test_render_mo_cross_check_report_lists_findings():
 if __name__ == "__main__":
     test_is_mo_table_page_detects_real_title()
     test_is_mo_table_page_false_for_other_pages()
+    test_is_mo_table_page_false_for_contents_list_mention()
+    test_is_mo_table_page_false_for_prose_mention()
+    test_is_mo_table_page_matches_other_authors_wording()
     test_extract_mo_table_page_parses_rooms()
     test_extract_mo_table_page_empty_when_response_unusable()
     test_extract_branch_locations_parses_branches()
