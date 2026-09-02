@@ -9,6 +9,7 @@ from app.requirement_registry import (
     extract_general_requirements,
     extract_predicate_requirements,
     extract_requirements,
+    match_requirement_rooms_by_name,
     render_general_requirements_summary,
     render_requirements_summary,
 )
@@ -238,6 +239,64 @@ def test_general_requirements_catch_perfective_vypolnit_form():
     print("OK: совершенный вид «выполнить» (не только «выполняется») ловится формой 3")
 
 
+def test_match_requirement_rooms_by_name_finds_real_pd_rooms():
+    """Г.57 — реальный случай: требование про воздуховоды вытяжных шкафов
+    «в лаборанских и кабинетах физики и химии» не называет ни одного номера
+    (иначе это была бы форма 1/2), но должно связаться по ключевым словам
+    названия с настоящими помещениями реестра ПД (140/141/147/198)."""
+    sentence = ("Воздуховоды от вытяжных шкафов в лаборанских и кабинетах физики и "
+               "химии выполнить из коррозионностойких материалов.")
+    room_facts = [
+        {"key": "140", "name": "Физического эксперимента"},
+        {"key": "141", "name": "Биолого-химического практикума"},
+        {"key": "147", "name": "Лаборантская тип АВ"},
+        {"key": "198", "name": "Лаборантская тип АВ"},
+        {"key": "105", "name": "Вестибюль"},
+        {"key": "104", "name": "Охрана"},
+    ]
+    matched = match_requirement_rooms_by_name(sentence, room_facts)
+    assert set(matched) == {"140", "141", "147", "198"}, matched
+    print("OK: требование про лаборатории физики/химии связано с реальными помещениями ПД по названию")
+
+
+def test_match_requirement_rooms_by_name_excludes_generic_kabinet_word():
+    """Реальный шум первого прогона на настоящем ПД: «кабинет» — родовое
+    слово, встречается почти в трети названий помещений школы («Кабинет
+    врача», «Учебный кабинет», ...). «кабинетах физики и химии» не должно
+    цеплять любой «Кабинет X», только конкретную тему (физика/химия)."""
+    sentence = ("Воздуховоды от вытяжных шкафов в лаборанских и кабинетах физики и "
+               "химии выполнить из коррозионностойких материалов.")
+    room_facts = [
+        {"key": "140", "name": "Физического эксперимента"},
+        {"key": "160", "name": "Кабинет врача"},
+        {"key": "163", "name": "Процедурный кабинет"},
+        {"key": "233", "name": "Кабинет иностранного языка"},
+    ]
+    matched = match_requirement_rooms_by_name(sentence, room_facts)
+    assert matched == ["140"], matched
+    print("OK: родовое слово «кабинет» само по себе не даёт совпадения, только тема требования")
+
+
+def test_match_requirement_rooms_by_name_no_match_for_unrelated_rooms():
+    sentence = "Наружные блоки VRF и сплит систем устанавливаются на кровле здания."
+    room_facts = [
+        {"key": "140", "name": "Физического эксперимента"},
+        {"key": "105", "name": "Вестибюль"},
+    ]
+    assert match_requirement_rooms_by_name(sentence, room_facts) == []
+    print("OK: не связывает требование с помещениями, если ключевых слов нет вовсе")
+
+
+def test_match_requirement_rooms_by_name_ignores_short_words():
+    """Короткие слова (<5 букв) не участвуют в сравнении — «вход» в
+    требовании не должен цеплять «входа» в названии помещения, иначе
+    служебные короткие слова дадут случайные совпадения повсюду."""
+    sentence = "В зоне вход организован через тамбур с доводчиком."
+    room_facts = [{"key": "105", "name": "Зона входа"}]
+    assert match_requirement_rooms_by_name(sentence, room_facts) == []
+    print("OK: слова короче 5 букв не считаются ключевыми и не дают совпадения")
+
+
 def test_general_requirements_ignore_short_and_long_fragments():
     text_facts = [{"page": 3, "text": (
         "Необходимо. "
@@ -306,6 +365,10 @@ if __name__ == "__main__":
     test_render_requirements_summary_handles_empty_list()
     test_general_requirements_catch_sentence_without_room_paren()
     test_general_requirements_catch_perfective_vypolnit_form()
+    test_match_requirement_rooms_by_name_finds_real_pd_rooms()
+    test_match_requirement_rooms_by_name_excludes_generic_kabinet_word()
+    test_match_requirement_rooms_by_name_no_match_for_unrelated_rooms()
+    test_match_requirement_rooms_by_name_ignores_short_words()
     test_general_requirements_keep_room_numbers_when_present()
     test_general_requirements_ignore_short_and_long_fragments()
     test_general_requirements_do_not_leak_into_cross_check_pipeline()
