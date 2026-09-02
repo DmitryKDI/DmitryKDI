@@ -193,21 +193,32 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     return out
 
 
-def _document_inputs(paths: list[str]) -> list[DocumentInput]:
+def _document_inputs(paths: list[str]) -> tuple[list[DocumentInput], list[str]]:
     """PDF-пути -> `DocumentInput` с уже извлечёнными фактами — общая точка
     входа для сверок, которым нужен не один срез фактов (`_registry`,
     `_load_text_facts`), а полный набор сразу: `room_cross_check.py` и
     `equip_cross_check.py` (Г.9/Г.20 по всему комплекту, не по одной паре
-    листов) ожидают на входе именно этот тип."""
+    листов) ожидают на входе именно этот тип.
+
+    Возвращает `(docs, skipped)` — пропущенные файлы раньше уходили только
+    в stderr, а `--out`-файл (единственное, что реально читает
+    пользователь после долгого прогона) их не видел вообще: полный отказ
+    всех файлов стороны печатал чистый, обманчиво «зелёный» отчёт вместо
+    честного «прогон недействителен» (независимый ревью, регрессия
+    ровно того класса, что Г.10 запрещает)."""
     out: list[DocumentInput] = []
+    skipped: list[str] = []
     for path in paths:
         p = Path(path)
         if not p.is_file():
-            print(f"пропущен (не найден): {path}", file=sys.stderr)
+            reason = "не найден"
+            skipped.append(f"{path}: {reason}")
+            print(f"пропущен ({reason}): {path}", file=sys.stderr)
             continue
         try:
             facts = extract_document_facts(str(p), p.name)
         except Exception as exc:  # noqa: BLE001 — один битый файл не должен ронять весь прогон
+            skipped.append(f"{path}: {exc}")
             print(f"пропущен ({exc}): {path}", file=sys.stderr)
             continue
         out.append(DocumentInput(
@@ -215,7 +226,7 @@ def _document_inputs(paths: list[str]) -> list[DocumentInput]:
             room_facts=facts.room_facts, page_kinds=facts.page_kinds,
             equipment_facts=facts.equipment_facts, balance_facts=facts.balance_facts,
         ))
-    return out
+    return out, skipped
 
 
 def run_triangulated(
@@ -259,8 +270,20 @@ def run_triangulated(
             out_f.flush()
 
     try:
-        before_docs = _document_inputs(before_paths)
-        after_docs = _document_inputs(after_paths)
+        before_docs, before_skipped = _document_inputs(before_paths)
+        after_docs, after_skipped = _document_inputs(after_paths)
+        skipped = before_skipped + after_skipped
+        if skipped:
+            _emit(f"!!! ПРОПУЩЕНО ФАЙЛОВ: {len(skipped)} (не открылись или не найдены) !!!")
+            for line in skipped:
+                _emit(f"  {line}")
+        if not before_docs or not after_docs:
+            _emit(
+                f"\n!!! ПРОГОН НЕДЕЙСТВИТЕЛЕН: сторона {'ПД' if not before_docs else 'РД'} "
+                f"пуста (ПД {len(before_docs)}/{len(before_paths)}, РД {len(after_docs)}/{len(after_paths)}) "
+                f"— ни один вывод ниже не был бы основан на реальных данных, прогон остановлен !!!"
+            )
+            return
 
         room_result = cross_check_rooms(before_docs, after_docs)
         _emit(render_cross_check_report(room_result))

@@ -165,20 +165,28 @@ def verify_general_requirements_llm(
     него не должен стирать уже полученные вердикты).
 
     Возвращает по записи на требование: `{sentence, page, verdict, reason,
-    chunks_checked}` — `verdict` "unclear", если ни одна пачка не дала
-    оснований (честно, не пропуск из отчёта)."""
+    chunks_checked, failed_chunks}` — `verdict` "unclear", если ни одна
+    пачка не дала оснований (честно, не пропуск из отчёта). `failed_chunks`
+    отличает ДВА разных «unclear»: «модель прочитала весь корпус и не
+    нашла оснований» (failed_chunks == 0) от «вызов модели падал» —
+    сеть/лимит/провайдер (failed_chunks > 0). Без этого различия обрыв
+    сети на каждой пачке выглядел бы как честный, спокойный результат
+    прогона — тот самый класс регрессии, который Г.10 запрещает (найдено
+    независимым ревью: `checked_count` раньше рос на КАЖДУЮ попытку, а не
+    на успешный вызов, и `unclear` из-за 401 печатался тем же текстом, что
+    и настоящий «текст РД не даёт оснований»)."""
     system_prompt = text_verify_system_prompt(discipline)
     chunks = _chunk_text_facts(rd_text_facts, max_chars_per_call)
 
     pending: dict[int, Requirement] = {i: req for i, req in enumerate(general_requirements, 1)}
     resolved: dict[int, dict] = {}
     checked_count: dict[int, int] = {i: 0 for i in pending}
+    failed_count: dict[int, int] = {i: 0 for i in pending}
+    last_error: dict[int, str] = {}
 
     for chunk in chunks:
         if not pending:
             break
-        for idx in pending:
-            checked_count[idx] += 1
         requirements_block = _render_requirements_block(sorted(pending.items()))
         user_text = (
             f"Список ещё не решённых требований ПД:\n{requirements_block}\n\n"
@@ -186,9 +194,17 @@ def verify_general_requirements_llm(
         )
         try:
             result = call_llm_json(config, system_prompt, user_text, timeout=timeout)
-        except Exception:  # noqa: BLE001 — сбой одной пачки не должен ронять сверку по остальным
+        except Exception as exc:  # noqa: BLE001 — сбой одной пачки не должен ронять сверку по остальным
+            for idx in pending:
+                failed_count[idx] += 1
+                last_error[idx] = repr(exc)
             continue
+        for idx in pending:
+            checked_count[idx] += 1
         if not result:
+            for idx in pending:
+                failed_count[idx] += 1
+                last_error[idx] = "модель не дала разбираемый JSON"
             continue
         for item in result.get("verdicts", []):
             raw_id = str(item.get("id", ""))
@@ -207,17 +223,24 @@ def verify_general_requirements_llm(
             resolved[idx] = {
                 "sentence": req.sentence, "page": req.page,
                 "verdict": verdict, "reason": item.get("reason", ""),
-                "chunks_checked": checked_count[idx],
+                "chunks_checked": checked_count[idx], "failed_chunks": failed_count[idx],
             }
             if on_result:
                 on_result(resolved[idx])
 
     out: list[dict] = []
     for idx, req in list(pending.items()):
+        if failed_count[idx] and not checked_count[idx]:
+            reason = f"ВЕРДИКТ НЕ ПОЛУЧЕН: все {failed_count[idx]} вызов(ов) модели упали ({last_error.get(idx, '')})"
+        elif failed_count[idx]:
+            reason = (f"ни один из {checked_count[idx]} успешных вызовов не дал оснований "
+                      f"({failed_count[idx]} вызов(ов) дополнительно упали — часть корпуса могла не проверяться)")
+        else:
+            reason = "ни один фрагмент текста РД не дал оснований для вывода"
         entry = {
             "sentence": req.sentence, "page": req.page, "verdict": "unclear",
-            "reason": "ни один фрагмент текста РД не дал оснований для вывода",
-            "chunks_checked": checked_count[idx],
+            "reason": reason,
+            "chunks_checked": checked_count[idx], "failed_chunks": failed_count[idx],
         }
         resolved[idx] = entry
         if on_result:
@@ -230,6 +253,13 @@ def verify_general_requirements_llm(
 def render_text_verify_report(results: list[dict]) -> str:
     lines = ["=== Семантическая сверка общих требований с текстом РД (Г.49) ===",
              f"Проверено требований: {len(results)}"]
+    total_failed = sum(r.get("failed_chunks", 0) for r in results)
+    fully_failed = sum(1 for r in results if r.get("failed_chunks") and not r.get("chunks_checked"))
+    if total_failed:
+        lines.append(
+            f"ВНИМАНИЕ: вызовы модели падали {total_failed} раз(а) — у {fully_failed} требований "
+            f"НИ ОДИН вызов не прошёл (их «unclear» ниже — не отсутствие оснований, а сбой связи/провайдера)"
+        )
     by_verdict: dict[str, list[dict]] = {}
     for r in results:
         by_verdict.setdefault(r["verdict"], []).append(r)
@@ -239,7 +269,7 @@ def render_text_verify_report(results: list[dict]) -> str:
             continue
         lines.append(f"\n--- {verdict} ({len(group)}) ---")
         for r in group[:10]:
-            lines.append(f"  стр.{r['page']}: {r['reason']}")
+            lines.append(f"  стр.{r['page']}: «{r['sentence'][:100]}» — {r['reason']}")
         if len(group) > 10:
             lines.append(f"  ... и ещё {len(group) - 10}")
     return "\n".join(lines)
