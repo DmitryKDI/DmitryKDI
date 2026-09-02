@@ -74,7 +74,7 @@ from app.vision import (  # noqa: E402
     render_page_to_png_bytes,
     verify_candidate,
 )
-from app.visual_prefilter import is_visually_different  # noqa: E402
+from app.visual_prefilter import diff_hot_zone, is_visually_different  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
     render_vision_finding_line,
@@ -305,6 +305,7 @@ def run_page_pair_comparison(
         if promoted_by_visual_diff:
             context += " (Г.54: реестры совпали, но рендеры листов визуально отличаются — пиксельный предфильтр)"
 
+        crop_zone = None
         try:
             if p.page_kind == "text":
                 before_text = "\n".join(f["text"] for f in before_doc.text_facts if f["page"] == p.before_page)
@@ -312,8 +313,18 @@ def run_page_pair_comparison(
                 result = compare_text_pair(before_text, after_text, config,
                                            context=context, discipline=before_doc.discipline_code)
             else:
+                # Г.55: на насыщенном листе (десятки-сотни помещений) одно
+                # локальное изменение тонет при сравнении целиком —
+                # дешёвый пиксельный проход находит ЗОНУ отличия (или None,
+                # если отличий нет либо они разбросаны по всему листу) и
+                # модели показывается кроп, а не лист целиком.
+                try:
+                    crop_zone = diff_hot_zone(before_path, p.before_page, after_path, p.after_page)
+                except Exception:  # noqa: BLE001 — сбой предфильтра не должен ронять само сравнение
+                    crop_zone = None
                 result = compare_page_pair(before_path, p.before_page, after_path, p.after_page,
-                                           config, context=context, discipline=before_doc.discipline_code)
+                                           config, context=context, discipline=before_doc.discipline_code,
+                                           clip_frac=crop_zone)
         except Exception as exc:  # noqa: BLE001 — одна упавшая пара не должна ронять весь прогон
             status, error, result = "error", str(exc), None
         else:
@@ -331,6 +342,7 @@ def run_page_pair_comparison(
             "after_path": after_path, "after_page": p.after_page,
             "page_kind": p.page_kind, "level": v.level,
             "promoted_by_visual_diff": promoted_by_visual_diff,
+            "crop_zone": crop_zone,
             "status": status, "error": error, "findings": findings,
             "injection_suspected": bool(result and result.get("injection_suspected") is True),
         }

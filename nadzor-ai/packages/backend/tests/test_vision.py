@@ -208,10 +208,37 @@ def test_compare_page_pair_passes_discipline_into_prompt(tmp_path, monkeypatch):
     print("OK: discipline из main.py доходит до системного промпта сравнения")
 
 
+def test_compare_page_pair_with_clip_frac_crops_both_sides():
+    """Г.55 — зона-кроп (доли листа, найденная visual_prefilter.diff_hot_zone
+    до вызова) должна доходить до обеих картинок и до подсказки модели, не
+    оставаться параметром, который никуда не передаётся."""
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"message": {"content": '{"significant": []}'}})
+
+    config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
+    full = render_page_to_data_url(str(SAMPLE_DIR / "rd_floor1.pdf"), 1)
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        compare_page_pair(
+            str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
+            str(SAMPLE_DIR / "rd_floor2_heating.pdf"), 1,
+            config, clip_frac=(0.1, 0.1, 0.4, 0.4),
+        )
+
+    message = captured["json"]["messages"][1]
+    assert len(message["images"]) == 2
+    assert message["images"][0] != full, "кроп должен быть другой картинкой, не весь лист"
+    assert "зона с найденным визуальным отличием" in message["content"]
+    print("OK: clip_frac доходит до обеих картинок пары и до текста подсказки модели")
+
+
 if __name__ == "__main__":
     test_render_page_to_data_url_real_pdf()
     test_stamp_classifier_wired_into_classify_document()
     test_compare_page_pair_sends_two_images_with_context()
+    test_compare_page_pair_with_clip_frac_crops_both_sides()
     test_compare_text_pair_sends_text_not_images()
     test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline()
     test_compare_page_pair_passes_discipline_into_prompt()

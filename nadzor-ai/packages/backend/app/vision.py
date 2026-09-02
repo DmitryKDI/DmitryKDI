@@ -230,21 +230,40 @@ def verify_candidate(png_bytes: bytes, key: str, kind: str, config: LlmConfig) -
     return result or {"real": None, "reason": "ИИ не дал разбираемый ответ"}
 
 
-def render_page_to_png_bytes(pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM) -> bytes:
+def render_page_to_png_bytes(
+    pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM,
+    clip_frac: Optional[tuple[float, float, float, float]] = None,
+) -> bytes:
+    """`clip_frac` — (x0, y0, x1, y1) в ДОЛЯХ ширины/высоты листа (0.0-1.0),
+    не в точках PDF: одни и те же доли применимы к обеим сторонам пары
+    сравнения даже при разных физических размерах листов (Г.55 —
+    `visual_prefilter.diff_hot_zone` считает зону именно в долях по этой
+    причине). `None` — весь лист целиком, прежнее поведение."""
     doc = open_pdf(pdf_path)
     try:
         page = doc[page_no - 1]
         rect = page.rect
-        scale = max_dim / max(rect.width, rect.height)
+        if clip_frac is not None:
+            x0, y0, x1, y1 = clip_frac
+            clip = pymupdf.Rect(
+                rect.x0 + x0 * rect.width, rect.y0 + y0 * rect.height,
+                rect.x0 + x1 * rect.width, rect.y0 + y1 * rect.height,
+            )
+        else:
+            clip = rect
+        scale = max_dim / max(clip.width, clip.height)
         scale = min(scale, 4.0)  # не апскейлим совсем маленькие страницы сверх разумного
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale))
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=clip)
         return pix.tobytes("png")
     finally:
         doc.close()
 
 
-def render_page_to_data_url(pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM) -> str:
-    return png_bytes_to_data_url(render_page_to_png_bytes(pdf_path, page_no, max_dim))
+def render_page_to_data_url(
+    pdf_path: str, page_no: int, max_dim: int = VISION_MAX_DIM,
+    clip_frac: Optional[tuple[float, float, float, float]] = None,
+) -> str:
+    return png_bytes_to_data_url(render_page_to_png_bytes(pdf_path, page_no, max_dim, clip_frac))
 
 
 def read_stamp_by_vision(png_bytes: bytes, config: LlmConfig) -> dict:
@@ -284,12 +303,21 @@ def compare_page_pair(
     context: str = "",
     discipline: Optional[str] = None,
     timeout: float = 120.0,
+    clip_frac: Optional[tuple[float, float, float, float]] = None,
 ) -> Optional[dict]:
-    before_img = render_page_to_data_url(before_pdf, before_page)
-    after_img = render_page_to_data_url(after_pdf, after_page)
+    """`clip_frac` (Г.55) — показать модели не весь лист, а зону-кандидат
+    (доли ширины/высоты, см. `render_page_to_png_bytes`) с ОБЕИХ сторон
+    пары. Нужен для насыщенных листов (десятки-сотни помещений), где
+    локальное изменение тонет в общей картинке при сравнении целиком —
+    зону находит `visual_prefilter.diff_hot_zone` до этого вызова."""
+    before_img = render_page_to_data_url(before_pdf, before_page, clip_frac=clip_frac)
+    after_img = render_page_to_data_url(after_pdf, after_page, clip_frac=clip_frac)
     user_text = "Сравни левый лист (ПД) и правый лист (РД/ИД)."
     if context:
         user_text += f" Контекст: {context}."
+    if clip_frac is not None:
+        user_text += (" Показан не весь лист, а зона с найденным визуальным отличием"
+                      " (координатный ориентир может быть виден не полностью).")
     return call_llm_json(config, vision_system_prompt(discipline), user_text,
                          images=[before_img, after_img], timeout=timeout)
 
