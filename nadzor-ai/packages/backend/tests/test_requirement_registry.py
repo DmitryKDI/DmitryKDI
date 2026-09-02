@@ -6,8 +6,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.requirement_registry import (
     Requirement,
     extract_coded_requirements,
+    extract_general_requirements,
     extract_predicate_requirements,
     extract_requirements,
+    render_general_requirements_summary,
     render_requirements_summary,
 )
 
@@ -186,6 +188,90 @@ def test_render_requirements_summary_handles_empty_list():
     assert "извлечено: 0" in text
 
 
+# --------------------------------------------------------------------------
+# Форма 3 (Г.47) — общий каталог, без привязки к «(пом. N)»
+# --------------------------------------------------------------------------
+
+def test_general_requirements_catch_sentence_without_room_paren():
+    """Реальное наблюдение (Г.47): требования по зонам без номера в
+    скобках («актовый зал», не «пом. N») и без корня «предусмотр-» —
+    форма 2 их не видит вообще."""
+    text_facts = [{"page": 9, "text": (
+        "Все применяемые приборы должны быть выполнены в травмобезопасном "
+        "исполнении. Экраны должны быть выполнены из материалов, не "
+        "оказывающих вредного воздействия на человека."
+    )}]
+    reqs = extract_general_requirements(text_facts)
+    assert len(reqs) == 2
+    assert all(r.rooms == [] for r in reqs)
+    assert "травмобезопасном" in reqs[0].sentence
+    print("OK: форма 3 ловит требования без номера помещения и без корня «предусмотр-»")
+
+
+def test_general_requirements_keep_room_numbers_when_present():
+    text_facts = [{"page": 11, "text": (
+        "В помещениях раздевальных, санузлов и душевых для МГН "
+        "(пом. 267, 270, 271, 272) предусмотрена система подогрева полов."
+    )}]
+    reqs = extract_general_requirements(text_facts)
+    assert len(reqs) == 1
+    assert reqs[0].rooms == ["267", "270", "271", "272"]
+    print("OK: форма 3 сохраняет номера помещений, если они рядом есть")
+
+
+def test_general_requirements_ignore_short_and_long_fragments():
+    text_facts = [{"page": 3, "text": (
+        "Необходимо. "
+        + ("должен быть выполнен по проекту " * 40) + "."
+    )}]
+    reqs = extract_general_requirements(text_facts, min_len=20, max_len=100)
+    assert reqs == []
+    print("OK: слишком короткие/длинные фрагменты отсеяны фильтром длины")
+
+
+def test_general_requirements_do_not_leak_into_cross_check_pipeline():
+    """`extract_requirements()` (сверка/эскалация/триангуляция, Г.33/Г.46)
+    остаётся только формами 1+2 — форма 3 намеренно широкая и не должна
+    попадать в автоматическую сверку без явного вызова."""
+    text_facts = [{"page": 9, "text": "Экраны должны быть выполнены из негорючих материалов."}]
+    assert extract_requirements(text_facts) == []
+    assert len(extract_general_requirements(text_facts)) == 1
+    print("OK: форма 3 не подмешивается в extract_requirements() по умолчанию")
+
+
+def test_render_general_requirements_summary_marks_it_as_not_for_cross_check():
+    reqs = [Requirement(rooms=[], page=9, sentence="Экраны должны быть негорючими.")]
+    text = render_general_requirements_summary(reqs)
+    assert "извлечено: 1" in text
+    assert "не для автосверки" in text
+    assert "не указаны" not in text  # пустой rooms не печатает "помещения:" вообще
+    print("OK: отдельный рендер формы 3 явно помечен как не вход в автосверку")
+
+
+def test_real_pz_general_requirements_finds_far_more_than_predicate_form():
+    """Смоук на реальном ПЗ: форма 3 должна найти на порядок больше
+    требований, чем узкая форма 2 (Г.36) — измерено на этом же файле:
+    форма 2 даёт единицы находок, форма 3 — десятки/сотни (Г.47)."""
+    if not PD_PZ.exists():
+        print("SKIP: нет файла", PD_PZ)
+        return
+    import pymupdf
+    doc = pymupdf.open(PD_PZ)
+    try:
+        text_facts = [{"page": i, "text": page.get_text()} for i, page in enumerate(doc)]
+    finally:
+        doc.close()
+
+    predicate = extract_predicate_requirements(text_facts)
+    general = extract_general_requirements(text_facts)
+
+    assert len(general) > len(predicate) * 10, (
+        f"ожидали, что форма 3 найдёт на порядок больше формы 2: "
+        f"форма2={len(predicate)}, форма3={len(general)}"
+    )
+    print(f"OK: реальный ПЗ — форма 2: {len(predicate)}, форма 3: {len(general)}")
+
+
 if __name__ == "__main__":
     test_coded_item_extracts_rooms_and_code()
     test_coded_item_merges_multiple_pom_runs_in_one_item()
@@ -199,4 +285,10 @@ if __name__ == "__main__":
     test_real_pz_yields_both_forms()
     test_render_requirements_summary_lists_every_requirement_with_page_and_rooms()
     test_render_requirements_summary_handles_empty_list()
+    test_general_requirements_catch_sentence_without_room_paren()
+    test_general_requirements_keep_room_numbers_when_present()
+    test_general_requirements_ignore_short_and_long_fragments()
+    test_general_requirements_do_not_leak_into_cross_check_pipeline()
+    test_render_general_requirements_summary_marks_it_as_not_for_cross_check()
+    test_real_pz_general_requirements_finds_far_more_than_predicate_form()
     print("ALL PASS")

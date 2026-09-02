@@ -40,7 +40,12 @@ from app.requirement_cross_check import (  # noqa: E402
 )
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
-from app.requirement_registry import extract_requirements, render_requirements_summary  # noqa: E402
+from app.requirement_registry import (  # noqa: E402
+    extract_general_requirements,
+    extract_requirements,
+    render_general_requirements_summary,
+    render_requirements_summary,
+)
 from app.room_cross_check import cross_check_rooms, render_cross_check_report  # noqa: E402
 from app.routing_diff import diff_room_routing, render_routing_diff_report  # noqa: E402
 from app.set_overview import (  # noqa: E402
@@ -259,6 +264,8 @@ def run_triangulated(
         else:
             pd_requirements = extract_requirements(pd_text_facts)
         _emit(render_requirements_summary(pd_requirements))
+        _emit("")
+        _emit(render_general_requirements_summary(extract_general_requirements(pd_text_facts)))
         req_after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
         req_result = cross_check_requirements(pd_requirements, req_after)
         _emit(render_requirement_cross_check_report(req_result))
@@ -391,6 +398,8 @@ def run_requirements(
         else:
             pd_requirements = extract_requirements(pd_text_facts)
         _emit(render_requirements_summary(pd_requirements))
+        _emit("")
+        _emit(render_general_requirements_summary(extract_general_requirements(pd_text_facts)))
 
         after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
         result = cross_check_requirements(pd_requirements, after)
