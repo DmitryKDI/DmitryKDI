@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import scripts.registry_diff as registry_diff  # noqa: E402
 from scripts.registry_diff import _diff, _load_text_facts, _registry  # noqa: E402
 
 SAMPLE_DIR = Path("/home/user/nadzor_sample")
@@ -72,8 +73,54 @@ def test_load_text_facts_includes_catalog_pages_that_extract_document_facts_excl
           f"у facts.text_facts (исключено material.py: {len(filtered.excluded)})")
 
 
+def test_run_triangulated_wires_room_and_equipment_cross_checks_into_escalation(tmp_path, monkeypatch, capsys):
+    """Дымовой тест на саму цепочку run_triangulated() (Г.46) — до неё
+    room_cross_check.py/equip_cross_check.py/triangulation.py/escalation.py
+    были построены и покрыты собственными тестами, но ни разу не вызывались
+    ни отсюда, ни из main.py. Реестр помещений и реестр оборудования — два
+    РАЗНЫХ источника по двум РАЗНЫМ ключам ("140" и "М1"), у каждого только
+    один сигнал, поэтому оба должны попасть в очередь эскалации (не
+    confirmed — Г.30 п.4 требует ≥2 источников на ОДИН и тот же ключ), а не
+    потеряться между отдельными --kind, как было раньше."""
+    from app.documents import DocumentFacts
+
+    pd_facts = DocumentFacts(
+        name="pd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Комната А", "area": "10"}],
+        equipment_facts=[{"page": 1, "key": "М1", "name": "Насос", "qty": 2}],
+    )
+    rd_facts = DocumentFacts(
+        name="rd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Совсем другое помещение", "area": "10"}],
+        equipment_facts=[{"page": 1, "key": "М1", "name": "Насос", "qty": 3}],
+    )
+
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    pd_path.touch()
+    rd_path.touch()
+
+    def fake_extract_document_facts(path, name):
+        return pd_facts if str(path) == str(pd_path) else rd_facts
+
+    monkeypatch.setattr(registry_diff, "extract_document_facts", fake_extract_document_facts)
+    monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: [])
+
+    registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[])
+
+    out = capsys.readouterr().out
+    assert "Кросс-проверка помещений" in out
+    assert "Кросс-проверка оборудования" in out
+    assert "не проверялся — не задан --rooms" in out
+    assert "Триангуляция источников" in out
+    assert "Подтверждено ≥2 источниками: 0" in out
+    assert "Очередь эскалации (2)" in out
+    assert "140" in out and "М1" in out
+    print("OK: run_triangulated сводит реестры помещений/оборудования в общую триангуляцию и эскалацию")
+
+
 if __name__ == "__main__":
     test_diff_splits_into_three_categories()
     test_diff_empty_sides_do_not_crash()
     test_load_text_facts_includes_catalog_pages_that_extract_document_facts_excludes()
-    print("ALL PASS (запустите pytest для теста с capsys)")
+    print("ALL PASS (запустите pytest для тестов с capsys/monkeypatch/tmp_path)")

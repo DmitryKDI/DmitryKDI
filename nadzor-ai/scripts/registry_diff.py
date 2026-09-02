@@ -30,6 +30,8 @@ import pymupdf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
 from app.documents import extract_document_facts  # noqa: E402
+from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
+from app.escalation import build_tickets, render_tickets_markdown  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.matching import DocumentInput  # noqa: E402
 from app.requirement_cross_check import (  # noqa: E402
@@ -39,12 +41,23 @@ from app.requirement_cross_check import (  # noqa: E402
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
 from app.requirement_registry import extract_requirements, render_requirements_summary  # noqa: E402
+from app.room_cross_check import cross_check_rooms, render_cross_check_report  # noqa: E402
 from app.routing_diff import diff_room_routing, render_routing_diff_report  # noqa: E402
 from app.set_overview import (  # noqa: E402
     compare_section_coverage,
     render_section_coverage_report,
     render_volume_summary,
     summarize_set,
+)
+from app.triangulation import (  # noqa: E402
+    Signal,
+    candidates_only,
+    confirmed_only,
+    signals_from_equip_cross_check,
+    signals_from_requirement_cross_check,
+    signals_from_room_cross_check,
+    signals_from_routing_diff,
+    triangulate,
 )
 from app.vision import render_page_to_png_bytes, verify_candidate  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
@@ -164,6 +177,135 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
         finally:
             doc.close()
     return out
+
+
+def _document_inputs(paths: list[str]) -> list[DocumentInput]:
+    """PDF-пути -> `DocumentInput` с уже извлечёнными фактами — общая точка
+    входа для сверок, которым нужен не один срез фактов (`_registry`,
+    `_load_text_facts`), а полный набор сразу: `room_cross_check.py` и
+    `equip_cross_check.py` (Г.9/Г.20 по всему комплекту, не по одной паре
+    листов) ожидают на входе именно этот тип."""
+    out: list[DocumentInput] = []
+    for path in paths:
+        p = Path(path)
+        if not p.is_file():
+            print(f"пропущен (не найден): {path}", file=sys.stderr)
+            continue
+        try:
+            facts = extract_document_facts(str(p), p.name)
+        except Exception as exc:  # noqa: BLE001 — один битый файл не должен ронять весь прогон
+            print(f"пропущен ({exc}): {path}", file=sys.stderr)
+            continue
+        out.append(DocumentInput(
+            name=p.name, pages=facts.pages, text_facts=facts.text_facts,
+            room_facts=facts.room_facts, page_kinds=facts.page_kinds,
+            equipment_facts=facts.equipment_facts, balance_facts=facts.balance_facts,
+        ))
+    return out
+
+
+def run_triangulated(
+    before_paths: list[str],
+    after_paths: list[str],
+    room_keys: list[str],
+    requirements_llm_config: Optional[LlmConfig] = None,
+    out_path: Optional[str] = None,
+) -> None:
+    """Один прогон через ВСЕ независимые источники сигналов сразу (Г.30
+    п.4/5), а не по одному через отдельные --kind.
+
+    До этой функции `room_cross_check.py`, `equip_cross_check.py`,
+    `triangulation.py` и `escalation.py` были построены и покрыты тестами
+    (см. `test_triangulation.py`), но ни разу не вызывались ни отсюда, ни
+    из `main.py` — цепочка обрывалась на полпути: CLI-скрипт умел только
+    простой diff множеств ключей (`run()`), не полноценную кросс-проверку с
+    severity, и не сводил результаты разных источников (реестр помещений,
+    реестр оборудования, требования из прозы, граф маршрутизации) в единый
+    вердикт. Слишком много независимых модулей ("переменных") при ручном
+    выборе --kind означало, что реальный прогон трогал только подмножество
+    из них за раз, а не всю цепочку.
+
+    Каждый источник даёт `Signal` по своему домену/ключу (см.
+    `triangulation.signals_from_*`); `triangulate()` помечает находку
+    `confirmed`, только если её независимо подтвердили ≥2 разных источника
+    — иначе `candidate`, и тогда `escalation.build_tickets()` формирует не
+    молчаливое «не найдено», а конкретный пакет: какие источники уже
+    согласны, каких не хватает, что проверить, чтобы закрыть вопрос.
+
+    Граф маршрутизации (`routing_diff.py`) участвует, только если задан
+    `room_keys` — он не сканирует комплект целиком (~6 с/лист, Г.30),
+    поэтому без явного списка помещений просто пропускается, с видимым
+    объяснением (Г.10), а не тихо."""
+    out_f = open(out_path, "a", encoding="utf-8") if out_path else None
+
+    def _emit(text: str) -> None:
+        print(text)
+        if out_f:
+            out_f.write(text + "\n")
+            out_f.flush()
+
+    try:
+        before_docs = _document_inputs(before_paths)
+        after_docs = _document_inputs(after_paths)
+
+        room_result = cross_check_rooms(before_docs, after_docs)
+        _emit(render_cross_check_report(room_result))
+        equip_result = cross_check_equipment(before_docs, after_docs)
+        _emit(render_equip_cross_check_report(equip_result))
+
+        pd_text_facts = _load_text_facts(before_paths)
+        if requirements_llm_config is not None:
+            pd_requirements = extract_requirements_llm(pd_text_facts, requirements_llm_config)
+        else:
+            pd_requirements = extract_requirements(pd_text_facts)
+        _emit(render_requirements_summary(pd_requirements))
+        req_after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
+        req_result = cross_check_requirements(pd_requirements, req_after)
+        _emit(render_requirement_cross_check_report(req_result))
+
+        signals: list[Signal] = []
+        signals += signals_from_room_cross_check(room_result.findings)
+        signals += signals_from_equip_cross_check(equip_result.findings)
+        signals += signals_from_requirement_cross_check(req_result.findings)
+
+        if room_keys:
+            routing_diff = diff_room_routing(before_paths, after_paths, room_keys)
+            _emit(render_routing_diff_report(routing_diff))
+            signals += signals_from_routing_diff(routing_diff)
+        else:
+            _emit("\n(граф маршрутизации не проверялся — не задан --rooms; "
+                  "остальные источники не видят расхождений чистой геометрии, "
+                  "см. routing_diff.py)")
+
+        if requirements_llm_config is not None:
+            room_index = _registry(after_paths, "room_facts")
+            room_index = augment_room_index_with_level_fallback(room_index, after_paths)
+            _emit("")
+            _emit("=== Проверка кандидатов зрением по листу РД (эскалация Г.33) — по мере готовности ===")
+            vision_results = check_visual_candidates(
+                req_result.findings, room_index, requirements_llm_config,
+                on_result=lambda r: _emit(render_vision_finding_line(r)),
+            )
+            for r in vision_results:
+                if r["verdict"] == "absent":
+                    for room in r["rooms"]:
+                        signals.append(Signal(source="vision", domain="room", key=room, detail=r["reason"]))
+
+        confirmations = triangulate(signals)
+        confirmed = confirmed_only(confirmations)
+        candidates = candidates_only(confirmations)
+        _emit("")
+        _emit(f"=== Триангуляция источников (Г.30 п.4): сигналов {len(signals)}, ключей {len(confirmations)} ===")
+        _emit(f"Подтверждено ≥2 источниками: {len(confirmed)}")
+        for c in confirmed:
+            _emit(f"  [{c.domain}] {c.key}: {', '.join(c.sources)}")
+
+        tickets = build_tickets(candidates)
+        _emit("")
+        _emit(render_tickets_markdown(tickets))
+    finally:
+        if out_f:
+            out_f.close()
 
 
 def run_overview(before_paths: list[str], after_paths: list[str], out_path: Optional[str] = None) -> None:
@@ -292,10 +434,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Алгоритмический diff реестров ПД/РД (без LLM, опционально с триажем ИИ)")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "both"], default="both")
+    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "both", "all"], default="all",
+                        help="'all' (по умолчанию) — единая цепочка через ВСЕ источники сразу: реестры помещений/"
+                             "оборудования (кросс-проверка с severity, не только diff множеств), требования из прозы "
+                             "ПД, граф маршрутизации (если задан --rooms) — со сведением в триангуляцию (Г.30 п.4) и "
+                             "очередью эскалации по кандидатам с одним источником. Остальные значения — узкие "
+                             "прогоны одного источника, для отладки/точечной проверки.")
     parser.add_argument("--rooms", default="",
-                        help="Для --kind routing: список номеров помещений через запятую — прицельная сверка графа "
-                             "маршрутизации ПД↔РД (routing_diff.py, Г.30, без LLM). Обязателен для --kind routing.")
+                        help="Список номеров помещений через запятую — прицельная сверка графа маршрутизации "
+                             "ПД↔РД (routing_diff.py, Г.30, без LLM). Обязателен для --kind routing; для --kind all "
+                             "без него граф маршрутизации просто пропускается (см. вывод).")
     parser.add_argument("--verify", action="store_true",
                         help="Прогнать кандидатов «только с одной стороны» через LLM (по одной картинке) — реальная позиция или шум извлечения")
     parser.add_argument("--verify-requirements", action="store_true",
@@ -324,6 +472,11 @@ def main() -> None:
 
     if not args.no_overview:
         run_overview(args.before, args.after, out_path=args.out or None)
+
+    if args.kind == "all":
+        room_keys = [r.strip() for r in args.rooms.split(",") if r.strip()]
+        run_triangulated(args.before, args.after, room_keys, requirements_llm_config, out_path=args.out or None)
+        return
 
     if args.kind == "both":
         kinds = ["rooms", "equipment"]
