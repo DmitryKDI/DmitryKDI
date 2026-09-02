@@ -74,6 +74,13 @@ from app.vision import (  # noqa: E402
     render_page_to_png_bytes,
     verify_candidate,
 )
+from app.ventilation_mo import (  # noqa: E402
+    cross_check_mo_branches,
+    extract_branch_locations,
+    extract_mo_table_page,
+    is_mo_table_page,
+    render_mo_cross_check_report,
+)
 from app.visual_prefilter import diff_hot_zone, is_visually_different  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
@@ -667,6 +674,72 @@ def run_requirements(
             out_f.close()
 
 
+def run_mo_check(
+    before_paths: list[str],
+    after_paths: list[str],
+    room_keys: list[str],
+    llm_config: LlmConfig,
+    out_path: Optional[str] = None,
+) -> None:
+    """Сверка местных отсосов (вытяжных шкафов) ПД↔РД по «Таблице
+    воздухообменов помещений» (Г.58) — механизм, найденный вручную для
+    нарушения №3 конкретного объекта: таблица ПД задаёт по помещению
+    систему и ветки М.О., план РД показывает те же ветки нарисованными —
+    иногда у ДРУГОГО помещения или под ДРУГИМ обозначением системы.
+
+    Требует ключ ИИ и явный список `room_keys` (как `--kind routing`, не
+    как `--kind all` без ключа) — оба листа читаются только зрением, узкая
+    и дорогая операция, не однажды на весь комплект."""
+    out_f = open(out_path, "a", encoding="utf-8") if out_path else None
+
+    def _emit(text: str) -> None:
+        print(text)
+        if out_f:
+            out_f.write(text + "\n")
+            out_f.flush()
+
+    try:
+        pd_entries: list[dict] = []
+        table_pages_found = 0
+        for path in before_paths:
+            text_facts = _load_text_facts([path])
+            pages = sorted({f["page"] for f in text_facts})
+            for page in pages:
+                if not is_mo_table_page(text_facts, page):
+                    continue
+                table_pages_found += 1
+                rooms = extract_mo_table_page(path, page, llm_config)
+                pd_entries.extend(rooms)
+        if room_keys:
+            pd_entries = [r for r in pd_entries if r.get("room") in room_keys]
+        _emit(f"=== Сверка местных отсосов ПД↔РД (Г.58) ===")
+        _emit(f"Листов «Таблица воздухообменов» найдено: {table_pages_found}, "
+              f"помещений с местными отсосами: {len(pd_entries)}")
+        if not pd_entries:
+            _emit("Ни одного помещения с местными отсосами не найдено "
+                  "(нет таблицы воздухообменов в ПД, либо у запрошенных "
+                  "помещений её в принципе нет — не путать с молчанием, Г.10)")
+            return
+
+        room_index = _registry(after_paths, "room_facts")
+        candidate_pages: set[tuple[str, int]] = set()
+        for entry in pd_entries:
+            for ref in room_index.get(entry.get("room", ""), []):
+                candidate_pages.add((ref["path"], ref["page"]))
+
+        rd_branches: list[dict] = []
+        for path, page in sorted(candidate_pages):
+            rd_branches.extend(extract_branch_locations(path, page, llm_config))
+        _emit(f"Листов РД просмотрено: {len(candidate_pages)}, веток найдено: {len(rd_branches)}")
+
+        findings = cross_check_mo_branches(pd_entries, rd_branches)
+        _emit("")
+        _emit(render_mo_cross_check_report(findings))
+    finally:
+        if out_f:
+            out_f.close()
+
+
 def run(before_paths: list[str], after_paths: list[str], kind: str, config: Optional[LlmConfig]) -> None:
     attr = _KIND_ATTR[kind]
     before = _registry(before_paths, attr)
@@ -687,7 +760,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Алгоритмический diff реестров ПД/РД (без LLM, опционально с триажем ИИ)")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "both", "all"], default="all",
+    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "mo", "both", "all"], default="all",
                         help="'all' (по умолчанию) — единая цепочка через ВСЕ источники сразу: реестры помещений/"
                              "оборудования (кросс-проверка с severity, не только diff множеств), требования из прозы "
                              "ПД, граф маршрутизации (если задан --rooms) — со сведением в триангуляцию (Г.30 п.4) и "
@@ -748,6 +821,13 @@ def main() -> None:
         diff = diff_room_routing(args.before, args.after, room_keys)
         print()
         print(render_routing_diff_report(diff))
+
+    if args.kind == "mo":
+        room_keys = [r.strip() for r in args.rooms.split(",") if r.strip()]
+        if not api_key:
+            print("--kind mo требует ключ ИИ (оба листа читаются только зрением, Г.58)", file=sys.stderr)
+            return
+        run_mo_check(args.before, args.after, room_keys, provider_config, out_path=args.out or None)
 
     if args.kind in ("requirements", "both"):
         run_requirements(args.before, args.after, requirements_llm_config, out_path=args.out or None)
