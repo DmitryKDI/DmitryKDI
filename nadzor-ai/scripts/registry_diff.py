@@ -74,6 +74,7 @@ from app.vision import (  # noqa: E402
     render_page_to_png_bytes,
     verify_candidate,
 )
+from app.visual_prefilter import is_visually_different  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
     render_vision_finding_line,
@@ -262,26 +263,47 @@ def run_page_pair_comparison(
     ровно то же, что уже проверено вживую в главном приложении, здесь без
     привязки к БД.
 
+    Г.54: level=0 не означает безусловный пропуск — реестры могут совпасть
+    текстом, а сам чертёж отличаться (конфигурация воздуховодов и т.п.,
+    которую ни room_facts, ни equipment_facts не видят в принципе). Для
+    пар-чертежей уровня 0 дешёвый пиксельный предфильтр (`visual_prefilter`,
+    без ИИ) сравнивает сами рендеры — заметно другие промоутируются в
+    очередь на зрение (`promoted_by_visual_diff=True` в записи результата).
+
     Возвращает список записей `{before_path, before_page, after_path,
-    after_page, page_kind, level, status, error, findings,
-    injection_suspected}` — по одной на КАЖДУЮ пару уровня 2/3, включая
-    сорванные вызовы (Г.10 — не молчаливый пропуск, `status="error"` с
-    причиной)."""
+    after_page, page_kind, level, promoted_by_visual_diff, status, error,
+    findings, injection_suspected}` — по одной на каждую пару уровня 2/3 И
+    на каждую промоутированную пару уровня 0, включая сорванные вызовы
+    (Г.10 — не молчаливый пропуск, `status="error"` с причиной)."""
     pairs = match_page_pairs(before_docs, after_docs)
     verdicts = classify_all_pairs(pairs, before_docs, after_docs, [], [])
 
     out: list[dict] = []
     for v in verdicts:
-        if v.level == 0:
-            continue
         p = v.pair
         before_path = before_paths[p.before_file_idx]
         after_path = after_paths[p.after_file_idx]
+        promoted_by_visual_diff = False
+        if v.level == 0:
+            # Г.54: реестры помещений/оборудования совпали — но конфигурация
+            # НА САМОМ ЧЕРТЕЖЕ (обвязка воздуховодов и т.п.) реестрами не
+            # видна вообще, ни как совпадение, ни как расхождение (реальный
+            # пропущенный случай слепого прогона). Дешёвый пиксельный
+            # предфильтр без ИИ — не пропускать пару молча, если рендеры
+            # заметно разные, несмотря на «совпавший» текстовый реестр.
+            if p.page_kind == "drawing" and is_visually_different(
+                before_path, p.before_page, after_path, p.after_page
+            ):
+                promoted_by_visual_diff = True
+            if not promoted_by_visual_diff:
+                continue
         before_doc = before_docs[p.before_file_idx]
         after_doc = after_docs[p.after_file_idx]
         context = f"раздел {before_doc.discipline_code or '?'}"
         if p.matched_by == "position" and p.discipline_mismatch:
             context += " (сопоставлено по позиции, разделы штампа не совпадают — проверьте применимость)"
+        if promoted_by_visual_diff:
+            context += " (Г.54: реестры совпали, но рендеры листов визуально отличаются — пиксельный предфильтр)"
 
         try:
             if p.page_kind == "text":
@@ -308,6 +330,7 @@ def run_page_pair_comparison(
             "before_path": before_path, "before_page": p.before_page,
             "after_path": after_path, "after_page": p.after_page,
             "page_kind": p.page_kind, "level": v.level,
+            "promoted_by_visual_diff": promoted_by_visual_diff,
             "status": status, "error": error, "findings": findings,
             "injection_suspected": bool(result and result.get("injection_suspected") is True),
         }
@@ -335,8 +358,10 @@ def render_page_pair_report(entries: list[dict]) -> str:
     total_findings = sum(len(e["findings"]) for e in entries)
     errors = [e for e in entries if e["status"] != "ok"]
     injections = [e for e in entries if e["injection_suspected"]]
+    promoted = [e for e in entries if e.get("promoted_by_visual_diff")]
     lines.append(f"Пар проверено: {len(entries)}, находок: {total_findings}, "
-                 f"сорвано: {len(errors)}, подозрений на инъекцию: {len(injections)}")
+                 f"сорвано: {len(errors)}, подозрений на инъекцию: {len(injections)}, "
+                 f"промоутировано пиксельным предфильтром (Г.54): {len(promoted)}")
     for e in entries:
         if e["findings"] or e["status"] != "ok" or e["injection_suspected"]:
             lines.append("  " + render_page_pair_line(e))

@@ -178,11 +178,11 @@ def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_
 # run_page_pair_comparison (Г.51) — прямое сравнение листов ПД↔РД
 # --------------------------------------------------------------------------
 
-def _pair_doc(name, text, room_key=None, room_name="А"):
+def _pair_doc(name, text, room_key=None, room_name="А", page_kind="text"):
     from app.matching import DocumentInput
     room_facts = [{"page": 1, "key": room_key, "name": room_name}] if room_key else []
     return DocumentInput(name=name, pages=1, text_facts=[{"page": 1, "text": text}],
-                         room_facts=room_facts, page_kinds={1: "text"})
+                         room_facts=room_facts, page_kinds={1: page_kind})
 
 
 def test_page_pair_comparison_skips_pair_with_matching_registries(monkeypatch):
@@ -278,6 +278,71 @@ def test_page_pair_comparison_on_result_fires_per_pair(monkeypatch):
 
     assert len(seen) == 1 and seen[0]["level"] == 2
     print("OK: on_result вызывается по мере готовности каждой пары")
+
+
+def test_page_pair_comparison_promotes_visually_different_drawing_despite_matching_registries(monkeypatch, tmp_path):
+    """Г.54 — реальный пропущенный случай слепого прогона: реестры
+    помещений совпали (тот же номер, то же название), но САМ чертёж
+    (воздуховодная обвязка и т.п.) отличается — ни room_facts, ни
+    equipment_facts эту разницу в принципе не видят. Пиксельный предфильтр
+    (без ИИ) должен промоутировать такую пару уровня 0 в очередь на зрение
+    вместо молчаливого пропуска."""
+    import pymupdf
+
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    doc = pymupdf.open()
+    doc.new_page(width=400, height=400)
+    doc.save(str(pd_path))
+    doc.close()
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=400)
+    page.draw_rect(pymupdf.Rect(0, 0, 400, 400), color=(0, 0, 0), fill=(0, 0, 0))
+    doc.save(str(rd_path))
+    doc.close()
+
+    before = [_pair_doc(pd_path.name, "Помещение 140", room_key="140", room_name="Венткамера", page_kind="drawing")]
+    after = [_pair_doc(rd_path.name, "Помещение 140", room_key="140", room_name="Венткамера", page_kind="drawing")]
+
+    calls = []
+    monkeypatch.setattr(registry_diff, "compare_page_pair",
+                        lambda *a, **kw: (calls.append(1), {"significant": []})[1])
+    results = registry_diff.run_page_pair_comparison(
+        before, [str(pd_path)], after, [str(rd_path)], config=None)
+
+    assert len(calls) == 1, "визуально другой лист уровня 0 должен уйти в ИИ, а не быть пропущен молча"
+    assert len(results) == 1
+    assert results[0]["level"] == 0
+    assert results[0]["promoted_by_visual_diff"] is True
+    print("OK: визуально другой лист с совпавшими реестрами промоутирован пиксельным предфильтром (Г.54)")
+
+
+def test_page_pair_comparison_skips_visually_identical_drawing_at_level_zero(monkeypatch, tmp_path):
+    """Обратная сторона Г.54: реестры совпали И рендеры визуально
+    неотличимы — пропуск без ИИ остаётся в силе, предфильтр не разгоняет
+    бюджет там, где картинка реально та же."""
+    import pymupdf
+
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    for path in (pd_path, rd_path):
+        doc = pymupdf.open()
+        page = doc.new_page(width=400, height=400)
+        page.draw_rect(pymupdf.Rect(50, 50, 150, 150), color=(0, 0, 0), fill=(0, 0, 0))
+        doc.save(str(path))
+        doc.close()
+
+    before = [_pair_doc(pd_path.name, "Помещение 140", room_key="140", room_name="Венткамера", page_kind="drawing")]
+    after = [_pair_doc(rd_path.name, "Помещение 140", room_key="140", room_name="Венткамера", page_kind="drawing")]
+
+    calls = []
+    monkeypatch.setattr(registry_diff, "compare_page_pair", lambda *a, **kw: (calls.append(1), None)[1])
+    results = registry_diff.run_page_pair_comparison(
+        before, [str(pd_path)], after, [str(rd_path)], config=None)
+
+    assert calls == [], "визуально одинаковый лист уровня 0 не должен вызывать ИИ"
+    assert results == []
+    print("OK: визуально неотличимый лист уровня 0 по-прежнему пропущен без вызова ИИ")
 
 
 def test_render_page_pair_report_shows_counts_and_only_notable_lines():
