@@ -219,6 +219,25 @@ def test_general_requirements_keep_room_numbers_when_present():
     print("OK: форма 3 сохраняет номера помещений, если они рядом есть")
 
 
+def test_general_requirements_catch_perfective_vypolnit_form():
+    """Г.56 — реальный пропущенный случай слепого прогона: «выполня\\w*»
+    ловит только несовершенный вид («выполняется»), совершенный
+    («выполнить», обычная форма технического требования) не ловился вовсе.
+    Дословное предложение из ПД (лист 11): требование к материалу
+    воздуховодов вытяжных шкафов в лаборантских и кабинетах физики/химии —
+    единственная текстовая зацепка для последующей сверки этих помещений
+    (номеров в скобках рядом нет, форма 2 это предложение не видит)."""
+    text_facts = [{"page": 15, "text": (
+        "Воздуховоды от вытяжных шкафов в лаборанских и кабинетах физики и "
+        "химии выполнить из коррозионностойких материалов (нержавеющая "
+        "сталь, неметаллические покрытия)."
+    )}]
+    reqs = extract_general_requirements(text_facts)
+    assert len(reqs) == 1, reqs
+    assert "лаборан" in reqs[0].sentence.lower()
+    print("OK: совершенный вид «выполнить» (не только «выполняется») ловится формой 3")
+
+
 def test_general_requirements_ignore_short_and_long_fragments():
     text_facts = [{"page": 3, "text": (
         "Необходимо. "
@@ -286,6 +305,7 @@ if __name__ == "__main__":
     test_render_requirements_summary_lists_every_requirement_with_page_and_rooms()
     test_render_requirements_summary_handles_empty_list()
     test_general_requirements_catch_sentence_without_room_paren()
+    test_general_requirements_catch_perfective_vypolnit_form()
     test_general_requirements_keep_room_numbers_when_present()
     test_general_requirements_ignore_short_and_long_fragments()
     test_general_requirements_do_not_leak_into_cross_check_pipeline()
