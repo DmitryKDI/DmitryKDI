@@ -42,6 +42,7 @@ from app.requirement_cross_check import (  # noqa: E402
 )
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
+from app.requirement_text_verify import render_text_verify_report, verify_general_requirements_llm  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     extract_general_requirements,
     extract_requirements,
@@ -276,6 +277,19 @@ def run_triangulated(
         general_req_result = cross_check_general_requirements(general_requirements, req_after)
         _emit(render_general_requirement_cross_check_report(general_req_result))
 
+        if requirements_llm_config is not None:
+            confirmed_sentences = {f.sentence_pd for f in general_req_result.findings
+                                    if f.finding_type == "token_confirmed_in_rd"}
+            pending_general = [r for r in general_requirements if r.sentence not in confirmed_sentences]
+            _emit("")
+            _emit("=== Семантическая сверка общих требований с текстом РД (эскалация Г.49) — по мере готовности ===")
+            text_verify_results = verify_general_requirements_llm(
+                pending_general, req_after[0].text_facts, requirements_llm_config,
+                on_result=lambda r: _emit(f"[{r['verdict']}] стр.{r['page']}: {r['reason']}"),
+            )
+            _emit("")
+            _emit(render_text_verify_report(text_verify_results))
+
         signals: list[Signal] = []
         signals += signals_from_room_cross_check(room_result.findings)
         signals += signals_from_equip_cross_check(equip_result.findings)
@@ -413,7 +427,8 @@ def run_requirements(
         _emit("")
         _emit(render_requirement_cross_check_report(result))
         _emit("")
-        _emit(render_general_requirement_cross_check_report(cross_check_general_requirements(general_requirements, after)))
+        general_req_result = cross_check_general_requirements(general_requirements, after)
+        _emit(render_general_requirement_cross_check_report(general_req_result))
 
         if llm_config is None:
             return
@@ -427,6 +442,18 @@ def run_requirements(
         )
         _emit("")
         _emit(render_vision_requirement_report(vision_results))
+
+        confirmed_sentences = {f.sentence_pd for f in general_req_result.findings
+                                if f.finding_type == "token_confirmed_in_rd"}
+        pending_general = [r for r in general_requirements if r.sentence not in confirmed_sentences]
+        _emit("")
+        _emit("=== Семантическая сверка общих требований с текстом РД (эскалация Г.49) — по мере готовности ===")
+        text_verify_results = verify_general_requirements_llm(
+            pending_general, after[0].text_facts, llm_config,
+            on_result=lambda r: _emit(f"[{r['verdict']}] стр.{r['page']}: {r['reason']}"),
+        )
+        _emit("")
+        _emit(render_text_verify_report(text_verify_results))
     finally:
         if out_f:
             out_f.close()
