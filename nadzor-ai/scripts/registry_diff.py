@@ -35,7 +35,9 @@ from app.escalation import build_tickets, render_tickets_markdown  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.matching import DocumentInput  # noqa: E402
 from app.requirement_cross_check import (  # noqa: E402
+    cross_check_general_requirements,
     cross_check_requirements,
+    render_general_requirement_cross_check_report,
     render_requirement_cross_check_report,
 )
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
@@ -265,10 +267,14 @@ def run_triangulated(
             pd_requirements = extract_requirements(pd_text_facts)
         _emit(render_requirements_summary(pd_requirements))
         _emit("")
-        _emit(render_general_requirements_summary(extract_general_requirements(pd_text_facts)))
+        general_requirements = extract_general_requirements(pd_text_facts)
+        _emit(render_general_requirements_summary(general_requirements))
         req_after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
         req_result = cross_check_requirements(pd_requirements, req_after)
         _emit(render_requirement_cross_check_report(req_result))
+        _emit("")
+        general_req_result = cross_check_general_requirements(general_requirements, req_after)
+        _emit(render_general_requirement_cross_check_report(general_req_result))
 
         signals: list[Signal] = []
         signals += signals_from_room_cross_check(room_result.findings)
@@ -399,12 +405,15 @@ def run_requirements(
             pd_requirements = extract_requirements(pd_text_facts)
         _emit(render_requirements_summary(pd_requirements))
         _emit("")
-        _emit(render_general_requirements_summary(extract_general_requirements(pd_text_facts)))
+        general_requirements = extract_general_requirements(pd_text_facts)
+        _emit(render_general_requirements_summary(general_requirements))
 
         after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
         result = cross_check_requirements(pd_requirements, after)
         _emit("")
         _emit(render_requirement_cross_check_report(result))
+        _emit("")
+        _emit(render_general_requirement_cross_check_report(cross_check_general_requirements(general_requirements, after)))
 
         if llm_config is None:
             return
