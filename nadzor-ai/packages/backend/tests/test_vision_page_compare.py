@@ -168,6 +168,24 @@ def test_candidate_pages_empty_when_no_room_in_index():
     print("OK: помещение, отсутствующее в реестре РД, не даёт кандидатов")
 
 
+def test_candidate_pages_prefers_new_file_over_second_page_of_seen_file():
+    """Г.52 — реальный случай слепого прогона: у требования 4 помещения,
+    каждое известно по 2 листам вентиляции (файл A) и ОДНОМУ листу
+    отопления (файл B) — единственному, где расхождение вообще видно.
+    При бюджете в 2 листа наивный «первая страница каждого помещения» брал
+    бы две страницы файла A (обе — вентиляция) и НИКОГДА не добрался бы до
+    файла B. Новая версия обязана взять по одной странице из каждого
+    файла, не тратя бюджет на вторую страницу уже представленного файла."""
+    room_index = {
+        "267": [{"path": "vent.pdf", "page": 19}, {"path": "vent.pdf", "page": 24}, {"path": "heat.pdf", "page": 17}],
+        "270": [{"path": "vent.pdf", "page": 19}, {"path": "vent.pdf", "page": 24}, {"path": "heat.pdf", "page": 17}],
+    }
+    pages = _candidate_pages(["267", "270"], room_index, max_pages=2)
+    files = {p["path"] for p in pages}
+    assert files == {"vent.pdf", "heat.pdf"}, f"ожидал разнообразие файлов, получил {pages}"
+    print("OK: при нехватке бюджета в первую очередь выбирается страница из ещё не представленного файла")
+
+
 def _rf(rooms, finding_type="no_code_visual_check_needed", sentence="требование"):
     return RequirementFinding(rooms=rooms, finding_type=finding_type, sentence_pd=sentence)
 
@@ -311,6 +329,7 @@ if __name__ == "__main__":
     test_candidate_pages_goes_deeper_within_budget()
     test_candidate_pages_respects_cap()
     test_candidate_pages_empty_when_no_room_in_index()
+    test_candidate_pages_prefers_new_file_over_second_page_of_seen_file()
     test_check_visual_candidates_skips_other_finding_types()
     test_check_visual_candidates_unclear_without_room_in_registry()
     test_check_visual_candidates_first_decisive_verdict_wins()

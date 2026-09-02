@@ -112,28 +112,55 @@ def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pa
     ОДНИМ помещением всё равно может получить вторую попытку на другом
     листе того же помещения, если первый лист оказался "unclear" (реальный
     случай: план и узел одного помещения на разных листах одного раздела).
-    Без дублей по (path, page), с общим потолком на находку."""
-    seen: set[tuple[str, int]] = set()
+    Без дублей по (path, page), с общим потолком на находку.
+
+    Г.52: несколько кандидатных страниц одного помещения могут быть из
+    РАЗНЫХ файлов одной дисциплины, покрывающих разные подсистемы (реальный
+    случай — «ОВ1» вентиляция и «ОВ2.1» отопление под общим кодом «ОВ»).
+    Слепой прогон на живом комплекте показал: требование про тёплые полы
+    было видно только на листе ИЗ ТРЕТЬЕГО файла для этого якоря — при
+    бюджете в 2-3 листа наивная сортировка «первая страница каждого
+    помещения» рисковала исчерпать бюджет на страницах ОДНОГО (не того)
+    файла раньше, чем очередь дошла бы до единственного релевантного.
+    Поэтому на каждом шаге предпочитается страница из файла, ещё НЕ
+    представленного среди уже отобранных кандидатов — и только если у
+    помещения таких нет, берётся следующая по порядку (старое поведение)."""
+    seen_pages: set[tuple[str, int]] = set()
+    seen_files: set[str] = set()
     pages: list[dict] = []
     lists = [room_index.get(room, []) for room in rooms]
-    depth = 0
+    cursors = [0] * len(lists)
     while len(pages) < max_pages:
         added_this_round = False
-        for lst in lists:
-            if depth >= len(lst):
-                continue
-            entry = lst[depth]
-            key = (entry["path"], entry["page"])
-            if key in seen:
-                continue
-            seen.add(key)
-            pages.append(entry)
-            added_this_round = True
+        for i, lst in enumerate(lists):
             if len(pages) >= max_pages:
-                return pages
+                break
+            pick_idx: Optional[int] = None
+            fallback_idx: Optional[int] = None
+            j = cursors[i]
+            while j < len(lst):
+                entry = lst[j]
+                key = (entry["path"], entry["page"])
+                if key not in seen_pages:
+                    if fallback_idx is None:
+                        fallback_idx = j
+                    if entry["path"] not in seen_files:
+                        pick_idx = j
+                        break
+                j += 1
+            if pick_idx is None:
+                pick_idx = fallback_idx
+            if pick_idx is None:
+                cursors[i] = len(lst)
+                continue
+            entry = lst[pick_idx]
+            seen_pages.add((entry["path"], entry["page"]))
+            seen_files.add(entry["path"])
+            pages.append(entry)
+            cursors[i] = pick_idx + 1
+            added_this_round = True
         if not added_this_round:
             break
-        depth += 1
     return pages
 
 
