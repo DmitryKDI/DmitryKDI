@@ -162,6 +162,49 @@ def test_table_filler_dash_is_not_registered():
     print("OK: строка-заполнитель таблицы не становится позицией оборудования")
 
 
+def test_elevation_mark_with_fire_rating_is_not_registered():
+    """Реальный шум слепого прогона на nadzor_sample (Г.52-53): отметка
+    уровня из штампа разреза («-2.950») с пределом огнестойкости рядом
+    («EI30») по форме совпадает с «код / название», но это подпись сечения,
+    не оборудование."""
+    text = "14\nВентилятор ВК-100\n2\n012\n-2.950 EI30"
+    keys = [f["key"] for f in extract_equipment_facts(text)]
+    assert "012" not in keys, keys
+    assert "14" in keys, keys
+    print("OK: отметка уровня с пределом огнестойкости не становится позицией оборудования")
+
+
+def test_bare_fire_rating_is_not_registered():
+    """Тот же класс шума без числовой отметки — голое «EI30» рядом с
+    условным номером (реальный случай: «006\\nEI30 №»)."""
+    text = "14\nВентилятор ВК-100\n2\n006\nEI30 №"
+    keys = [f["key"] for f in extract_equipment_facts(text)]
+    assert "006" not in keys, keys
+    assert "14" in keys, keys
+    print("OK: голый предел огнестойкости не становится позицией оборудования")
+
+
+def test_organization_name_is_not_registered():
+    """Реальный шум: наименование организации из штампа с формой
+    собственности («ООО «ТСП»») после даты, прочитанной как код дочерней
+    позиции («08.24»)."""
+    text = "14\nВентилятор ВК-100\n2\n08.24\nООО «ТСП» Лист Листов"
+    keys = [f["key"] for f in extract_equipment_facts(text)]
+    assert "08.24" not in keys, keys
+    assert "14" in keys, keys
+    print("OK: наименование организации не становится позицией оборудования")
+
+
+def test_composition_document_title_is_not_registered():
+    """Реальный шум: заголовок документа «Состав рабочей документации»
+    (Г.17) после даты, прочитанной как код дочерней позиции («01.23»)."""
+    text = "14\nВентилятор ВК-100\n2\n01.23\nСостав рабочей документации Стадия"
+    keys = [f["key"] for f in extract_equipment_facts(text)]
+    assert "01.23" not in keys, keys
+    assert "14" in keys, keys
+    print("OK: заголовок «Состав ... документации» не становится позицией оборудования")
+
+
 if __name__ == "__main__":
     test_multiline_table_row_pos_name_qty()
     test_child_positions_carry_parent_key()
@@ -178,4 +221,8 @@ if __name__ == "__main__":
     test_document_shifr_footer_is_not_registered()
     test_normative_reference_is_not_registered()
     test_table_filler_dash_is_not_registered()
+    test_elevation_mark_with_fire_rating_is_not_registered()
+    test_bare_fire_rating_is_not_registered()
+    test_organization_name_is_not_registered()
+    test_composition_document_title_is_not_registered()
     print("ALL PASS")
