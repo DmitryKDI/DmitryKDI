@@ -360,6 +360,47 @@ def test_render_page_pair_report_shows_counts_and_only_notable_lines():
     print("OK: отчёт по прямому сравнению листов считает пары и показывает находки")
 
 
+# --------------------------------------------------------------------------
+# main() CLI dispatch — Г.62: --kind "mo"/"composition" не входят в
+# _KIND_ATTR (только "rooms"/"equipment"), значит generic-ветка `else:
+# kinds = [args.kind]` + `run()` даёт KeyError, если их явно не исключить,
+# как уже сделано для "requirements"/"routing". Найдено реальным вызовом
+# --kind composition через CLI при подключении composition_registry.py —
+# до этого main() ни разу не тестировался (все тесты звали run_*_check
+# напрямую), поэтому регрессия годами могла бы остаться незамеченной.
+# --------------------------------------------------------------------------
+
+def test_main_cli_kind_composition_does_not_crash(tmp_path, monkeypatch, capsys):
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    pd_path.touch()
+    rd_path.touch()
+    monkeypatch.setattr(sys, "argv", [
+        "registry_diff.py", "--before", str(pd_path), "--after", str(rd_path),
+        "--kind", "composition", "--no-overview",
+    ])
+    registry_diff.main()
+    out = capsys.readouterr().out
+    assert "Комплектность документации" in out
+    print("OK: --kind composition проходит через main() без KeyError")
+
+
+def test_main_cli_kind_mo_does_not_crash(tmp_path, monkeypatch, capsys):
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    pd_path.touch()
+    rd_path.touch()
+    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "registry_diff.py", "--before", str(pd_path), "--after", str(rd_path),
+        "--kind", "mo", "--no-overview",
+    ])
+    registry_diff.main()
+    err = capsys.readouterr().err
+    assert "требует ключ ИИ" in err
+    print("OK: --kind mo без ключа проходит через main() без KeyError (честная ошибка в stderr)")
+
+
 if __name__ == "__main__":
     test_diff_splits_into_three_categories()
     test_diff_empty_sides_do_not_crash()

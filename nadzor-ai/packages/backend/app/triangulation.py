@@ -2,10 +2,11 @@
 
 Разные модули этого пакета независимо производят сигналы о возможном
 расхождении по одному и тому же помещению/позиции: реестр помещений
-(`room_cross_check.py`), реестр оборудования (`equip_cross_check.py`), якорь
-в прозе пояснительной записки (`anchor_prose.py`), граф маршрутизации
-(`routing_graph.py`), и — вне этого пакета, из свободного LLM-вызова —
-сравнение схем зрением. У нарушения №2 из прямой проверки этого комплекта
+(`room_cross_check.py`), реестр оборудования (`equip_cross_check.py`), граф
+маршрутизации (`routing_graph.py`), таблица воздухообменов
+(`ventilation_mo.py`), требования из прозы (`requirement_cross_check.py`),
+и — вне этого пакета, из свободного LLM-вызова — сравнение схем зрением.
+У нарушения №2 из прямой проверки этого комплекта
 (тёплые полы) все три источника — текст, схема, спецификация — независимо
 подтвердили одно и то же; у нарушения №1 (раздвоенная позиция оборудования)
 источник был ровно один, и вопрос остался неразрешённым. Это наблюдение,
@@ -103,17 +104,6 @@ def signals_from_equip_cross_check(findings) -> list[Signal]:
     """`findings` — `EquipCrossCheckResult.findings` (equip_cross_check.py)."""
     return [Signal(source="equip_registry", domain="equipment", key=f.equip_key, detail=f.detail)
             for f in findings]
-
-
-def signals_from_anchor_prose(hits: list[dict]) -> list[Signal]:
-    """`hits` — результат `find_anchor_in_prose` (anchor_prose.py):
-    [{page, anchor, paragraph}]. `anchor` здесь предполагается номером
-    помещения — вызывающий код сам решает, какие якоря он туда передавал
-    (anchor_prose.py одинаково ищет и номера помещений, и обозначения
-    систем; для последних используйте domain вручную через Signal напрямую,
-    не через этот адаптер)."""
-    return [Signal(source="prose", domain="room", key=h["anchor"],
-                   detail=h["paragraph"][:200]) for h in hits]
 
 
 _ROUTING_FINDING_CATEGORIES = ("retargeted", "connection_count_changed")

@@ -29,6 +29,13 @@ import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
+from app.composition_registry import (  # noqa: E402
+    SuppliedDocument,
+    check_completeness,
+    extract_composition_entries,
+    find_document_references,
+    render_completeness_report,
+)
 from app.documents import extract_document_facts  # noqa: E402
 from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
 from app.escalation import build_tickets, render_tickets_markdown  # noqa: E402
@@ -51,6 +58,7 @@ from app.requirement_registry import (  # noqa: E402
     render_requirements_summary,
 )
 from app.room_cross_check import cross_check_rooms, render_cross_check_report  # noqa: E402
+from app.stamp import Stamp, read_stamp  # noqa: E402
 from app.routing_diff import diff_room_routing, render_routing_diff_report  # noqa: E402
 from app.set_overview import (  # noqa: E402
     compare_section_coverage,
@@ -454,6 +462,14 @@ def run_triangulated(
         _emit(render_equip_cross_check_report(equip_result))
 
         pd_text_facts = _load_text_facts(before_paths)
+        all_text_facts = pd_text_facts + _load_text_facts(after_paths)
+        composition_entries = extract_composition_entries(all_text_facts)
+        composition_refs = find_document_references(all_text_facts)
+        composition_supplied = _supplied_documents(before_paths + after_paths)
+        composition_result = check_completeness(composition_entries, composition_refs, composition_supplied)
+        _emit("")
+        _emit(render_completeness_report(composition_result))
+
         if requirements_llm_config is not None:
             pd_requirements = extract_requirements_llm(pd_text_facts, requirements_llm_config)
         else:
@@ -486,6 +502,9 @@ def run_triangulated(
         signals += signals_from_room_cross_check(room_result.findings)
         signals += signals_from_equip_cross_check(equip_result.findings)
         signals += signals_from_requirement_cross_check(req_result.findings)
+        signals += [Signal(source="composition_registry", domain="document",
+                            key=f.designation, detail=f.detail)
+                    for f in composition_result.findings]
 
         routing_room_keys = room_keys
         auto_selected = False
@@ -690,6 +709,59 @@ def run_requirements(
             out_f.close()
 
 
+def _supplied_documents(paths: list[str]) -> list[SuppliedDocument]:
+    """Один `SuppliedDocument` на реально переданный файл — обозначение из
+    имени файла плюс хвост шифра из штампа первой страницы (Г.17), на
+    случай, когда имя файла ничего не говорит о комплекте (реальный случай
+    этого проекта: `V2_01-05-04-02-07_Том 5.4.2 ОВ (1).pdf` не намекает на
+    «ИОС5.4.2» из штампа). Штамп в кривых на первой странице — не сбой, а
+    просто нет доп. подсказки (Г.10), совпадение по имени файла всё равно
+    отрабатывает."""
+    out: list[SuppliedDocument] = []
+    for path in paths:
+        stamp = Stamp()
+        try:
+            doc = pymupdf.open(path)
+            try:
+                if doc.page_count:
+                    stamp = read_stamp(doc[0])
+            finally:
+                doc.close()
+        except Exception:  # noqa: BLE001 — не открылся файл; обозначение всё равно берём из имени
+            pass
+        shifrs = (stamp.shifr,) if stamp.shifr else ()
+        out.append(SuppliedDocument(filename=Path(path).name, shifrs=shifrs))
+    return out
+
+
+def run_composition_check(
+    before_paths: list[str], after_paths: list[str], out_path: Optional[str] = None,
+) -> None:
+    """Комплектность по «Составу документации» (Г.17, composition_registry.py)
+    — деterministic, без LLM: ведомость и прозаические ссылки на другие
+    комплекты ищутся текстом по ВСЕМУ переданному корпусу (обе стороны
+    сразу — не гадать заранее, на какой стороне лежит ведомость), сверяются
+    с реально переданными файлами (--before и --after вместе)."""
+    out_f = open(out_path, "a", encoding="utf-8") if out_path else None
+
+    def _emit(text: str) -> None:
+        print(text)
+        if out_f:
+            out_f.write(text + "\n")
+            out_f.flush()
+
+    try:
+        text_facts = _load_text_facts(before_paths + after_paths)
+        entries = extract_composition_entries(text_facts)
+        refs = find_document_references(text_facts)
+        supplied = _supplied_documents(before_paths + after_paths)
+        result = check_completeness(entries, refs, supplied)
+        _emit(render_completeness_report(result))
+    finally:
+        if out_f:
+            out_f.close()
+
+
 def run_mo_check(
     before_paths: list[str],
     after_paths: list[str],
@@ -784,7 +856,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Алгоритмический diff реестров ПД/РД (без LLM, опционально с триажем ИИ)")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "mo", "both", "all"], default="all",
+    parser.add_argument("--kind", choices=["rooms", "equipment", "requirements", "routing", "mo", "composition", "both", "all"], default="all",
                         help="'all' (по умолчанию) — единая цепочка через ВСЕ источники сразу: реестры помещений/"
                              "оборудования (кросс-проверка с severity, не только diff множеств), требования из прозы "
                              "ПД, граф маршрутизации (если задан --rooms) — со сведением в триангуляцию (Г.30 п.4) и "
@@ -830,7 +902,13 @@ def main() -> None:
 
     if args.kind == "both":
         kinds = ["rooms", "equipment"]
-    elif args.kind in ("requirements", "routing"):
+    elif args.kind in ("requirements", "routing", "mo", "composition"):
+        # Узкие пути со своей функцией run_*_check ниже, не через общий
+        # _KIND_ATTR-diff (у него нет записи для "mo"/"composition" —
+        # реальный пропуск, найденный на этом самом прогоне при первом
+        # РЕАЛЬНОМ вызове --kind mo через CLI, а не напрямую из Python;
+        # до этого Г.58 был проверен только прямым импортом run_mo_check,
+        # никогда через main(), см. Г.62).
         kinds = []
     else:
         kinds = [args.kind]
@@ -855,6 +933,9 @@ def main() -> None:
 
     if args.kind in ("requirements", "both"):
         run_requirements(args.before, args.after, requirements_llm_config, out_path=args.out or None)
+
+    if args.kind == "composition":
+        run_composition_check(args.before, args.after, out_path=args.out or None)
 
 
 if __name__ == "__main__":
