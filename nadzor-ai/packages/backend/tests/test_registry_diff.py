@@ -174,6 +174,94 @@ def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_
     print("OK: комплексный прогон с ключом сам выбирает помещения для routing_diff без --rooms")
 
 
+def test_mo_cross_check_reports_no_uncovered_when_no_table_found_at_all(monkeypatch):
+    """Г.65 — реальный баг, найденный тестом при подключении ventilation_mo
+    к run_triangulated: если в комплекте вообще НЕТ листа «Таблица
+    воздухообменов» (table_pages_found == 0), find_uncovered_rooms не
+    должна вызываться на пустом rooms_seen — иначе КАЖДОЕ запрошенное
+    помещение помечалось бы «не найдено в таблице», хотя самой таблицы в
+    комплекте попросту нет (это другое, немолчаливое состояние, но не то
+    же самое, и его нельзя путать с Г.60)."""
+    monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: [])
+    result = registry_diff._run_mo_cross_check(["pd.pdf"], ["rd.pdf"], ["140"], llm_config=None)
+    assert result.table_pages_found == 0
+    assert result.uncovered == []
+    print("OK: без найденной таблицы voздухообменов uncovered пуст, а не 'все помещения не найдены'")
+
+
+def test_mo_cross_check_reports_uncovered_when_table_found_but_room_missing(monkeypatch):
+    """Г.60, теперь через общее ядро _run_mo_cross_check: таблица НАЙДЕНА,
+    но запрошенное помещение в rooms_seen отсутствует — вот тут uncovered
+    обязан появиться."""
+    text_facts = [{"page": 1, "text": "Таблица воздухообменов помещений"}]
+    monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: text_facts)
+    monkeypatch.setattr(registry_diff, "extract_mo_table_page",
+                         lambda path, page, cfg, **kw: {"rooms": [], "rooms_seen": ["100"]})
+    result = registry_diff._run_mo_cross_check(["pd.pdf"], ["rd.pdf"], ["314"], llm_config=None)
+    assert result.table_pages_found == 1
+    assert result.uncovered == ["314"]
+    print("OK: таблица найдена, помещение 314 в ней не строкой — uncovered корректно непуст")
+
+
+def test_run_triangulated_auto_wires_mo_signals_when_routing_rooms_selected(tmp_path, monkeypatch, capsys):
+    """Г.65 — прямая просьба пользователя после проверки эскалации:
+    ventilation_mo.py (Г.58), в отличие от routing_diff.py (Г.50), не был
+    подключён к run_triangulated вообще — сигналы system_mismatch/
+    branch_relocated не участвовали в общем прогоне --kind all, только в
+    explicit --kind mo. Проверка: тот же список помещений, что уже выбран
+    для routing (auto-select по расхождению в реестре, Г.9), используется
+    и для сверки местных отсосов, и её находки попадают в общую
+    триангуляцию как сигналы source="mo_table"."""
+    from app.documents import DocumentFacts
+    from app.llm import LlmConfig
+
+    pd_facts = DocumentFacts(
+        name="pd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Комната А", "area": "10"}],
+    )
+    rd_facts = DocumentFacts(
+        name="rd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Другое имя", "area": "10"}],
+    )
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    pd_path.touch()
+    rd_path.touch()
+
+    def fake_extract_document_facts(path, name):
+        return pd_facts if str(path) == str(pd_path) else rd_facts
+
+    def fake_diff_room_routing(before_paths, after_paths, room_keys):
+        return {"renumbered": [], "retargeted": [], "connection_count_changed": [],
+                "unchanged": [], "unusable": [], "room_only_before": [], "room_only_after": []}
+
+    def fake_run_mo_cross_check(before_paths, after_paths, room_keys, llm_config):
+        from app.ventilation_mo import MoFinding
+        assert room_keys == ["140"]  # тот же список, что выбрал routing auto-select
+        finding = MoFinding(room="140", finding_type="system_mismatch", detail="П6 -> П2")
+        return registry_diff.MoCheckResult(
+            table_pages_found=1, pd_entries=[{"room": "140"}], rooms_seen_all={"140"},
+            uncovered=[], candidate_pages_count=1, rd_branches_count=1, findings=[finding],
+        )
+
+    monkeypatch.setattr(registry_diff, "extract_document_facts", fake_extract_document_facts)
+    monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: [])
+    monkeypatch.setattr(registry_diff, "extract_requirements_llm", lambda facts, cfg, **kw: [])
+    monkeypatch.setattr(registry_diff, "diff_room_routing", fake_diff_room_routing)
+    monkeypatch.setattr(registry_diff, "check_visual_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(registry_diff, "verify_general_requirements_llm", lambda *a, **kw: [])
+    monkeypatch.setattr(registry_diff, "_run_mo_cross_check", fake_run_mo_cross_check)
+
+    fake_config = LlmConfig(provider="gigachat", api_key="fake", base_url="", model="")
+    registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[],
+                                    requirements_llm_config=fake_config)
+
+    out = capsys.readouterr().out
+    assert "Сверка местных отсосов ПД↔РД (Г.58/Г.65" in out
+    assert "mo_table" in out
+    print("OK: mo-сверка подключена к run_triangulated на том же списке помещений, что routing")
+
+
 def test_run_triangulated_escalates_confirmed_keys_downgraded_by_synthesis(tmp_path, monkeypatch, capsys):
     """Г.64 — реальный пробел, найденный слепым прогоном на nadzor_sample:
     триангуляция считает "confirmed" по ЧИСЛУ источников (Г.30 п.4), не по

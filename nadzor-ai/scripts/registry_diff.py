@@ -22,6 +22,7 @@ import argparse
 import os
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -533,6 +534,34 @@ def run_triangulated(
                   "недоступен без ключа ИИ; остальные источники не видят расхождений "
                   "чистой геометрии, см. routing_diff.py)")
 
+        # Г.65 — прямая просьба пользователя после проверки эскалации: до
+        # этого ventilation_mo.py (Г.58/Г.60), в отличие от routing_diff.py
+        # (Г.50), не был подключён к --kind all вообще — только явным
+        # --kind mo. На реальном комплекте это означало, что часть сигналов
+        # (система/ветка местных отсосов) просто не участвовала в общем
+        # прогоне и в триангуляции, даже когда ключ ИИ уже есть и другие
+        # дорогие источники (Г.33/Г.49/Г.51) уже включаются. Тот же гейт
+        # (ключ ИИ обязателен — оба листа только зрением) и тот же список
+        # помещений, что уже выбран для routing (или явный --rooms) —
+        # отдельного auto-select не заводится, чтобы не сканировать весь
+        # комплект второй раз по другому критерию.
+        if requirements_llm_config is not None and routing_room_keys:
+            mo_result = _run_mo_cross_check(before_paths, after_paths, routing_room_keys, requirements_llm_config)
+            _emit("")
+            _emit(f"=== Сверка местных отсосов ПД↔РД (Г.58/Г.65, авто по помещениям routing) ===")
+            _emit(f"Листов «Таблица воздухообменов» найдено: {mo_result.table_pages_found}, "
+                  f"помещений с местными отсосами: {len(mo_result.pd_entries)}")
+            if mo_result.uncovered:
+                _emit(f"Запрошенные помещения не найдены в таблице воздухообменов ВООБЩЕ "
+                      f"(Г.60): {', '.join(mo_result.uncovered)}")
+            if mo_result.pd_entries:
+                _emit(render_mo_cross_check_report(mo_result.findings))
+                for f in mo_result.findings:
+                    signals.append(Signal(source="mo_table", domain="room", key=f.room, detail=f.detail))
+            for room in mo_result.uncovered:
+                signals.append(Signal(source="mo_table", domain="room", key=room,
+                                       detail=f"пом. {room} не найдено строкой в таблице воздухообменов вообще (Г.60)"))
+
         if requirements_llm_config is not None:
             _emit("")
             _emit("=== Прямое сравнение листов ПД↔РД по паре (Г.51) — по мере готовности ===")
@@ -783,6 +812,64 @@ def run_composition_check(
             out_f.close()
 
 
+@dataclass
+class MoCheckResult:
+    """Данные без печати — общее ядро для explicit `--kind mo` и авто-
+    подключения в `run_triangulated` (Г.65), чтобы не дублировать логику
+    поиска листов/сверки в двух местах."""
+    table_pages_found: int
+    pd_entries: list[dict]
+    rooms_seen_all: set[str]
+    uncovered: list[str]
+    candidate_pages_count: int
+    rd_branches_count: int
+    findings: list
+
+
+def _run_mo_cross_check(
+    before_paths: list[str], after_paths: list[str], room_keys: list[str], llm_config: LlmConfig,
+) -> MoCheckResult:
+    pd_entries: list[dict] = []
+    rooms_seen_all: set[str] = set()
+    table_pages_found = 0
+    for path in before_paths:
+        text_facts = _load_text_facts([path])
+        pages = sorted({f["page"] for f in text_facts})
+        for page in pages:
+            if not is_mo_table_page(text_facts, page):
+                continue
+            table_pages_found += 1
+            page_result = extract_mo_table_page(path, page, llm_config)
+            pd_entries.extend(page_result["rooms"])
+            rooms_seen_all.update(page_result["rooms_seen"])
+    if room_keys:
+        pd_entries = [r for r in pd_entries if r.get("room") in room_keys]
+    # "uncovered" осмысленно ТОЛЬКО когда таблица воздухообменов вообще
+    # найдена в комплекте (Г.60 — "нет строкой в НАЙДЕННОЙ таблице", не
+    # "в этом комплекте нет такого источника данных вообще"). Без этой
+    # проверки каждое запрошенное помещение помечалось бы "не найдено в
+    # таблице" даже когда самой таблицы в комплекте попросту нет (реальный
+    # баг, найденный тестом при подключении в run_triangulated, Г.65).
+    uncovered = find_uncovered_rooms(room_keys, rooms_seen_all) if room_keys and table_pages_found else []
+
+    if not pd_entries:
+        return MoCheckResult(table_pages_found, pd_entries, rooms_seen_all, uncovered, 0, 0, [])
+
+    room_index = _registry(after_paths, "room_facts")
+    candidate_pages: set[tuple[str, int]] = set()
+    for entry in pd_entries:
+        for ref in room_index.get(entry.get("room", ""), []):
+            candidate_pages.add((ref["path"], ref["page"]))
+
+    rd_branches: list[dict] = []
+    for path, page in sorted(candidate_pages):
+        rd_branches.extend(extract_branch_locations(path, page, llm_config))
+
+    findings = cross_check_mo_branches(pd_entries, rd_branches)
+    return MoCheckResult(table_pages_found, pd_entries, rooms_seen_all, uncovered,
+                          len(candidate_pages), len(rd_branches), findings)
+
+
 def run_mo_check(
     before_paths: list[str],
     after_paths: list[str],
@@ -798,7 +885,9 @@ def run_mo_check(
 
     Требует ключ ИИ и явный список `room_keys` (как `--kind routing`, не
     как `--kind all` без ключа) — оба листа читаются только зрением, узкая
-    и дорогая операция, не однажды на весь комплект."""
+    и дорогая операция, не однажды на весь комплект. Для авто-подключения
+    в `--kind all` см. `_run_mo_cross_check` + блок в `run_triangulated`
+    (Г.65) — тот же движок, другая точка входа."""
     out_f = open(out_path, "a", encoding="utf-8") if out_path else None
 
     def _emit(text: str) -> None:
@@ -808,50 +897,23 @@ def run_mo_check(
             out_f.flush()
 
     try:
-        pd_entries: list[dict] = []
-        rooms_seen_all: set[str] = set()
-        table_pages_found = 0
-        for path in before_paths:
-            text_facts = _load_text_facts([path])
-            pages = sorted({f["page"] for f in text_facts})
-            for page in pages:
-                if not is_mo_table_page(text_facts, page):
-                    continue
-                table_pages_found += 1
-                page_result = extract_mo_table_page(path, page, llm_config)
-                pd_entries.extend(page_result["rooms"])
-                rooms_seen_all.update(page_result["rooms_seen"])
-        if room_keys:
-            pd_entries = [r for r in pd_entries if r.get("room") in room_keys]
+        result = _run_mo_cross_check(before_paths, after_paths, room_keys, llm_config)
         _emit(f"=== Сверка местных отсосов ПД↔РД (Г.58) ===")
-        _emit(f"Листов «Таблица воздухообменов» найдено: {table_pages_found}, "
-              f"помещений с местными отсосами: {len(pd_entries)}")
-        if room_keys:
-            uncovered = find_uncovered_rooms(room_keys, rooms_seen_all)
-            if uncovered:
-                _emit(f"Запрошенные помещения не найдены в таблице воздухообменов "
-                      f"ВООБЩЕ (не строкой, а не пустым столбцом М.О. — Г.60, нужен "
-                      f"другой источник ПД): {', '.join(uncovered)}")
-        if not pd_entries:
+        _emit(f"Листов «Таблица воздухообменов» найдено: {result.table_pages_found}, "
+              f"помещений с местными отсосами: {len(result.pd_entries)}")
+        if result.uncovered:
+            _emit(f"Запрошенные помещения не найдены в таблице воздухообменов "
+                  f"ВООБЩЕ (не строкой, а не пустым столбцом М.О. — Г.60, нужен "
+                  f"другой источник ПД): {', '.join(result.uncovered)}")
+        if not result.pd_entries:
             _emit("Ни одного помещения с местными отсосами не найдено "
                   "(нет таблицы воздухообменов в ПД, либо у запрошенных "
                   "помещений её в принципе нет — не путать с молчанием, Г.10)")
             return
-
-        room_index = _registry(after_paths, "room_facts")
-        candidate_pages: set[tuple[str, int]] = set()
-        for entry in pd_entries:
-            for ref in room_index.get(entry.get("room", ""), []):
-                candidate_pages.add((ref["path"], ref["page"]))
-
-        rd_branches: list[dict] = []
-        for path, page in sorted(candidate_pages):
-            rd_branches.extend(extract_branch_locations(path, page, llm_config))
-        _emit(f"Листов РД просмотрено: {len(candidate_pages)}, веток найдено: {len(rd_branches)}")
-
-        findings = cross_check_mo_branches(pd_entries, rd_branches)
+        _emit(f"Листов РД просмотрено: {result.candidate_pages_count}, "
+              f"веток найдено: {result.rd_branches_count}")
         _emit("")
-        _emit(render_mo_cross_check_report(findings))
+        _emit(render_mo_cross_check_report(result.findings))
     finally:
         if out_f:
             out_f.close()
