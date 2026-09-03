@@ -5,7 +5,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import scripts.registry_diff as registry_diff  # noqa: E402
-from scripts.registry_diff import _diff, _load_text_facts, _registry  # noqa: E402
+from scripts.registry_diff import _diff, _emit_general_requirements, _load_text_facts, _registry  # noqa: E402
+from app.llm import LlmConfig  # noqa: E402
+from app.requirement_llm_filter import RequirementVerdict  # noqa: E402
+from app.requirement_registry import Requirement  # noqa: E402
 
 SAMPLE_DIR = Path("/home/user/nadzor_sample")
 RD_OV1_B = SAMPLE_DIR / "АНО-150321-1-РД-ОВ1 изм. 4_в1 (1)-101-676.pdf"
@@ -542,6 +545,43 @@ def test_main_cli_kind_mo_does_not_crash(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "требует ключ ИИ" in err
     print("OK: --kind mo без ключа проходит через main() без KeyError (честная ошибка в stderr)")
+
+
+# --------------------------------------------------------------------------
+# Г.69 — ЛЛМ-фильтр каталога формы 3 подключён в общую точку
+# `_emit_general_requirements`, а не по отдельности в run_triangulated/
+# run_requirements: без ключа печатается сырой regex-каталог как раньше,
+# с ключом — через requirement_llm_filter.classify_general_requirements.
+# --------------------------------------------------------------------------
+
+def test_emit_general_requirements_uses_raw_catalog_without_llm_config():
+    reqs = [Requirement(rooms=[], page=1, sentence="Экраны должны быть негорючими.")]
+    lines: list[str] = []
+    _emit_general_requirements(reqs, None, lines.append)
+    text = "\n".join(lines)
+    assert "Общие требования ПД (Г.47" in text
+    assert "ЛЛМ-фильтра" not in text
+    print("OK: без ключа провайдера печатается сырой regex-каталог формы 3, как раньше")
+
+
+def test_emit_general_requirements_uses_llm_filter_when_config_present(monkeypatch):
+    reqs = [Requirement(rooms=[], page=1, sentence="Экраны должны быть негорючими."),
+            Requirement(rooms=[], page=2, sentence="Работы выполнять в соответствии с ПУЭ.")]
+
+    def fake_classify(requirements, config, batch_size=20, timeout=90.0):
+        return [
+            RequirementVerdict(requirement=requirements[0], is_requirement=True, reasoning="ok"),
+            RequirementVerdict(requirement=requirements[1], is_requirement=False, reasoning="голая ссылка на норму"),
+        ]
+
+    monkeypatch.setattr(registry_diff, "classify_general_requirements", fake_classify)
+    lines: list[str] = []
+    _emit_general_requirements(reqs, LlmConfig(provider="local"), lines.append)
+    text = "\n".join(lines)
+    assert "ЛЛМ-фильтра (Г.69" in text
+    assert "оставлено: 1, отсеяно как шум: 1" in text
+    assert "голая ссылка на норму" in text
+    print("OK: с ключом провайдера каталог формы 3 идёт через ЛЛМ-фильтр (Г.69)")
 
 
 if __name__ == "__main__":

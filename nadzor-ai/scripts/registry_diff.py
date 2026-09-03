@@ -51,6 +51,10 @@ from app.requirement_cross_check import (  # noqa: E402
 )
 from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
+from app.requirement_llm_filter import (  # noqa: E402
+    classify_general_requirements,
+    render_general_requirements_summary_llm_filtered,
+)
 from app.requirement_text_verify import render_text_verify_report, verify_general_requirements_llm  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     extract_general_requirements,
@@ -219,6 +223,20 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
         finally:
             doc.close()
     return out
+
+
+def _emit_general_requirements(general_requirements: list, llm_config: Optional[LlmConfig], _emit) -> None:
+    """Печатает каталог формы 3 (Г.47) — через ЛЛМ-фильтр (Г.69), если есть
+    ключ провайдера, иначе как раньше, сырым regex-каталогом
+    (`RUN-NO-LLM.bat` не теряет функциональность). Общая точка для
+    `run_triangulated`/`run_requirements` — раньше обе звали
+    `render_general_requirements_summary` напрямую и дублировали бы эту
+    развилку по отдельности."""
+    if llm_config is not None:
+        verdicts = classify_general_requirements(general_requirements, llm_config)
+        _emit(render_general_requirements_summary_llm_filtered(verdicts))
+    else:
+        _emit(render_general_requirements_summary(general_requirements))
 
 
 def _document_inputs(paths: list[str]) -> tuple[list[DocumentInput], list[str]]:
@@ -478,7 +496,7 @@ def run_triangulated(
         _emit(render_requirements_summary(pd_requirements))
         _emit("")
         general_requirements = extract_general_requirements(pd_text_facts)
-        _emit(render_general_requirements_summary(general_requirements))
+        _emit_general_requirements(general_requirements, requirements_llm_config, _emit)
         req_after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
         req_result = cross_check_requirements(pd_requirements, req_after)
         _emit(render_requirement_cross_check_report(req_result))
@@ -720,7 +738,7 @@ def run_requirements(
         _emit(render_requirements_summary(pd_requirements))
         _emit("")
         general_requirements = extract_general_requirements(pd_text_facts)
-        _emit(render_general_requirements_summary(general_requirements))
+        _emit_general_requirements(general_requirements, llm_config, _emit)
 
         after = [DocumentInput("РД", 1, text_facts=_load_text_facts(after_paths))]
         result = cross_check_requirements(pd_requirements, after)
