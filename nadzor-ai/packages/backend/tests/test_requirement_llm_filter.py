@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import requirement_llm_filter
 from app.llm import LlmConfig
 from app.requirement_llm_filter import (
+    _FILTER_SYSTEM_PROMPT,
     RequirementVerdict,
     _chunk_requirements,
     classify_general_requirements,
@@ -35,6 +36,20 @@ def _config():
 
 def req(page, sentence, rooms=None):
     return Requirement(rooms=rooms or [], page=page, sentence=sentence)
+
+
+def test_system_prompt_does_not_require_obligation_wording():
+    """Г.70 — прямая поправка пользователя: критерий не должен требовать
+    модального глагола долженствования («должен»/«обязан»). Констатация
+    факта проекта («предусмотрена X») и описание способа исполнения тоже
+    обязаны считаться требованием — иначе фильтр выбросил бы ровно тот
+    класс предложений, которым устроено нарушение №2 этого проекта
+    (тёплые полы, `nadzor_sample`) — «предусмотрена система X», не
+    «должна быть предусмотрена»."""
+    assert "не суди строго по наличию модального глагола" in _FILTER_SYSTEM_PROMPT
+    assert "предусмотрена" in _FILTER_SYSTEM_PROMPT
+    assert "способ" in _FILTER_SYSTEM_PROMPT and "исполнения" in _FILTER_SYSTEM_PROMPT
+    print("OK: промпт фильтра явно не сводит требование к повелительному наклонению")
 
 
 def test_chunk_requirements_respects_batch_size():
@@ -159,6 +174,7 @@ def test_render_filtered_summary_omits_noise_section_when_nothing_dropped():
 
 
 if __name__ == "__main__":
+    test_system_prompt_does_not_require_obligation_wording()
     test_chunk_requirements_respects_batch_size()
     test_classify_marks_requirement_and_noise_by_index()
     test_classify_across_two_batches_preserves_order()
