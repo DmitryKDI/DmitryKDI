@@ -34,6 +34,25 @@ def test_filename_signal_matches_js():
     print("OK: filename signal matches JS logic")
 
 
+def test_scan_finds_codes_added_from_real_composition_registry():
+    """Г.63 — реальные шифры из «Состава документации» этого объекта
+    (АНО/150321/1-РД-ОВ1, стр.10-12), найденные не текстовым угадыванием, а
+    самим `composition_registry.py` (Г.62): наружные/внутренние сети,
+    тепловой пункт, слаботочка, вертикальный транспорт — раньше не
+    входили в DISCIPLINE_CODES вообще."""
+    cases = {
+        "АНО/150321/1-РД-ВВ": "ВВ",
+        "АНО/150321/1-РД-ИТП.УУТЭ": "ИТП",
+        "АНО/150321/1-РД-СКУД": "СКУД",
+        "АНО/150321/1-РД-ВТ": "ВТ",
+        "АНО/150321/1-РД-АУПТ": "АУПТ",
+    }
+    for text, expect in cases.items():
+        codes = scan_text_for_discipline_codes(text)
+        assert expect in codes, f"{text}: {codes} не содержит {expect}"
+    print("OK: реальные коды разделов из Состава документации распознаются")
+
+
 def test_real_document_stamp_is_image_not_text():
     """Подтверждает находку сессии: штамп rd_floor1.pdf — растровая картинка,
     без текстового слоя штампа, поэтому чисто текстовая классификация не
@@ -145,6 +164,7 @@ def test_open_pdf_plain_file_unaffected(tmp_path):
 
 if __name__ == "__main__":
     test_filename_signal_matches_js()
+    test_scan_finds_codes_added_from_real_composition_registry()
     test_real_document_stamp_is_image_not_text()
     test_vision_fallback_reads_real_stamp_code()
     test_title_page_signal()
