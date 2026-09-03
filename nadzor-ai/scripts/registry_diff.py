@@ -38,7 +38,7 @@ from app.composition_registry import (  # noqa: E402
 )
 from app.documents import extract_document_facts  # noqa: E402
 from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
-from app.escalation import build_tickets, render_tickets_markdown  # noqa: E402
+from app.escalation import build_ticket, build_tickets, render_ticket_markdown, render_tickets_markdown  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.matching import DocumentInput, match_page_pairs  # noqa: E402
 from app.router import classify_all_pairs  # noqa: E402
@@ -580,6 +580,27 @@ def run_triangulated(
             )
             _emit("")
             _emit(render_verdict_report(verdicts))
+
+            # Г.64 — реальный пробел, найденный слепым прогоном: триангуляция
+            # (Г.30 п.4) считает ключ "confirmed" по ЧИСЛУ источников, не по
+            # СОДЕРЖАНИЮ их находок — на реальном комплекте это дало 3 ключа
+            # (пом. 267/271/314), где 2-3 источника формально отметились, но
+            # свод честно распознал, что находки не складываются в закрытый
+            # вопрос (общий текст ПД без адресной проверки; несвязанное
+            # переименование вместо реального совпадения). `build_tickets`
+            # пропускает "confirmed" по построению (`escalation.py`
+            # docstring: "вопрос уже закрыт") — эти три ключа не получили бы
+            # пакет эскалации вообще, при том что свод прямо просит проверки
+            # инспектором. Досчитываем отдельно, не трогая исходную очередь.
+            downgraded_keys = {(v.domain, v.key) for v in verdicts if v.verdict == "недостаточно_данных"}
+            downgraded_confirmed = [c for c in confirmed if (c.domain, c.key) in downgraded_keys]
+            if downgraded_confirmed:
+                _emit("")
+                _emit(f"=== Досчитанная эскалация (Г.64): {len(downgraded_confirmed)} ключей, "
+                      f"формально «confirmed» ≥2 источниками, но свод понизил до «недостаточно_данных» ===")
+                for c in downgraded_confirmed:
+                    _emit(render_ticket_markdown(build_ticket(c)))
+                    _emit("")
     finally:
         if out_f:
             out_f.close()

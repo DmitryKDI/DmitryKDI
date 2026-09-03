@@ -174,6 +174,61 @@ def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_
     print("OK: комплексный прогон с ключом сам выбирает помещения для routing_diff без --rooms")
 
 
+def test_run_triangulated_escalates_confirmed_keys_downgraded_by_synthesis(tmp_path, monkeypatch, capsys):
+    """Г.64 — реальный пробел, найденный слепым прогоном на nadzor_sample:
+    триангуляция считает "confirmed" по ЧИСЛУ источников (Г.30 п.4), не по
+    тому, согласны ли они по СУТИ. На реальном комплекте это дало ключи,
+    где 2 разных источника формально отметились по одному номеру (room_
+    registry — переименование; requirement_prose — общий текст без адресной
+    проверки), а сводный вердикт (Г.61) честно распознал, что вопрос не
+    закрыт. `build_tickets` пропускает "confirmed" по построению
+    (docstring escalation.py: "вопрос уже закрыт") — без этого фикса такой
+    ключ не получил бы пакет эскалации вообще."""
+    from app.documents import DocumentFacts
+    from app.llm import LlmConfig
+    from app.requirement_registry import Requirement
+
+    pd_facts = DocumentFacts(
+        name="pd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Комната А", "area": "10"}],
+    )
+    rd_facts = DocumentFacts(
+        name="rd.pdf", pages=1, text_facts=[],
+        room_facts=[{"page": 1, "key": "140", "name": "Совсем другое помещение", "area": "10"}],
+    )
+
+    pd_path = tmp_path / "pd.pdf"
+    rd_path = tmp_path / "rd.pdf"
+    pd_path.touch()
+    rd_path.touch()
+
+    def fake_extract_document_facts(path, name):
+        return pd_facts if str(path) == str(pd_path) else rd_facts
+
+    def fake_synth(config, system_prompt, user_text, images=None, timeout=60.0):
+        return {"verdict": "недостаточно_данных",
+                "reasoning": "переименование и общий текст требования — про разное, не одно и то же"}
+
+    monkeypatch.setattr(registry_diff, "extract_document_facts", fake_extract_document_facts)
+    monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: [])
+    monkeypatch.setattr(registry_diff, "extract_requirements_llm",
+                         lambda facts, cfg, **kw: [Requirement(rooms=["140"], page=1, sentence="х", code=None)])
+    monkeypatch.setattr(registry_diff, "check_visual_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(registry_diff, "verify_general_requirements_llm", lambda *a, **kw: [])
+    monkeypatch.setattr("app.verdict_synthesis.call_llm_json", fake_synth)
+
+    fake_config = LlmConfig(provider="gigachat", api_key="fake", base_url="", model="")
+    registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[],
+                                    requirements_llm_config=fake_config)
+
+    out = capsys.readouterr().out
+    assert "[room] 140: requirement_prose, room_registry" in out  # мехонически confirmed
+    assert "ТРЕБУЕТ ПРОВЕРКИ ИНСПЕКТОРОМ" in out  # свод понизил
+    assert "Досчитанная эскалация (Г.64)" in out
+    assert "### Помещение 140" in out  # получил пакет эскалации, несмотря на confirmed
+    print("OK: ключ, понижённый сводом с confirmed до недостаточно_данных, получает пакет эскалации")
+
+
 # --------------------------------------------------------------------------
 # run_page_pair_comparison (Г.51) — прямое сравнение листов ПД↔РД
 # --------------------------------------------------------------------------
