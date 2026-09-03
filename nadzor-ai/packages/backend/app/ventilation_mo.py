@@ -35,17 +35,18 @@ n=1 (Г.21): не проверено на втором реальном комп
 терминологии стандарта — не выдаётся за большее."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from .llm import LlmConfig, call_llm_json
 from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
+from .table_registry import classify_table_page
 
-# Корень термина СП 60.13330, не дословная фраза одного автора (Г.59) —
-# «воздухообменов», «воздухообмена», «воздухообменом», «воздухообмену».
-_TABLE_TITLE_RE = re.compile(r"воздухообмен\w*", re.IGNORECASE)
-
+# Корень термина СП 60.13330 («воздухообменов», «воздухообмена», ...) и
+# порог длины страницы (ниже) записаны в реестре `table_registry.py`
+# (kind="ventilation_balance") — здесь только сама граница (используется
+# явно в вызове `classify_table_page` ниже), сам regex туда не дублируется.
+#
 # Одного упоминания термина мало: он же встречается в содержании тома
 # («Таблица воздухообменов помещений (начало)» — заголовок листа,
 # перечисленный в списке чертежей) и в обычной прозе ПЗ («Воздухообмен в
@@ -69,11 +70,16 @@ def is_mo_table_page(text_facts: list[dict], page_no: int) -> bool:
     «Ведомость воздухообмена» или «Расчёт воздухообменов» были бы в
     другом. Требует ТАКЖЕ короткий текст всей страницы — иначе матчатся
     страница содержания тома и обычная проза ПЗ, которые термин тоже
-    упоминают, но таблицей не являются."""
-    page_text = "".join(f["text"] for f in text_facts if f["page"] == page_no)
-    if len(page_text) > _TABLE_PAGE_MAX_TEXT_LEN:
-        return False
-    return bool(_TABLE_TITLE_RE.search(page_text))
+    упоминают, но таблицей не являются.
+
+    Г.66 — этот регекс/порог теперь также записаны как одна из строк
+    общего реестра `table_registry.py` (kind="ventilation_balance") —
+    функция ниже делегирует туда для единообразия (то же самое условие,
+    та же граница), а не переизобретает его локально. Поведение не
+    поменялось: тот же regex, тот же порог 800 символов, те же тесты
+    продолжают проходить без изменений."""
+    kind = classify_table_page(text_facts, page_no, max_text_len=_TABLE_PAGE_MAX_TEXT_LEN)
+    return kind is not None and kind.kind == "ventilation_balance"
 
 
 _MO_TABLE_SYSTEM_PROMPT = f"""\
