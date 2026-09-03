@@ -326,6 +326,44 @@ def test_render_general_requirements_summary_marks_it_as_not_for_cross_check():
     print("OK: отдельный рендер формы 3 явно помечен как не вход в автосверку")
 
 
+def test_render_general_requirements_summary_dedupes_repeated_sentence():
+    """Г.67 — реальная жалоба: одна и та же шаблонная фраза повторяется
+    дословно на разных страницах/томах и раньше печаталась отдельной
+    строкой на каждое совпадение. Теперь одна строка со списком всех
+    страниц, где она встретилась."""
+    reqs = [
+        Requirement(rooms=[], page=21, sentence="Работы выполнять в соответствии с ПУЭ."),
+        Requirement(rooms=[], page=45, sentence="работы выполнять в соответствии с ПУЭ."),
+    ]
+    text = render_general_requirements_summary(reqs)
+    assert "извлечено: 2 (уникальных формулировок: 1)" in text
+    assert "стр.21, 45" in text
+    assert text.count("«") == 1  # текст предложения напечатан один раз, не дважды
+    assert "повторено 2×" in text
+    print("OK: одинаковые по тексту требования с разных страниц сведены в одну строку")
+
+
+def test_render_general_requirements_summary_marks_norm_reference_only_sentence():
+    """Г.67 — мягкая эвристика (не фильтр, Г.10): предложение-голая ссылка
+    на норму без другого содержания помечается видимо, а не молча тонет в
+    каталоге среди содержательных требований. Реальный текст («V2_01-05-
+    04-02-07_Том 5.4.2 ОВ (1).pdf», стр.21): «Работы выполнять в
+    соответствии с действующими СНиП 3.05.06-85, ПУЭ.»"""
+    reqs = [Requirement(rooms=[], page=21,
+                        sentence="Работы выполнять в соответствии с действующими СНиП 3.05.06-85, ПУЭ.")]
+    text = render_general_requirements_summary(reqs)
+    assert "[только ссылка на норму]" in text
+    print("OK: голая ссылка на норму без другого содержания помечена видимо")
+
+
+def test_render_general_requirements_summary_does_not_mark_real_requirement():
+    reqs = [Requirement(rooms=[], page=19,
+                        sentence="Воздуховоды вытяжных шкафов выполнить из нержавеющей стали.")]
+    text = render_general_requirements_summary(reqs)
+    assert "[только ссылка на норму]" not in text
+    print("OK: содержательное требование без ссылки на норму не помечается")
+
+
 def test_real_pz_general_requirements_finds_far_more_than_predicate_form():
     """Смоук на реальном ПЗ: форма 3 должна найти на порядок больше
     требований, чем узкая форма 2 (Г.36) — измерено на этом же файле:
@@ -373,5 +411,8 @@ if __name__ == "__main__":
     test_general_requirements_ignore_short_and_long_fragments()
     test_general_requirements_do_not_leak_into_cross_check_pipeline()
     test_render_general_requirements_summary_marks_it_as_not_for_cross_check()
+    test_render_general_requirements_summary_dedupes_repeated_sentence()
+    test_render_general_requirements_summary_marks_norm_reference_only_sentence()
+    test_render_general_requirements_summary_does_not_mark_real_requirement()
     test_real_pz_general_requirements_finds_far_more_than_predicate_form()
     print("ALL PASS")

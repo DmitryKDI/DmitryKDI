@@ -162,6 +162,22 @@ def test_page_without_composition_marker_is_not_parsed():
     print("OK: страница без признака ведомости не разбирается как ведомость")
 
 
+def test_third_party_designation_with_lowercase_and_space_is_parsed():
+    """СИНТЕТИКА по мотивам реальной формы (Г.67, «Школа-600», ведомость
+    РД — сама выдержка не приводится дословно, Г.12): одна позиция реальной
+    ведомости шла под чужой схемой обозначений стороннего субподрядчика —
+    не тройка «ОРГ/000000/1», а пять "/"-сегментов, с пробелом и строчными
+    буквами внутри первого сегмента. До Г.67 это не проходило
+    `_DESIGNATION_RE` вообще (только заглавные буквы/цифры, без пробела) —
+    строка ведомости молча терялась."""
+    page = SYNTH_COMPOSITION_PAGE + "Орг 25-1-2/РД/ГП/ДОУ/21/695-РД-СКТВ\nСистема коллективного приёма телевидения\nООО «Прочее»\n"
+    entries = extract_composition_entries([tf(10, page)])
+    by_designation = {e.designation: e for e in entries}
+    assert "Орг 25-1-2/РД/ГП/ДОУ/21/695-РД-СКТВ" in by_designation
+    assert by_designation["Орг 25-1-2/РД/ГП/ДОУ/21/695-РД-СКТВ"].name.startswith("Система коллективного")
+    print("OK: обозначение стороннего субподрядчика (строчные буквы, пробел, 5 сегментов) разобрано")
+
+
 def test_normative_code_is_not_a_composition_entry():
     """Г.17, второй абзац: коды норм (СП/ГОСТ/СНиП) — явно вне охвата
     этого модуля, поэтому строка вида «СП 60.13330.2020» не должна
@@ -216,6 +232,19 @@ def test_supplier_catalog_noise_is_not_a_reference():
             "см. техническую подборку и КП")
     assert find_document_references([tf(105, text)]) == []
     print("OK: «см. техническую подборку и КП» не считается ссылкой на комплект")
+
+
+def test_equipment_nameplate_rating_is_not_a_designation_reference():
+    """Г.67 — реальный класс ложного срабатывания, замеченный на полном
+    комплекте «Школа-600» в спецификациях оборудования (сама выдержка не
+    приводится дословно, Г.12): паспортные данные вида «220V/1PH/50HZ» по
+    форме (X/Y/Z, заглавные буквы и цифры) неотличимы от обозначения
+    комплекта для старой регулярки. Реальные обозначения всегда начинаются
+    с буквенного кода (АНО, ТЕСТ...), паспортные рейтинги — всегда с
+    числа, поэтому это и есть отличающий признак."""
+    text = "Насос дренажный, 220V/1PH/50HZ, IP68, подключение по месту."
+    assert find_document_references([tf(103, text)]) == []
+    print("OK: паспортный рейтинг оборудования не считается ссылкой на обозначение")
 
 
 def test_reference_by_full_designation_in_prose():
@@ -549,7 +578,9 @@ if __name__ == "__main__":
     test_own_designation_of_the_sheet_is_not_a_row()
     test_continuation_page_is_parsed_by_sheet_designation()
     test_page_without_composition_marker_is_not_parsed()
+    test_third_party_designation_with_lowercase_and_space_is_parsed()
     test_normative_code_is_not_a_composition_entry()
+    test_equipment_nameplate_rating_is_not_a_designation_reference()
     test_reference_v_chasti()
     test_reference_v_chasti_with_compound_mark()
     test_reference_see_part_on_drawing()

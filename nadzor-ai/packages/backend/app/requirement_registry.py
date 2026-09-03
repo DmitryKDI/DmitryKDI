@@ -295,18 +295,72 @@ def match_requirement_rooms_by_name(sentence: str, room_facts: list[dict]) -> li
     return out
 
 
+# Г.67 — реальная жалоба на «воду» в форме 3: одна и та же шаблонная фраза
+# (типовая оговорка/ссылка на норму) буквально повторяется на разных
+# страницах/томах одного комплекта, и раньше печаталась в каталоге
+# отдельной строкой на каждое совпадение. Дедупликация по нормализованному
+# тексту предложения (без переноса самой Requirement-модели и без влияния
+# на `requirement_cross_check.py`, который форму 3 потребляет поштучно —
+# см. докстринг модуля) — только на уровне печатного отчёта для человека.
+def _normalize_for_dedup(sentence: str) -> str:
+    return " ".join(sentence.split()).lower()
+
+
+# Мягкая эвристика (НЕ фильтр, только визуальная пометка, Г.10 — ничего не
+# прячется): предложение, которое ЦЕЛИКОМ состоит из «сделать X в
+# соответствии с/согласно ГОСТ/СП/СНиП...» и не несёт другого технического
+# содержания — самый частый источник «воды» в каталоге после самого факта
+# дублей. Реальный пример («V2_01-05-04-02-07_Том 5.4.2 ОВ (1).pdf»):
+# «Работы выполнять в соответствии с действующими СНиП 3.05.06-85, ПУЭ.» —
+# 68 символов, никакой информации сверх самой ссылки. Признак заведомо
+# неполный (не поймает все такие предложения и может пометить не только
+# их) — честно эвристика, не точный классификатор.
+_NORM_ONLY_RE = re.compile(
+    r"^.{0,40}?(?:в\s+соответствии\s+со?|согласно|по)\s+(?:\S+\s+){0,3}"
+    r"(?:ГОСТ|СП|СНиП|СанПиН|ПУЭ)[\w\s\d.,\-/]*\.?$",
+    re.IGNORECASE,
+)
+
+
+def _is_norm_reference_only(sentence: str) -> bool:
+    return bool(_NORM_ONLY_RE.match(sentence))
+
+
 def render_general_requirements_summary(requirements: list[Requirement]) -> str:
     """Печатный каталог формы 3 (Г.47) — отдельно от `render_requirements_summary`
-    (формы 1+2), с явной оговоркой в заголовке, что это НЕ вход в автосверку."""
+    (формы 1+2), с явной оговоркой в заголовке, что это НЕ вход в автосверку.
+
+    Г.67: одинаковые по тексту требования с разных страниц печатаются ОДНОЙ
+    строкой (список всех страниц, где встретились), а не по одной записи на
+    каждое совпадение — раньше именно это было основным источником «воды» в
+    каталоге. Предложения, которые выглядят как голая ссылка на норму без
+    другого содержания, помечаются `[только ссылка на норму]` — это только
+    видимая пометка, не удаление (Г.10)."""
+    groups: dict[str, list[Requirement]] = {}
+    order: list[str] = []
+    for req in requirements:
+        key = _normalize_for_dedup(req.sentence)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(req)
+    dedup_note = f" (уникальных формулировок: {len(order)})" if len(order) != len(requirements) else ""
     lines = [
         f"=== Общие требования ПД (Г.47, без привязки к конкретному "
         f"помещению — для просмотра, не для автосверки) — извлечено: "
-        f"{len(requirements)} ===",
+        f"{len(requirements)}{dedup_note} ===",
     ]
-    for i, req in enumerate(requirements, 1):
-        rooms = f" — помещения: {', '.join(req.rooms)}" if req.rooms else ""
-        lines.append(f"{i}. стр.{req.page}{rooms}")
-        lines.append(f"   «{req.sentence}»")
+    for i, key in enumerate(order, 1):
+        group = groups[key]
+        first = group[0]
+        pages = sorted({r.page for r in group})
+        pages_str = ", ".join(str(p) for p in pages)
+        rooms = sorted({room for r in group for room in r.rooms}, key=lambda x: (len(x), x))
+        rooms_part = f" — помещения: {', '.join(rooms)}" if rooms else ""
+        dup_part = f" (повторено {len(group)}×)" if len(group) > 1 else ""
+        tag = " [только ссылка на норму]" if _is_norm_reference_only(first.sentence) else ""
+        lines.append(f"{i}. стр.{pages_str}{rooms_part}{dup_part}{tag}")
+        lines.append(f"   «{first.sentence}»")
     return "\n".join(lines)
 
 

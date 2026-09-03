@@ -36,12 +36,37 @@ def test_returns_none_for_long_page_even_with_matching_word():
 
 def test_classifies_water_balance_scaffold():
     """n=0 заготовка — синтетический пример по нормативному термину СП
-    30.13330, НЕ проверено на реальном документе, честно помечено."""
-    kind = classify_table_page(_page("Ведомость водопотребления и водоотведения"), 1)
+    30.13330, НЕ проверено на реальном документе, честно помечено. Г.67 —
+    регекс сузился до совместного «баланс» + «водопотреблен/водоотведен»
+    (реальное название таблицы), просто «ведомость водопотребления» без
+    слова «баланс»/«расход» больше не матчится (это и была причина 16
+    ложных срабатываний на реальном комплекте)."""
+    kind = classify_table_page(_page("Баланс водопотребления и водоотведения"), 1)
     assert kind is not None
     assert kind.kind == "water_balance"
     assert kind.status.startswith("n=0")
     print("OK: таблица водопотребления/водоотведения (ВК) классифицируется как заготовка")
+
+
+def test_water_balance_no_longer_matches_bare_section_mention():
+    """Г.67 — реальный ложный срабатыватель с «Школа-600»: страница
+    оглавления/содержания просто называет подраздел «Водопотребление и
+    водоотведение», без слова «баланс»/«расход воды» рядом — раньше (до
+    Г.67) это классифицировалось как сама таблица, хотя это была страница
+    содержания тома. Теперь честно None."""
+    assert classify_table_page(_page("5.2 Водопотребление и водоотведение"), 1) is None
+    print("OK: голое упоминание раздела (без «баланс»/«расход воды») больше не считается таблицей")
+
+
+def test_water_balance_uses_wider_per_kind_max_text_len():
+    """Г.67 — реальные листы water_balance были 876 символов, чуть выше
+    общего дефолта 800 (подобранного под вентиляцию) — запись получила
+    override max_text_len=950, остальные записи реестра дефолт не трогают."""
+    text = "Баланс водопотребления и водоотведения " + "x" * 850
+    assert 800 < len(text) <= 950
+    kind = classify_table_page(_page(text), 1)
+    assert kind is not None and kind.kind == "water_balance"
+    print("OK: water_balance использует собственный (более широкий) порог длины страницы")
 
 
 def test_classifies_electrical_loads_scaffold():
@@ -134,6 +159,8 @@ if __name__ == "__main__":
     test_returns_none_for_unknown_table()
     test_returns_none_for_long_page_even_with_matching_word()
     test_classifies_water_balance_scaffold()
+    test_water_balance_no_longer_matches_bare_section_mention()
+    test_water_balance_uses_wider_per_kind_max_text_len()
     test_classifies_electrical_loads_scaffold()
     test_classifies_cable_log_scaffold()
     test_classifies_steel_consumption_scaffold()

@@ -35,6 +35,24 @@ from .triangulation import CANDIDATE, Confirmation
 KNOWN_SOURCES = ("text", "prose", "schema", "vision", "balance",
                  "routing", "room_registry", "equip_registry")
 
+# Метка домена для текста пакета (Г.67) — раньше был бинарный выбор
+# «room → помещение, иначе → позиция оборудования», из-за чего реальные
+# находки composition_registry.py (Г.62, domain="document") подписывались
+# как «Позиция оборудования» — неверно и вводит в заблуждение. Домены
+# перечислены по фактическому использованию в `triangulation.py`/
+# `registry_diff.py` (room, equipment, requirement_code, document);
+# неизвестный домен честно показывается как есть, а не угадывается.
+_DOMAIN_LABELS = {
+    "room": "помещение",
+    "equipment": "позиция оборудования",
+    "document": "документ",
+    "requirement_code": "код требования",
+}
+
+
+def _domain_label(domain: str) -> str:
+    return _DOMAIN_LABELS.get(domain, domain)
+
 
 @dataclass(frozen=True)
 class EscalationTicket:
@@ -57,7 +75,7 @@ def build_ticket(confirmation: Confirmation, known_sources: Sequence[str] = KNOW
     вопрос уже закрыт минимум двумя источниками."""
     present = confirmation.sources
     missing = _missing_sources(present, known_sources)
-    label = "помещение" if confirmation.domain == "room" else "позиция оборудования"
+    label = _domain_label(confirmation.domain)
 
     if not missing:
         # Все известные источники уже отметились одним и тем же ключом, но
@@ -91,7 +109,7 @@ def build_tickets(confirmations: Sequence[Confirmation],
 
 
 def render_ticket_markdown(ticket: EscalationTicket) -> str:
-    label = "Помещение" if ticket.domain == "room" else "Позиция оборудования"
+    label = _domain_label(ticket.domain).capitalize()
     lines = [
         f"### {label} {ticket.key}",
         f"- Подтвердили: {', '.join(ticket.sources_present) or '—'}",
