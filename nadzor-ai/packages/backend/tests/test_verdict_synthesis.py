@@ -180,6 +180,27 @@ def test_render_verdict_report_lists_verdicts_with_summary():
     print("OK: отчёт перечисляет вердикты и сводку по типам")
 
 
+def test_render_verdict_report_marks_insufficient_data_as_needing_attention():
+    """Г.64 — прямой вопрос пользователя: недостаточно_данных здесь ВСЕГДА
+    означает «один источник уже нашёл аномалию», а не «ничего не нашли»
+    (synthesize_verdict вызывается только на ключи с реальным сигналом).
+    Строка отчёта обязана визуально отличаться от «не_является_нарушением»
+    (настоящей чистой находки), не читаться как тихий пустой результат."""
+    verdicts = [
+        KeyVerdict(domain="room", key="012", verdict="недостаточно_данных",
+                   reasoning="один источник — нужна вторая проверка", sources=("vision",)),
+        KeyVerdict(domain="room", key="1", verdict="не_является_нарушением",
+                   reasoning="находки о разном", sources=("a", "b")),
+    ]
+    report = render_verdict_report(verdicts)
+    assert "ТРЕБУЕТ ПРОВЕРКИ ИНСПЕКТОРОМ" in report
+    line_012 = next(ln for ln in report.splitlines() if "room 012" in ln)
+    line_1 = next(ln for ln in report.splitlines() if "room 1 " in ln)
+    assert "ТРЕБУЕТ ПРОВЕРКИ" in line_012
+    assert "ТРЕБУЕТ ПРОВЕРКИ" not in line_1
+    print("OK: недостаточно_данных отображается как открытый вопрос инспектору, не как «чисто»")
+
+
 if __name__ == "__main__":
     test_group_signals_by_key_preserves_source_detail_pairs()
     test_synthesize_verdict_real_case_140_142_147_198()
@@ -190,4 +211,5 @@ if __name__ == "__main__":
     test_synthesize_all_respects_only_keys_filter()
     test_synthesize_all_on_result_callback_fires_per_verdict()
     test_render_verdict_report_lists_verdicts_with_summary()
+    test_render_verdict_report_marks_insufficient_data_as_needing_attention()
     print("ALL PASS")
