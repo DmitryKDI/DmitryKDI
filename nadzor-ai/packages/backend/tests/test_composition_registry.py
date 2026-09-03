@@ -178,6 +178,29 @@ def test_third_party_designation_with_lowercase_and_space_is_parsed():
     print("OK: обозначение стороннего субподрядчика (строчные буквы, пробел, 5 сегментов) разобрано")
 
 
+def test_designation_cut_by_pdf_line_wrap_is_not_registered_truncated():
+    """Г.67 (второй заход) — реальная регрессия, найденная проверкой на
+    «Школа-600»: PDF переносит длинное обозначение субподрядчика посреди
+    строки («...21/695-» / перенос / «РД-СКТВ»), а расширенный символьный
+    класс сегмента (Г.67, п.3) принимал усечённый фрагмент «...21/695-»
+    САМ ПО СЕБЕ за полное обозначение — строка регистрировалась с
+    ОБРЕЗАННЫМ значением (без хвоста «РД-СКТВ»), то есть неверными
+    данными вместо честного пропуска. Негативный лукбихайнд на «не
+    заканчивается пробелом/точкой/дефисом» исправляет это: усечённый
+    фрагмент больше не проходит как самостоятельное обозначение.
+
+    Честная граница: это НЕ склеивает перенесённую строку обратно в одно
+    целое обозначение (нужна отдельная работа со сшиванием PDF-переносов,
+    больше реальных примеров) — просто не выдаёт заведомо неверные
+    (обрезанные) данные вместо честного «не нашли»."""
+    page = SYNTH_COMPOSITION_PAGE + "Орг 25-1-2/РД/ГП/ДОУ/21/695-\nРД-СКТВ\nСистема коллективного приёма телевидения\nООО «Прочее»\n"
+    entries = extract_composition_entries([tf(10, page)])
+    designations = {e.designation for e in entries}
+    assert "Орг 25-1-2/РД/ГП/ДОУ/21/695-" not in designations
+    assert not any(d.endswith("695-") for d in designations)
+    print("OK: усечённый переносом строки фрагмент не регистрируется как обозначение")
+
+
 def test_normative_code_is_not_a_composition_entry():
     """Г.17, второй абзац: коды норм (СП/ГОСТ/СНиП) — явно вне охвата
     этого модуля, поэтому строка вида «СП 60.13330.2020» не должна
@@ -579,6 +602,7 @@ if __name__ == "__main__":
     test_continuation_page_is_parsed_by_sheet_designation()
     test_page_without_composition_marker_is_not_parsed()
     test_third_party_designation_with_lowercase_and_space_is_parsed()
+    test_designation_cut_by_pdf_line_wrap_is_not_registered_truncated()
     test_normative_code_is_not_a_composition_entry()
     test_equipment_nameplate_rating_is_not_a_designation_reference()
     test_reference_v_chasti()
