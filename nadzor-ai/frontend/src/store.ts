@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Principal } from './types'
-import { backendApi, type BackendAnalysisRun, type BackendDocument } from './backendApi'
+import { backendApi, type BackendAnalysisRun, type BackendDocument, type BackendTriangulatedRun } from './backendApi'
 
 interface Toast {
   id: number
@@ -36,6 +36,12 @@ interface AppState {
   // экран "Новый анализ" сейчас смонтирован, — так прогон реально продолжает
   // считаться, пока инспектор смотрит другие вкладки, а не замирает.
   analysisRunStatus: BackendAnalysisRun | null
+  // Прогон реального движка Приложения Г (Карта внимания, см.
+  // triangulated_pipeline.py) — тот же принцип фонового опроса, что и у
+  // analysisRunId выше, но отдельный движок и отдельный набор полей: эти
+  // два прогона не смешивают статус друг друга.
+  triangulatedRunId: number | null
+  triangulatedRunStatus: BackendTriangulatedRun | null
   setSession: (principal: Principal | null, permissions: string[]) => void
   toggleMenu: () => void
   setDensity: (value: 'comfortable' | 'compact') => void
@@ -47,6 +53,7 @@ interface AppState {
   setAnalysisDocs: (side: 'before' | 'after', updater: DocsUpdater) => void
   setAnalysisPending: (side: 'before' | 'after', updater: PendingUpdater) => void
   setAnalysisRunId: (id: number | null) => void
+  setTriangulatedRunId: (id: number | null) => void
   resetAnalysis: () => void
 }
 
@@ -66,6 +73,8 @@ export const useApp = create<AppState>()(
       analysisPendingAfter: [],
       analysisRunId: null,
       analysisRunStatus: null,
+      triangulatedRunId: null,
+      triangulatedRunStatus: null,
       setSession: (principal, permissions) => set({ principal, permissions }),
       toggleMenu: () => set((s) => ({ menuCollapsed: !s.menuCollapsed })),
       setDensity: (density) => set({ density }),
@@ -96,10 +105,15 @@ export const useApp = create<AppState>()(
         set({ analysisRunId, analysisRunStatus: null })
         if (analysisRunId != null) pollAnalysisRun(analysisRunId)
       },
+      setTriangulatedRunId: (triangulatedRunId) => {
+        set({ triangulatedRunId, triangulatedRunStatus: null })
+        if (triangulatedRunId != null) pollTriangulatedRun(triangulatedRunId)
+      },
       resetAnalysis: () => set({
         analysisBeforeDocs: [], analysisAfterDocs: [],
         analysisPendingBefore: [], analysisPendingAfter: [],
         analysisRunId: null, analysisRunStatus: null,
+        triangulatedRunId: null, triangulatedRunStatus: null,
       }),
     }),
     {
@@ -116,6 +130,7 @@ export const useApp = create<AppState>()(
         analysisBeforeDocs: s.analysisBeforeDocs,
         analysisAfterDocs: s.analysisAfterDocs,
         analysisRunId: s.analysisRunId,
+        triangulatedRunId: s.triangulatedRunId,
       }),
       onRehydrateStorage: () => (state) => {
         // Прогон мог остаться незавершённым, пока страница была закрыта —
@@ -129,6 +144,10 @@ export const useApp = create<AppState>()(
         if (state?.analysisRunId != null) {
           const id = state.analysisRunId
           setTimeout(() => pollAnalysisRun(id), 0)
+        }
+        if (state?.triangulatedRunId != null) {
+          const id = state.triangulatedRunId
+          setTimeout(() => pollTriangulatedRun(id), 0)
         }
       },
     },
@@ -154,6 +173,28 @@ function pollAnalysisRun(runId: number): void {
     useApp.setState({ analysisRunStatus: data })
     if (data.status !== 'done' && data.status !== 'error') {
       pollTimer = setTimeout(tick, 800)
+    }
+  }
+  void tick()
+}
+
+let triangulatedPollTimer: ReturnType<typeof setTimeout> | null = null
+
+function pollTriangulatedRun(runId: number): void {
+  if (triangulatedPollTimer) clearTimeout(triangulatedPollTimer)
+  const tick = async () => {
+    if (useApp.getState().triangulatedRunId !== runId) return
+    let data: BackendTriangulatedRun
+    try {
+      data = await backendApi.getTriangulatedRun(runId)
+    } catch {
+      triangulatedPollTimer = setTimeout(tick, 800)
+      return
+    }
+    if (useApp.getState().triangulatedRunId !== runId) return
+    useApp.setState({ triangulatedRunStatus: data })
+    if (data.status !== 'done' && data.status !== 'error') {
+      triangulatedPollTimer = setTimeout(tick, 800)
     }
   }
   void tick()

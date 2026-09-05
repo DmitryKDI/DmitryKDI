@@ -155,11 +155,18 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     return out
 
 
-def _supplied_documents(paths: list[str]) -> list[SuppliedDocument]:
+def _supplied_documents(paths: list[str], names: Optional[list[str]] = None) -> list[SuppliedDocument]:
     """Копия `registry_diff._supplied_documents` (Г.17) — обозначение из
-    имени файла плюс хвост шифра из штампа первой страницы."""
+    имени файла плюс хвост шифра из штампа первой страницы.
+
+    `names` — то же, что и в `_load_documents`: реальное имя файла на
+    момент загрузки, не случайное UUID-имя на диске (`composition_registry`
+    парсит смысловые части ИМЕНИ ФАЙЛА, Г.17 — на UUID это совпадение
+    никогда не сработает, находки комплектности молча превратятся в
+    пустой список)."""
     out: list[SuppliedDocument] = []
-    for path in paths:
+    for i, path in enumerate(paths):
+        display_name = names[i] if names else Path(path).name
         shifrs: tuple[str, ...] = ()
         try:
             doc = pymupdf.open(path)
@@ -172,7 +179,7 @@ def _supplied_documents(paths: list[str]) -> list[SuppliedDocument]:
                 doc.close()
         except Exception:  # noqa: BLE001 — не открылся файл; обозначение всё равно берём из имени
             pass
-        out.append(SuppliedDocument(filename=Path(path).name, shifrs=shifrs))
+        out.append(SuppliedDocument(filename=display_name, shifrs=shifrs))
     return out
 
 
@@ -218,7 +225,11 @@ def run_triangulated_analysis(
 
     composition_entries = extract_composition_entries(all_text_facts)
     composition_refs = find_document_references(all_text_facts)
-    composition_supplied = _supplied_documents(before_paths + after_paths)
+    composition_supplied = _supplied_documents(
+        before_paths + after_paths,
+        (before_names or [Path(p).name for p in before_paths])
+        + (after_names or [Path(p).name for p in after_paths]),
+    )
     composition_result = check_completeness(composition_entries, composition_refs, composition_supplied)
 
     use_llm = llm_config is not None and bool(llm_config.api_key) and llm_config.provider not in ("", "local")

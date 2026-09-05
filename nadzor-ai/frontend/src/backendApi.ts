@@ -84,6 +84,89 @@ export function pageImageUrl(documentId: number, page: number): string {
   return `/backend/page-image/${documentId}/${page}`
 }
 
+/**
+ * Реальный движок Приложения Г (`packages/backend/app/triangulated_pipeline.py`):
+ * реестры помещений/оборудования, комплектность, требования из прозы —
+ * сведённые в триангуляцию источников и очередь эскалации. Другой анализ,
+ * чем `createAnalysisRun` выше (тот — прямое сравнение листов зрением,
+ * `_run_analysis`): здесь находки идут не из одного вызова ИИ на пару
+ * листов, а из независимых детерминированных сверок, подтверждённых
+ * ТОЛЬКО когда минимум два источника указали на один и тот же номер
+ * помещения/позиции (см. `triangulation.py`, Г.30 п.4).
+ */
+export interface TriangulationConfirmation {
+  domain: string
+  key: string
+  status: 'confirmed' | 'candidate'
+  sources: string[]
+  details: string[]
+}
+
+export interface EscalationTicket {
+  domain: string
+  key: string
+  sources_present: string[]
+  sources_missing: string[]
+  context: string[]
+  question: string
+}
+
+export interface RoomFinding {
+  room_key: string
+  room_name_pd: string
+  room_name_rd: string | null
+  finding_type: 'missing_in_rd' | 'name_changed' | 'area_changed'
+  detail: string
+  severity: string
+}
+
+export interface EquipFinding {
+  equip_key: string
+  equip_name_pd: string
+  equip_name_rd: string | null
+  finding_type: 'missing_in_rd' | 'missing_in_pd' | 'qty_changed'
+  detail: string
+  severity: string
+}
+
+export interface CompositionFinding {
+  designation: string
+  finding_type: string
+  detail: string
+  reference_count: number
+}
+
+export interface TriangulatedResult {
+  valid: boolean
+  reason?: string
+  documents?: { before: string[]; after: string[] }
+  skipped_files: string[]
+  llm?: { used: boolean; provider: string | null }
+  /** Что реально НЕ проверялось в этом прогоне и почему (нет ключа ИИ и
+   *  т.п.) — видимое состояние, а не молчаливый пропуск (Г.10). */
+  not_run?: string[]
+  rooms?: { total_pd: number; total_rd: number; matched: number; unmatched: number; findings: RoomFinding[] }
+  equipment?: { total_pd: number; total_rd: number; matched: number; unmatched: number; findings: EquipFinding[] }
+  composition?: { supplied_count: number; findings: CompositionFinding[] }
+  requirements?: {
+    coded: { total: number; confirmed: number; missing: number; source: 'llm' | 'regex' }
+    general: { total: number; with_token: number; token_confirmed: number; token_missing: number; no_token: number }
+  }
+  routing?: { room_keys: string[]; auto_selected: boolean } | null
+  triangulation?: { signals_count: number; confirmed: TriangulationConfirmation[]; candidates: TriangulationConfirmation[] }
+  escalation_tickets?: EscalationTicket[]
+  verdicts?: { domain: string; key: string; verdict: string; reasoning: string; sources: string[] }[]
+}
+
+export interface BackendTriangulatedRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error'
+  provider: string
+  error: string | null
+  result: TriangulatedResult | null
+}
+
 export interface BackendSettings {
   provider: 'local' | 'openai' | 'anthropic' | 'google' | 'yandexgpt'
   base_url: string
@@ -116,6 +199,14 @@ export const backendApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reviewed_status: reviewedStatus }),
     }),
+
+  createTriangulatedRun: (beforeIds: number[], afterIds: number[], roomKeys: string[] = []) =>
+    request<BackendTriangulatedRun>('/triangulated-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ before_document_ids: beforeIds, after_document_ids: afterIds, room_keys: roomKeys }),
+    }),
+  getTriangulatedRun: (id: number) => request<BackendTriangulatedRun>(`/triangulated-runs/${id}`),
 
   getSettings: () => request<BackendSettings>('/settings'),
   updateSettings: (settings: BackendSettings) =>
