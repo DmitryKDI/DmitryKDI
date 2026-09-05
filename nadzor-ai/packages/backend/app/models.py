@@ -131,11 +131,38 @@ class Finding(Base):
         return self.pair.before_page if self.pair else None
 
 
+class TriangulatedRun(Base):
+    """Прогон реального движка Приложения Г (`triangulated_pipeline.py`,
+    Г.46/Г.61/Г.64/Г.65) — реестры помещений/оборудования, комплектность,
+    требования из прозы, триангуляция и очередь эскалации. Отдельная
+    таблица от `AnalysisRun` (тот прогоняет `_run_analysis` — прямое
+    сравнение листов зрением, Г.51 — другой движок, другой контракт): эти
+    два движка не смешивают свои прогоны, чтобы не приходилось гадать по
+    полям одной записи, каким путём она была посчитана.
+
+    `result` хранит весь ответ `run_triangulated_analysis()` одним JSON-
+    блоком, а не по таблице на каждый тип находки: структура ответа —
+    read-only витрина для инспектора, не то, что потребуется выбирать
+    SQL-запросом по отдельным находкам, поэтому отдельная реляционная
+    схема была бы сложностью без выгоды (см. Б.1 «бюджет сложности»)."""
+    __tablename__ = "triangulated_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    status: Mapped[str] = mapped_column(String, default="running")  # running|done|error
+    before_document_ids: Mapped[list] = mapped_column(JSON, default=list)
+    after_document_ids: Mapped[list] = mapped_column(JSON, default=list)
+    room_keys: Mapped[list] = mapped_column(JSON, default=list)
+    provider: Mapped[str] = mapped_column(String, default="")
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 class Settings(Base):
     __tablename__ = "settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    provider: Mapped[str] = mapped_column(String, default="local")
+    provider: Mapped[str] = mapped_column(String, default="anthropic")
     base_url: Mapped[str] = mapped_column(String, default="")
     model: Mapped[str] = mapped_column(String, default="")
     api_key: Mapped[str] = mapped_column(String, default="")

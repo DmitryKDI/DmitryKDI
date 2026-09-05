@@ -22,6 +22,7 @@ from .db import get_session, init_db
 from .documents import extract_document_facts
 from .llm import LlmConfig
 from .matching import DocumentInput, match_page_pairs
+from .triangulated_pipeline import run_triangulated_analysis
 from .vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier, render_page_to_png_bytes
 
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
@@ -46,7 +47,7 @@ def _ensure_schema_and_defaults() -> None:
     db = next(get_session())
     try:
         if db.query(models.Settings).count() == 0:
-            db.add(models.Settings(id=1, provider="local", base_url="", model="", api_key=""))
+            db.add(models.Settings(id=1, provider="anthropic", base_url="", model="", api_key=""))
             db.commit()
     finally:
         db.close()
@@ -103,7 +104,7 @@ def _normalize_severity(value: object) -> str:
 def _llm_config(db: Session) -> LlmConfig:
     s = db.query(models.Settings).first()
     if s is None:
-        return LlmConfig(provider="local")
+        return LlmConfig(provider="anthropic")
     return LlmConfig(provider=s.provider, api_key=s.api_key, base_url=s.base_url, model=s.model)
 
 
@@ -302,6 +303,79 @@ def _run_analysis(run_id: int) -> None:
             db.commit()
     finally:
         db.close()
+
+
+def _run_triangulated(run_id: int) -> None:
+    """Фоновая задача: реальный движок Приложения Г (реестры помещений/
+    оборудования, комплектность, требования из прозы, триангуляция,
+    очередь эскалации, см. `triangulated_pipeline.py`) на уже загруженных
+    документах — та же плоскость, что и `/documents` (см. `upload_document`
+    выше), другой анализ, не `_run_analysis` (Г.51, прямое сравнение
+    листов зрением). Фоновая задача, а не синхронный ответ, — комплект
+    может быть сотни страниц (см. `UploadZone` во фронтенде, тот же довод),
+    прогон может занять больше времени, чем разумно держать HTTP-запрос
+    открытым."""
+    db = next(get_session())
+    try:
+        run = db.get(models.TriangulatedRun, run_id)
+        if run is None:
+            return
+        before_docs = [db.get(models.Document, i) for i in run.before_document_ids]
+        after_docs = [db.get(models.Document, i) for i in run.after_document_ids]
+        if any(d is None for d in before_docs) or any(d is None for d in after_docs):
+            run.status = "error"
+            run.error = "один или несколько документов не найдены (удалены после создания прогона?)"
+            db.commit()
+            return
+
+        config = _llm_config(db)
+        run.provider = config.provider
+        db.commit()
+
+        result = run_triangulated_analysis(
+            [d.file_path for d in before_docs],
+            [d.file_path for d in after_docs],
+            room_keys=run.room_keys,
+            llm_config=config,
+            before_names=[d.name for d in before_docs],
+            after_names=[d.name for d in after_docs],
+        )
+        run.result = result
+        run.status = "done"
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — сбой прогона должен быть виден инспектору, не ронять сервер
+        run = db.get(models.TriangulatedRun, run_id)
+        if run is not None:
+            run.status = "error"
+            run.error = str(exc)
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/triangulated-runs", response_model=schemas.TriangulatedRunOut)
+def create_triangulated_run(
+    body: schemas.TriangulatedRunCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_session)
+):
+    run = models.TriangulatedRun(
+        before_document_ids=body.before_document_ids,
+        after_document_ids=body.after_document_ids,
+        room_keys=body.room_keys,
+        status="running",
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    background_tasks.add_task(_run_triangulated, run.id)
+    return run
+
+
+@app.get("/triangulated-runs/{run_id}", response_model=schemas.TriangulatedRunOut)
+def get_triangulated_run(run_id: int, db: Session = Depends(get_session)):
+    run = db.get(models.TriangulatedRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    return run
 
 
 @app.post("/analysis-runs", response_model=schemas.AnalysisRunOut)

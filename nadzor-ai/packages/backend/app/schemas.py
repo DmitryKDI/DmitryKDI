@@ -78,6 +78,25 @@ class FindingUpdate(BaseModel):
     reviewed_status: str
 
 
+class TriangulatedRunCreate(BaseModel):
+    before_document_ids: list[int]
+    after_document_ids: list[int]
+    # Явный список номеров помещений для графа маршрутизации (Г.30 пп.3-5,
+    # routing_diff.py) — без ключа ИИ иначе не проверяется вовсе (Г.50).
+    room_keys: list[str] = []
+
+
+class TriangulatedRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: dt.datetime
+    status: str
+    provider: str
+    error: str | None
+    result: dict | None
+
+
 class SettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
