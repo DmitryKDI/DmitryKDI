@@ -155,6 +155,7 @@ Vendored from [WorldFlowAI/everything-claude-code](https://github.com/WorldFlowA
 | e2e-runner | Playwright E2E testing |
 | refactor-cleaner | Dead code cleanup |
 | doc-updater | Documentation sync |
+| nadzor-frontend-integrator | nadzor-ai: wiring frontend to the real `packages/backend` pipeline (not the older `packages/api` demo engine) and simplifying screens |
 
 ## Commands (`.claude/commands/`)
 
