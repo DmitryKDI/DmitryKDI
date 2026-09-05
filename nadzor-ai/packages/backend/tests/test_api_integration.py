@@ -40,7 +40,10 @@ class _FakeResponse:
 
 
 def fake_llm_post(url, json=None, headers=None, timeout=None):
-    system = json["messages"][0]["content"]
+    # Г.71 — дефолтный провайдер бэкенда теперь anthropic: системный промпт
+    # приходит отдельным полем "system" (не messages[0]), ответ — content-
+    # блоками {"content": [{"text": ...}]}, не Ollama-стилем {"message": ...}.
+    system = json["system"]
     if "штамп" in system:
         content = '{"discipline_code": "ОВ", "sheet_name": "План этажа"}'
     else:
@@ -48,7 +51,7 @@ def fake_llm_post(url, json=None, headers=None, timeout=None):
             '{"significant": [{"label": "H-1", "change": "Изменена конфигурация воздуховода"}],'
             ' "noise_note": "", "checked_total": 1, "significant_total": 1}'
         )
-    return _FakeResponse({"message": {"content": content}})
+    return _FakeResponse({"content": [{"text": content}]})
 
 
 def upload(side: str, path: Path):
@@ -180,12 +183,21 @@ def test_page_image_endpoint_serves_real_png():
 
 
 def test_settings_roundtrip():
-    resp = client.put("/settings", json={"provider": "local", "base_url": "http://localhost:11434/v1", "model": "qwen3:8b"})
-    assert resp.status_code == 200
-    got = client.get("/settings").json()
-    assert got["provider"] == "local"
-    assert got["model"] == "qwen3:8b"
-    print("OK: settings roundtrip through API")
+    """Г.71 — провайдер должен быть из реально поддерживаемого набора
+    (anthropic/gigachat), иначе следующий реальный вызов ИИ (в этом же
+    тестовом процессе, той же БД) получит ValueError: unknown provider —
+    этот тест сам был реальным источником такой порчи до фикса: ставил
+    "local", который backend больше не принимает, и не возвращал дефолт
+    обратно, ломая порядко-зависимые прогоны с test_findings_quality.py."""
+    try:
+        resp = client.put("/settings", json={"provider": "gigachat", "base_url": "", "model": "GigaChat-2-Pro"})
+        assert resp.status_code == 200
+        got = client.get("/settings").json()
+        assert got["provider"] == "gigachat"
+        assert got["model"] == "GigaChat-2-Pro"
+        print("OK: settings roundtrip through API")
+    finally:
+        client.put("/settings", json={"provider": "anthropic", "base_url": "", "model": ""})
 
 
 if __name__ == "__main__":

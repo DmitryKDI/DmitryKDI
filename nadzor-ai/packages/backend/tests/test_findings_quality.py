@@ -98,10 +98,12 @@ def _run_analysis_with(llm_content: str) -> list[dict]:
     """Прогнать анализ на двух реальных чертежах с заданным ответом модели."""
 
     def fake_post(url, json=None, headers=None, timeout=None):
-        system = json["messages"][0]["content"]
+        # Г.71 — дефолтный провайдер anthropic: system отдельным полем,
+        # ответ content-блоками, не Ollama-стилем {"message": ...}.
+        system = json["system"]
         content = ('{"discipline_code": "ОВ", "sheet_name": "План"}'
                    if "штамп" in system else llm_content)
-        return _FakeResponse({"message": {"content": content}})
+        return _FakeResponse({"content": [{"text": content}]})
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
         docs = {}

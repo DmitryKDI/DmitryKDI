@@ -168,7 +168,7 @@ export interface BackendTriangulatedRun {
 }
 
 export interface BackendSettings {
-  provider: 'local' | 'openai' | 'anthropic' | 'google' | 'yandexgpt'
+  provider: 'anthropic' | 'gigachat'
   base_url: string
   model: string
   api_key: string

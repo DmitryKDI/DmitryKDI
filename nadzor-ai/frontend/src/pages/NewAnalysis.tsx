@@ -8,26 +8,24 @@ import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/
 
 const PAGE_KIND_LABELS: Record<'drawing' | 'text', string> = { drawing: 'чертёж', text: 'текст' }
 
+// Г.71 — набор провайдеров сокращён до двух (packages/backend/app/llm.py):
+// Anthropic (сам инструмент) и GigaChat. Раньше здесь были ещё local/Ollama,
+// OpenAI, Google, YandexGPT — их бэкенд больше не принимает вообще.
 const PROVIDER_LABELS: Record<BackendSettings['provider'], string> = {
-  local: 'Локальная модель (Ollama)', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google',
-  yandexgpt: 'YandexGPT',
+  anthropic: 'Anthropic (Claude)', gigachat: 'GigaChat',
 }
 
-// Зеркало PROVIDER_DEFAULT_MODELS/MODEL_OPTIONS из packages/backend/app/llm.py —
-// реальные, а не выдуманные идентификаторы моделей, чтобы поле "Модель" не было
-// полем вслепую. Список подсказок, а не жёсткий выбор: свою модель ввести
+// Зеркало PROVIDER_DEFAULT_MODELS из packages/backend/app/llm.py — реальные,
+// а не выдуманные идентификаторы моделей, чтобы поле "Модель" не было полем
+// вслепую. Список подсказок, а не жёсткий выбор: свою модель ввести
 // по-прежнему можно (input + datalist), пустое поле берёт дефолт провайдера.
 const MODEL_OPTIONS: Record<BackendSettings['provider'], string[]> = {
-  local: ['qwen2.5vl:7b', 'qwen2.5vl:32b', 'llama3.2-vision:11b', 'minicpm-v:8b'],
-  openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'],
   anthropic: ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5-20251001'],
-  google: ['gemini-2.5-flash', 'gemini-2.5-pro'],
-  yandexgpt: ['yandexgpt/latest', 'yandexgpt-lite/latest', 'yandexgpt-32k/latest'],
+  gigachat: ['GigaChat-2-Pro', 'GigaChat-2-Max', 'GigaChat-2'],
 }
 
 const PROVIDER_DEFAULT_MODEL: Record<BackendSettings['provider'], string> = {
-  local: 'qwen2.5vl:7b', openai: 'gpt-4o-mini', anthropic: 'claude-sonnet-5',
-  google: 'gemini-2.5-flash', yandexgpt: 'yandexgpt/latest',
+  anthropic: 'claude-sonnet-5', gigachat: 'GigaChat-2-Pro',
 }
 
 const CLASSIFICATION_SOURCE_LABELS: Record<string, string> = {
@@ -216,7 +214,7 @@ export default function NewAnalysis() {
   } = useApp()
 
   const settings = useQuery({ queryKey: ['backend-settings'], queryFn: backendApi.getSettings })
-  const [form, setForm] = useState<BackendSettings>({ provider: 'local', base_url: '', model: '', api_key: '' })
+  const [form, setForm] = useState<BackendSettings>({ provider: 'anthropic', base_url: '', model: '', api_key: '' })
   useEffect(() => { if (settings.data) setForm(settings.data) }, [settings.data])
 
   const saveSettings = useMutation({
@@ -439,23 +437,13 @@ export default function NewAnalysis() {
                 <option key={value} value={value}>{label}</option>
               ))}
             </select>
-            {form.provider === 'local' ? (
-              <>
-                <label className="block text-xs text-ink-faint">Адрес (Ollama)</label>
-                <input className="input" placeholder="http://localhost:11434/v1"
-                  value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-              </>
-            ) : form.provider === 'yandexgpt' ? (
+            <label className="block text-xs text-ink-faint">Ключ API</label>
+            <input className="input" type="password" value={form.api_key}
+              onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
+            {form.provider === 'gigachat' && (
               <p className="text-xs text-ink-faint">
-                Ключ и Folder ID берутся из <code>.env</code> — тех же, что и в «Настройках моделей и правил».
-                Вводить их здесь отдельно не нужно.
+                Base64-строка от «Client ID:Client Secret» (реквизиты приложения GigaChat API), не сам пароль.
               </p>
-            ) : (
-              <>
-                <label className="block text-xs text-ink-faint">Ключ API</label>
-                <input className="input" type="password" value={form.api_key}
-                  onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
-              </>
             )}
             <label className="block text-xs text-ink-faint">Модель</label>
             <input className="input" list="model-suggestions" placeholder={PROVIDER_DEFAULT_MODEL[form.provider]}
@@ -463,12 +451,6 @@ export default function NewAnalysis() {
             <datalist id="model-suggestions">
               {MODEL_OPTIONS[form.provider].map((m) => <option key={m} value={m} />)}
             </datalist>
-            {form.provider === 'yandexgpt' && (
-              <p className="text-xs text-ink-faint">
-                Только текстовое сравнение (акты, спецификации). Чертежи по картинке YandexGPT здесь не читает —
-                для них нужна локальная модель или другой провайдер со зрением.
-              </p>
-            )}
             <button className="btn-primary w-full justify-center" disabled={saveSettings.isPending}
               onClick={() => saveSettings.mutate()}>
               {saveSettings.isPending ? 'Сохранение…' : 'Сохранить'}
