@@ -82,11 +82,11 @@ def test_text_compare_wraps_document_in_untrusted_container():
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
-        captured["user"] = json["messages"][1]["content"]
-        return _FakeResponse({"message": {"content": '{"significant": []}'}})
+        captured["user"] = json["messages"][0]["content"][0]["text"]
+        return _FakeResponse({"content": [{"text": '{"significant": []}'}]})
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
-        compare_text_pair("бетон B30", "бетон B25", LlmConfig(provider="local"))
+        compare_text_pair("бетон B30", "бетон B25", LlmConfig(provider="anthropic", api_key="sk-ant-test"))
 
     assert captured["user"].count("<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>") == 2
     assert captured["user"].count("</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>") == 2

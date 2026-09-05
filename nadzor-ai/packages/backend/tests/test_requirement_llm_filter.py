@@ -31,7 +31,7 @@ def _patch(module, name, fake):
 
 
 def _config():
-    return LlmConfig(provider="local")
+    return LlmConfig(provider="anthropic")
 
 
 def req(page, sentence, rooms=None):

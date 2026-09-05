@@ -576,7 +576,7 @@ def test_emit_general_requirements_uses_llm_filter_when_config_present(monkeypat
 
     monkeypatch.setattr(registry_diff, "classify_general_requirements", fake_classify)
     lines: list[str] = []
-    _emit_general_requirements(reqs, LlmConfig(provider="local"), lines.append)
+    _emit_general_requirements(reqs, LlmConfig(provider="anthropic"), lines.append)
     text = "\n".join(lines)
     assert "ЛЛМ-фильтра (Г.69" in text
     assert "оставлено: 1, отсеяно как шум: 1" in text

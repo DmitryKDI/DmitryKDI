@@ -123,8 +123,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Консольное сравнение ПД/РД с маршрутизацией")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--provider", default="gigachat",
-                        choices=["openai", "anthropic", "google", "yandexgpt", "gigachat"])
+    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="")

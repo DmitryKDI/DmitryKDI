@@ -972,7 +972,7 @@ def main() -> None:
     parser.add_argument("--verify-requirements", action="store_true",
                         help="Требования из ПД извлекать ЛЛМ (общий путь, requirement_llm_extract.py — иначе узкий regex-путь без ключа) "
                              "и эскалировать кандидатов без кода (no_code_visual_check_needed) в зрение по листу РД — vision_page_compare.py")
-    parser.add_argument("--provider", default="gigachat", choices=["openai", "anthropic", "google", "yandexgpt", "gigachat"])
+    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="",

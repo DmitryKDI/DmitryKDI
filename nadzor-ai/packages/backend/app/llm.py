@@ -1,13 +1,15 @@
-"""Провайдер-абстракция для LLM: локальная модель (Ollama, OpenAI-совместимый
-эндпоинт) по умолчанию — данные не покидают компьютер — плюс переключаемые
-внешние API (OpenAI, Anthropic, Google) для случаев, когда важна скорость, а
-не приватность.
+"""Провайдер-абстракция для LLM — по прямому решению пользователя (Г.71)
+только два провайдера: Anthropic (Claude — «сам инструмент») и GigaChat.
+Раньше здесь были ещё local/Ollama, OpenAI, Google, YandexGPT — убраны
+по запросу «оставь только себя и гигачат», код и тесты под них
+неиспользуемы, лишняя площадь для поддержки без реального применения в
+этом продукте.
 
 Порт AI_PROVIDERS/buildLlmRequest/callLlm/extractJsonObject из
-nadzor-browser/main.js: тот же контракт structured-JSON вывода
-(response_format / responseMimeType), который в браузерном инструменте решил
-проблему рассуждающей модели, уходящей в посторонний текст вместо ответа по
-задаче — здесь применяется и к тексту, и к vision-запросам.
+nadzor-browser/main.js: тот же контракт structured-JSON вывода, который в
+браузерном инструменте решил проблему рассуждающей модели, уходящей в
+посторонний текст вместо ответа по задаче — здесь применяется и к тексту,
+и к vision-запросам.
 """
 from __future__ import annotations
 
@@ -22,28 +24,8 @@ from typing import Optional
 
 import httpx
 
-DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
-
-# Ollama обрезает контекст до 4096 токенов по умолчанию (параметр модели, не
-# сервера) — двух картинок листа с промптом хватает, чтобы в это не влезть
-# (реальный случай: 4300-5200 токенов на реальных чертежах при VISION_MAX_DIM
-# прежних 1600px). На OpenAI-совместимом эндпоинте это лечится полем num_ctx
-# верхнего уровня тела запроса — нестандартное расширение Ollama, OpenAI его
-# не знает, поэтому только для provider == "local". Поднято вместе с
-# VISION_MAX_DIM (vision.py) — более крупная картинка кодируется в
-# ощутимо больше токенов, прежний запас мог не покрывать это с обеих
-# картинок сразу.
-LOCAL_NUM_CTX = 24576
-
 PROVIDER_DEFAULT_MODELS = {
-    # Сравнение листов идёт картинками (см. vision.compare_page_pair), поэтому
-    # локальная модель по умолчанию обязана уметь зрение. Текстовая qwen3
-    # молча возвращала бы отказ на каждый чертёж.
-    "local": "qwen2.5vl:7b",
-    "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-5",
-    "google": "gemini-2.5-flash",
-    "yandexgpt": "yandexgpt/latest",
     # Базовая GigaChat-2 отвечает 422 "Model does not support image" на
     # vision-запрос (реальный случай) — раз сравнение листов всегда идёт
     # картинками, дефолт обязан быть Pro/Max-тиром, иначе каждое сравнение
@@ -119,7 +101,7 @@ _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 @dataclass
 class LlmConfig:
-    provider: str  # 'local' | 'openai' | 'anthropic' | 'google' | 'yandexgpt' | 'gigachat'
+    provider: str  # 'anthropic' | 'gigachat'
     api_key: str = ""
     base_url: str = ""
     model: str = ""
@@ -128,7 +110,7 @@ class LlmConfig:
         return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, "")
 
     def resolved_base_url(self) -> str:
-        return self.base_url or (DEFAULT_LOCAL_BASE_URL if self.provider == "local" else "")
+        return self.base_url
 
 
 def extract_json_object(text: str) -> Optional[dict]:
@@ -147,18 +129,10 @@ def extract_json_object(text: str) -> Optional[dict]:
         return None
 
 
-def _image_content_block(provider: str, data_url: str) -> dict:
-    if provider == "google":
-        header, b64data = data_url.split(",", 1)
-        mime = header.split(";")[0].split(":")[1]
-        return {"inline_data": {"mime_type": mime, "data": b64data}}
-    if provider == "anthropic":
-        header, b64data = data_url.split(",", 1)
-        mime = header.split(";")[0].split(":")[1]
-        return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64data}}
-    # openai — единственный оставшийся потребитель этого формата (local
-    # использует родной формат Ollama, см. call_llm_json)
-    return {"type": "image_url", "image_url": {"url": data_url}}
+def _anthropic_image_block(data_url: str) -> dict:
+    header, b64data = data_url.split(",", 1)
+    mime = header.split(";")[0].split(":")[1]
+    return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64data}}
 
 
 def png_bytes_to_data_url(png_bytes: bytes) -> str:
@@ -190,53 +164,10 @@ def call_llm_json(
     model = config.resolved_model()
     images = images or []
 
-    if provider == "local":
-        # Ollama через свой родной /api/chat, не через OpenAI-совместимый
-        # /v1/chat/completions: реальный случай на боевой машине — та ветка
-        # молча теряла num_ctx (в исходниках Ollama ChatCompletionRequest
-        # такого поля вообще нет, JSON просто отбрасывает незнакомый ключ),
-        # поэтому каждое сравнение с двумя картинками листа падало 400-й
-        # ошибкой по нехватке контекста. options.num_ctx у родного эндпоинта
-        # поддерживается всегда и не зависит от версии совместимого слоя.
-        root = config.resolved_base_url()
-        if root.endswith("/v1"):
-            root = root[: -len("/v1")]
-        message: dict = {"role": "user", "content": user_text}
-        if images:
-            message["images"] = [img.split(",", 1)[1] if "," in img else img for img in images]
-        body = {
-            "model": model,
-            "messages": [{"role": "system", "content": system_prompt}, message],
-            "format": "json",
-            "stream": False,
-            "options": {"num_ctx": LOCAL_NUM_CTX},
-        }
-        resp = _post_json(f"{root}/api/chat", json=body, headers={"Content-Type": "application/json"}, timeout=timeout)
-        data = resp.json()
-        return extract_json_object(data["message"]["content"])
-
-    if provider == "openai":
-        content: list[dict] = [{"type": "text", "text": user_text}]
-        for img in images:
-            content.append(_image_content_block(provider, img))
-        body = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content if images else user_text},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
-        resp = _post_json("https://api.openai.com/v1/chat/completions", json=body, headers=headers, timeout=timeout)
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"]
-        return extract_json_object(text)
-
     if provider == "anthropic":
         content = [{"type": "text", "text": user_text}]
         for img in images:
-            content.append(_image_content_block(provider, img))
+            content.append(_anthropic_image_block(img))
         body = {
             "model": model,
             "max_tokens": 4096,
@@ -251,54 +182,6 @@ def call_llm_json(
         resp = _post_json("https://api.anthropic.com/v1/messages", json=body, headers=headers, timeout=timeout)
         data = resp.json()
         text = data["content"][0]["text"]
-        return extract_json_object(text)
-
-    if provider == "google":
-        parts = [{"text": user_text}]
-        for img in images:
-            parts.append(_image_content_block(provider, img))
-        body = {
-            "contents": [{"parts": parts}],
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "generationConfig": {"responseMimeType": "application/json"},
-        }
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            f"?key={config.api_key}"
-        )
-        resp = _post_json(url, json=body, timeout=timeout)
-        data = resp.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return extract_json_object(text)
-
-    if provider == "yandexgpt":
-        # Ключ и Folder ID — из тех же переменных окружения, что и у
-        # полной CRM (packages/llm_core/providers/remote.py): один .env,
-        # один ключ, вводить его отдельно в этой панели не нужно.
-        if images:
-            raise ValueError(
-                "YandexGPT здесь понимает только текст — для сравнения чертежей "
-                "по картинке выберите локальную модель или другого провайдера"
-            )
-        api_key = os.environ.get("YANDEX_GPT_API_KEY", "")
-        folder_id = os.environ.get("YANDEX_GPT_FOLDER_ID", "")
-        if not api_key or not folder_id:
-            raise ValueError("в .env не заданы YANDEX_GPT_API_KEY / YANDEX_GPT_FOLDER_ID")
-        body = {
-            "modelUri": f"gpt://{folder_id}/{model}",
-            "completionOptions": {"stream": False, "temperature": 0.2, "maxTokens": "2000"},
-            "messages": [
-                {"role": "system", "text": system_prompt},
-                {"role": "user", "text": user_text},
-            ],
-        }
-        headers = {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}
-        resp = _post_json(
-            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-            json=body, headers=headers, timeout=timeout,
-        )
-        data = resp.json()
-        text = data["result"]["alternatives"][0]["message"]["text"]
         return extract_json_object(text)
 
     if provider == "gigachat":

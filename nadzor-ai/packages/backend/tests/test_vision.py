@@ -41,10 +41,10 @@ def test_stamp_classifier_wired_into_classify_document():
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
         return _FakeResponse(
-            {"message": {"content": '{"discipline_code": "ОВ", "sheet_name": "План 1-го этажа (вентиляция)"}'}}
+            {"content": [{"text": '{"discipline_code": "ОВ", "sheet_name": "План 1-го этажа (вентиляция)"}'}]}
         )
 
-    config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
+    config = LlmConfig(provider="anthropic", api_key="sk-ant-test", model="claude-sonnet-5")
     stamp_classifier = make_llm_stamp_classifier(config)
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
@@ -52,8 +52,9 @@ def test_stamp_classifier_wired_into_classify_document():
 
     assert result.discipline_code == "ОВ", result
     assert result.source == "stamp_vision"
-    message = captured["json"]["messages"][1]
-    assert len(message["images"]) == 1, "stamp crop should be sent as exactly one image"
+    content = captured["json"]["messages"][0]["content"]
+    image_blocks = [c for c in content if c.get("type") == "image"]
+    assert len(image_blocks) == 1, "stamp crop should be sent as exactly one image"
     print("OK: classify_document -> vision stamp classifier -> llm.call_llm_json wired correctly end to end")
 
 
@@ -63,10 +64,10 @@ def test_compare_page_pair_sends_two_images_with_context():
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
         return _FakeResponse(
-            {"message": {"content": '{"significant": [], "checked_total": 1, "significant_total": 0}'}}
+            {"content": [{"text": '{"significant": [], "checked_total": 1, "significant_total": 0}'}]}
         )
 
-    config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
+    config = LlmConfig(provider="anthropic", api_key="sk-ant-test", model="claude-sonnet-5")
     with patch("app.llm.httpx.post", side_effect=fake_post):
         result = compare_page_pair(
             str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
@@ -75,26 +76,28 @@ def test_compare_page_pair_sends_two_images_with_context():
         )
 
     assert result == {"significant": [], "checked_total": 1, "significant_total": 0}
-    message = captured["json"]["messages"][1]
-    assert len(message["images"]) == 2
-    assert "раздел ОВ" in message["content"]
+    content = captured["json"]["messages"][0]["content"]
+    image_blocks = [c for c in content if c.get("type") == "image"]
+    text_block = next(c for c in content if c.get("type") == "text")
+    assert len(image_blocks) == 2
+    assert "раздел ОВ" in text_block["text"]
     print("OK: page-pair comparison sends both real page images plus classification context in the prompt")
 
 
 def test_compare_text_pair_sends_text_not_images():
-    """Текстовые (не чертёжные) листы сравниваются по тексту — ни одной
-    картинки в запросе быть не должно, это отдельный, более дешёвый путь."""
+    """Текстовые (не чертёжные) листы сравниваются по тексту — ни одного
+    image-блока в запросе быть не должно, это отдельный, более дешёвый путь."""
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
         return _FakeResponse(
-            {"message": {"content":
+            {"content": [{"text":
                 '{"significant": [{"label": "A-1", "change": "Класс бетона B25 вместо B30"}],'
-                ' "noise_note": "", "checked_total": 1, "significant_total": 1}'}}
+                ' "noise_note": "", "checked_total": 1, "significant_total": 1}'}]}
         )
 
-    config = LlmConfig(provider="local", model="qwen2.5vl:7b", base_url="http://localhost:11434/v1")
+    config = LlmConfig(provider="anthropic", api_key="sk-ant-test", model="claude-sonnet-5")
     with patch("app.llm.httpx.post", side_effect=fake_post):
         result = compare_text_pair(
             "Класс бетона по проекту B30", "Класс бетона по факту B25",
@@ -102,11 +105,13 @@ def test_compare_text_pair_sends_text_not_images():
         )
 
     assert result["significant"][0]["change"] == "Класс бетона B25 вместо B30"
-    content = captured["json"]["messages"][1]["content"]
-    assert isinstance(content, str), "no images -> content should stay plain text, not a content-block list"
-    assert "B30" in content and "B25" in content
-    assert "раздел КР" in content
-    print("OK: text-kind comparison sends plain text (no images) with both page texts and context")
+    content = captured["json"]["messages"][0]["content"]
+    image_blocks = [c for c in content if c.get("type") == "image"]
+    text_block = next(c for c in content if c.get("type") == "text")
+    assert not image_blocks, "no images -> content should carry no image blocks"
+    assert "B30" in text_block["text"] and "B25" in text_block["text"]
+    assert "раздел КР" in text_block["text"]
+    print("OK: text-kind comparison sends no image blocks, both page texts and context in the text block")
 
 
 def test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline(tmp_path, monkeypatch):
@@ -193,9 +198,9 @@ def test_compare_page_pair_passes_discipline_into_prompt(tmp_path, monkeypatch):
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
-        return _FakeResponse({"message": {"content": '{"significant": []}'}})
+        return _FakeResponse({"content": [{"text": '{"significant": []}'}]})
 
-    config = LlmConfig(provider="local", model="qwen2.5vl:7b", base_url="http://localhost:11434/v1")
+    config = LlmConfig(provider="anthropic", api_key="sk-ant-test", model="claude-sonnet-5")
     with patch("app.llm.httpx.post", side_effect=fake_post):
         compare_page_pair(
             str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
@@ -203,7 +208,9 @@ def test_compare_page_pair_passes_discipline_into_prompt(tmp_path, monkeypatch):
             config, context="раздел ОВ", discipline="ОВ",
         )
 
-    system_prompt = captured["json"]["messages"][0]["content"]
+    # У Anthropic системный промпт — отдельное поле верхнего уровня "system",
+    # не запись в messages (там только пользовательское сообщение).
+    system_prompt = captured["json"]["system"]
     assert "маркер-drawing-ov" in system_prompt, "примеры раздела ОВ не попали в системный промпт"
     print("OK: discipline из main.py доходит до системного промпта сравнения")
 
@@ -216,9 +223,9 @@ def test_compare_page_pair_with_clip_frac_crops_both_sides():
 
     def fake_post(url, json=None, headers=None, timeout=None):
         captured["json"] = json
-        return _FakeResponse({"message": {"content": '{"significant": []}'}})
+        return _FakeResponse({"content": [{"text": '{"significant": []}'}]})
 
-    config = LlmConfig(provider="local", model="qwen3:8b", base_url="http://localhost:11434/v1")
+    config = LlmConfig(provider="anthropic", api_key="sk-ant-test", model="claude-sonnet-5")
     full = render_page_to_data_url(str(SAMPLE_DIR / "rd_floor1.pdf"), 1)
     with patch("app.llm.httpx.post", side_effect=fake_post):
         compare_page_pair(
@@ -227,10 +234,13 @@ def test_compare_page_pair_with_clip_frac_crops_both_sides():
             config, clip_frac=(0.1, 0.1, 0.4, 0.4),
         )
 
-    message = captured["json"]["messages"][1]
-    assert len(message["images"]) == 2
-    assert message["images"][0] != full, "кроп должен быть другой картинкой, не весь лист"
-    assert "зона с найденным визуальным отличием" in message["content"]
+    content = captured["json"]["messages"][0]["content"]
+    image_blocks = [c for c in content if c.get("type") == "image"]
+    text_block = next(c for c in content if c.get("type") == "text")
+    assert len(image_blocks) == 2
+    cropped_data_url = f"data:image/png;base64,{image_blocks[0]['source']['data']}"
+    assert cropped_data_url != full, "кроп должен быть другой картинкой, не весь лист"
+    assert "зона с найденным визуальным отличием" in text_block["text"]
     print("OK: clip_frac доходит до обеих картинок пары и до текста подсказки модели")
 
 
