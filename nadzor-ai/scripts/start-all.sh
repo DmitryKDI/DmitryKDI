@@ -2,7 +2,7 @@
 # Запуск всей системы одной командой. Поднимает три процесса:
 #
 #   8000  packages/api      — сайт целиком: дашборд, журналы, объекты, аудит
-#   8010  packages/backend  — сравнение загруженных документов через Ollama
+#   8010  packages/backend  — сравнение загруженных документов (Anthropic/GigaChat)
 #   5173  frontend          — интерфейс, проксирует оба порта (vite.config.ts)
 #
 # Оба сервера работают на SQLite, поэтому ни Docker, ни PostgreSQL не нужны.
@@ -15,7 +15,6 @@ ROOT="$PWD"
 
 LOGS="$ROOT/logs"; mkdir -p "$LOGS"
 PIDS=()
-OLLAMA_STARTED_BY_US=0
 
 cleanup() {
   printf '\n%s\n' "${BOLD}Останавливаю...${OFF}"
@@ -24,17 +23,17 @@ cleanup() {
     pkill -P "$pid" 2>/dev/null || true   # дочерние процессы uvicorn/vite
     kill "$pid" 2>/dev/null || true
   done
-  [ "$OLLAMA_STARTED_BY_US" = 1 ] && pkill -f 'ollama serve' 2>/dev/null || true
   printf '%s\n' "Остановлено."
 }
 trap cleanup EXIT INT TERM
 
 ./scripts/setup.sh
 
-# Ключи внешних провайдеров (Yandex, GigaChat, Anthropic) читаются только из
-# переменных окружения (Б.5) — .env даёт их процессу без ручного export перед
-# каждым запуском. Файла может не быть вовсе: тогда просто нет внешних
-# ключей, локальная модель и мок работают как раньше.
+# Г.71 — провайдер ЛЛМ сокращён до Anthropic/GigaChat, ключ вводится в
+# интерфейсе (Новый анализ -> Настроить ИИ) и хранится в БД (Settings), не
+# читается из .env. Файл .env, если есть, всё ещё загружается — он может
+# нести GIGACHAT_API_BASE/GIGACHAT_SCOPE/GIGACHAT_CA_BUNDLE (см. app/llm.py),
+# но сам API-ключ туда не идёт.
 if [ -f "$ROOT/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -54,17 +53,6 @@ for p in 8000 8010 5173; do
   port_busy "$p" && die "порт $p занят посторонней программой. Закройте её и запустите снова."
 done
 ok "8000, 8010, 5173 свободны"
-
-say "Локальная модель"
-if port_busy 11434; then
-  ok "Ollama уже работает"
-elif command -v ollama >/dev/null 2>&1; then
-  ollama serve >"$LOGS/ollama.log" 2>&1 &
-  OLLAMA_STARTED_BY_US=1
-  wait_for_port 11434 Ollama 30 && ok "Ollama запущена" || warn "Ollama не поднялась, см. logs/ollama.log"
-else
-  warn "Ollama не установлена — сравнение чертежей будет недоступно"
-fi
 
 say "Запускаю серверы"
 

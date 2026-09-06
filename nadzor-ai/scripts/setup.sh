@@ -95,18 +95,12 @@ else
   ok "сформирован"
 fi
 
-say "4/4 Локальная модель Ollama"
-if command -v ollama >/dev/null 2>&1; then
-  if ollama list 2>/dev/null | grep -q 'qwen2.5vl'; then
-    ok "qwen2.5vl на месте"
-  else
-    warn "модель qwen2.5vl:7b не найдена."
-    warn "Сайт и все экраны будут работать, но сравнение чертежей — нет."
-    warn "Скачать: ollama pull qwen2.5vl:7b"
-  fi
-else
-  warn "Ollama не установлена — сайт работать будет, ИИ-сравнение чертежей нет."
-  warn "Установить: curl -fsSL https://ollama.com/install.sh | sh"
-fi
+# Г.71 — провайдер ЛЛМ сокращён до Anthropic/GigaChat (app/llm.py), локальной
+# модели (Ollama) в бэкенде больше нет вообще — раньше здесь проверялась
+# установка Ollama и наличие модели qwen2.5vl, но provider="local" теперь
+# даёт ValueError: unknown provider при первом же вызове. Ключ настраивается
+# в интерфейсе (Новый анализ -> Настроить ИИ), не через локальную модель.
+say "4/4 Провайдер ЛЛМ"
+ok "Anthropic/GigaChat настраиваются в интерфейсе (Новый анализ -> Настроить ИИ)"
 
 printf '\n%s\n' "${GREEN}${BOLD}Готово к запуску.${OFF}"
