@@ -126,16 +126,26 @@ def extract_mo_table_page(
     код (`find_uncovered_rooms`) сверяет запрошенные номера с этим
     списком по ВСЕМ страницам таблицы, не с одним `rooms`."""
     img = render_page_to_data_url(pdf_path, page_no)
-    result = call_llm_json(
-        config, _MO_TABLE_SYSTEM_PROMPT,
-        "Прочитай таблицу и верни все помещения со столбцом местных отсосов.",
-        images=[img], timeout=timeout,
-    )
+    try:
+        result = call_llm_json(
+            config, _MO_TABLE_SYSTEM_PROMPT,
+            "Прочитай таблицу и верни все помещения со столбцом местных отсосов.",
+            images=[img], timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 — сбой одной страницы не должен ронять весь прогон
+        # (реальный найденный баг: невалидный api_key/сетевой сбой здесь
+        # раньше пробрасывался наружу необработанным и обрушивал ВЕСЬ
+        # --kind all/run_triangulated, хотя все соседние ЛЛМ-вызовы в этом
+        # же прогоне (verdict_synthesis.py, requirement_text_verify.py,
+        # vision_page_compare.py) уже ловят исключение на этом же месте —
+        # см. их try/except вокруг call_llm_json. Видимое состояние (Г.10),
+        # не тихий пропуск и не падение всего прогона.
+        return {"rooms": [], "rooms_seen": [], "error": repr(exc)}
     if not result:
-        return {"rooms": [], "rooms_seen": []}
+        return {"rooms": [], "rooms_seen": [], "error": None}
     rooms = result.get("rooms") if isinstance(result.get("rooms"), list) else []
     rooms_seen = result.get("rooms_seen") if isinstance(result.get("rooms_seen"), list) else []
-    return {"rooms": rooms, "rooms_seen": rooms_seen}
+    return {"rooms": rooms, "rooms_seen": rooms_seen, "error": None}
 
 
 def find_uncovered_rooms(requested_rooms: list[str], rooms_seen: set[str]) -> list[str]:
@@ -174,11 +184,17 @@ def extract_branch_locations(
     """Один лист плана РД → список веток местных отсосов с ближайшим
     помещением и обозначением системы у этого помещения."""
     img = render_page_to_data_url(pdf_path, page_no)
-    result = call_llm_json(
-        config, _BRANCH_LOCATIONS_SYSTEM_PROMPT,
-        "Определи для каждой ветки местного отсоса ближайшее помещение.",
-        images=[img], timeout=timeout,
-    )
+    try:
+        result = call_llm_json(
+            config, _BRANCH_LOCATIONS_SYSTEM_PROMPT,
+            "Определи для каждой ветки местного отсоса ближайшее помещение.",
+            images=[img], timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 — тот же принцип, что extract_mo_table_page выше:
+        # сбой одной страницы РД не должен ронять весь прогон. Деградация
+        # ("на этом листе веток не нашли") уже была легитимным исходом для
+        # неразбираемого ответа — обрабатываем сбой вызова так же.
+        return []
     if not result or not isinstance(result.get("branches"), list):
         return []
     return result["branches"]

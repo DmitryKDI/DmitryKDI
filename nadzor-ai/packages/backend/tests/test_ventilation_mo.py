@@ -116,8 +116,42 @@ def test_extract_mo_table_page_empty_when_response_unusable():
     finally:
         ventilation_mo.call_llm_json = orig
         ventilation_mo.render_page_to_data_url = orig_render
-    assert result == {"rooms": [], "rooms_seen": []}
+    assert result == {"rooms": [], "rooms_seen": [], "error": None}
     print("OK: неразбираемый ответ даёт пустые списки, не падает")
+
+
+def test_extract_mo_table_page_reports_error_instead_of_crashing():
+    """Реальный найденный баг: невалидный api_key (или любой другой сбой
+    вызова — сеть, таймаут) раньше пробрасывался наружу необработанным и
+    обрушивал ВЕСЬ --kind all/run_triangulated, хотя соседние ЛЛМ-вызовы
+    того же прогона (verdict_synthesis.py, requirement_text_verify.py)
+    уже ловят исключение на этом же месте."""
+    def raising_call(*a, **kw):
+        raise ValueError("Не удалось разобрать api_key: invalid start byte")
+    orig = _patch(ventilation_mo, "call_llm_json", raising_call)
+    orig_render = _patch(ventilation_mo, "render_page_to_data_url", lambda *a, **kw: "data:image/png;base64,x")
+    try:
+        result = extract_mo_table_page("pd.pdf", 79, config=None)
+    finally:
+        ventilation_mo.call_llm_json = orig
+        ventilation_mo.render_page_to_data_url = orig_render
+    assert result["rooms"] == [] and result["rooms_seen"] == []
+    assert result["error"] and "invalid start byte" in result["error"]
+    print("OK: сбой вызова ИИ на странице таблицы возвращается видимой ошибкой, не падает")
+
+
+def test_extract_branch_locations_returns_empty_instead_of_crashing():
+    def raising_call(*a, **kw):
+        raise ValueError("Не удалось разобрать api_key: invalid start byte")
+    orig = _patch(ventilation_mo, "call_llm_json", raising_call)
+    orig_render = _patch(ventilation_mo, "render_page_to_data_url", lambda *a, **kw: "data:image/png;base64,x")
+    try:
+        branches = extract_branch_locations("rd.pdf", 18, config=None)
+    finally:
+        ventilation_mo.call_llm_json = orig
+        ventilation_mo.render_page_to_data_url = orig_render
+    assert branches == []
+    print("OK: сбой вызова ИИ на листе РД не роняет разбор веток, просто ничего не находит")
 
 
 def test_find_uncovered_rooms_flags_room_314_missing_from_real_table():
@@ -226,6 +260,8 @@ if __name__ == "__main__":
     test_is_mo_table_page_matches_other_authors_wording()
     test_extract_mo_table_page_parses_rooms()
     test_extract_mo_table_page_empty_when_response_unusable()
+    test_extract_mo_table_page_reports_error_instead_of_crashing()
+    test_extract_branch_locations_returns_empty_instead_of_crashing()
     test_find_uncovered_rooms_flags_room_314_missing_from_real_table()
     test_find_uncovered_rooms_empty_when_all_present()
     test_extract_branch_locations_parses_branches()

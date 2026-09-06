@@ -22,7 +22,7 @@ import argparse
 import os
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -569,6 +569,11 @@ def run_triangulated(
             _emit(f"=== Сверка местных отсосов ПД↔РД (Г.58/Г.65, авто по помещениям routing) ===")
             _emit(f"Листов «Таблица воздухообменов» найдено: {mo_result.table_pages_found}, "
                   f"помещений с местными отсосами: {len(mo_result.pd_entries)}")
+            if mo_result.page_errors:
+                _emit(f"ВНИМАНИЕ: сбой вызова ИИ на {len(mo_result.page_errors)} листе(ах) таблицы — "
+                      f"эти страницы НЕ учтены выше (не «пусто», а «не прочитано»):")
+                for err in mo_result.page_errors:
+                    _emit(f"  {err}")
             if mo_result.uncovered:
                 _emit(f"Запрошенные помещения не найдены в таблице воздухообменов ВООБЩЕ "
                       f"(Г.60): {', '.join(mo_result.uncovered)}")
@@ -842,6 +847,7 @@ class MoCheckResult:
     candidate_pages_count: int
     rd_branches_count: int
     findings: list
+    page_errors: list[str] = field(default_factory=list)
 
 
 def _run_mo_cross_check(
@@ -850,6 +856,7 @@ def _run_mo_cross_check(
     pd_entries: list[dict] = []
     rooms_seen_all: set[str] = set()
     table_pages_found = 0
+    page_errors: list[str] = []
     for path in before_paths:
         text_facts = _load_text_facts([path])
         pages = sorted({f["page"] for f in text_facts})
@@ -858,6 +865,9 @@ def _run_mo_cross_check(
                 continue
             table_pages_found += 1
             page_result = extract_mo_table_page(path, page, llm_config)
+            if page_result.get("error"):
+                page_errors.append(f"{Path(path).name} стр.{page}: {page_result['error']}")
+                continue
             pd_entries.extend(page_result["rooms"])
             rooms_seen_all.update(page_result["rooms_seen"])
     if room_keys:
@@ -871,7 +881,7 @@ def _run_mo_cross_check(
     uncovered = find_uncovered_rooms(room_keys, rooms_seen_all) if room_keys and table_pages_found else []
 
     if not pd_entries:
-        return MoCheckResult(table_pages_found, pd_entries, rooms_seen_all, uncovered, 0, 0, [])
+        return MoCheckResult(table_pages_found, pd_entries, rooms_seen_all, uncovered, 0, 0, [], page_errors)
 
     room_index = _registry(after_paths, "room_facts")
     candidate_pages: set[tuple[str, int]] = set()
@@ -885,7 +895,7 @@ def _run_mo_cross_check(
 
     findings = cross_check_mo_branches(pd_entries, rd_branches)
     return MoCheckResult(table_pages_found, pd_entries, rooms_seen_all, uncovered,
-                          len(candidate_pages), len(rd_branches), findings)
+                          len(candidate_pages), len(rd_branches), findings, page_errors)
 
 
 def run_mo_check(
@@ -919,6 +929,11 @@ def run_mo_check(
         _emit(f"=== Сверка местных отсосов ПД↔РД (Г.58) ===")
         _emit(f"Листов «Таблица воздухообменов» найдено: {result.table_pages_found}, "
               f"помещений с местными отсосами: {len(result.pd_entries)}")
+        if result.page_errors:
+            _emit(f"ВНИМАНИЕ: сбой вызова ИИ на {len(result.page_errors)} листе(ах) таблицы — "
+                  f"эти страницы НЕ учтены ниже (не «пусто», а «не прочитано»):")
+            for err in result.page_errors:
+                _emit(f"  {err}")
         if result.uncovered:
             _emit(f"Запрошенные помещения не найдены в таблице воздухообменов "
                   f"ВООБЩЕ (не строкой, а не пустым столбцом М.О. — Г.60, нужен "
