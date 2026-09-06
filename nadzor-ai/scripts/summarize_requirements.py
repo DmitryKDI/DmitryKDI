@@ -30,17 +30,33 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
+from app.classification import classify_document, open_pdf  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     extract_general_requirements,
     render_requirements_summary,
 )
-from app.set_overview import render_volume_summary, summarize_set  # noqa: E402
+from app.set_overview import official_section_label  # noqa: E402
 from registry_diff import (  # noqa: E402
     _emit_general_requirements,
     _extract_requirements_llm_visible,
     _load_text_facts,
 )
+
+
+def _identity_line(path: str) -> str:
+    """Одна строка «что это за файл» — раздел и число страниц, БЕЗ числа
+    помещений/оборудования (Г.81: этот скрипт про текстовые требования,
+    счётчики помещений из другой, не запущенной здесь механики создавали
+    ложное впечатление, что регистры помещений — приоритет)."""
+    classification = classify_document(path, Path(path).name)
+    label = official_section_label(classification.discipline_code)
+    code = f" [{classification.discipline_code}]" if classification.discipline_code else ""
+    try:
+        pages = open_pdf(path).page_count
+    except Exception:  # noqa: BLE001 — не смогли открыть, но это не повод не показать хоть имя файла
+        pages = "?"
+    return f"  {Path(path).name} — {label}{code} ({classification.source}), {pages} стр."
 
 
 def main() -> None:
@@ -51,7 +67,6 @@ def main() -> None:
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41), не только в конце")
-    parser.add_argument("--no-overview", action="store_true", help="Не печатать обзор тома в начале")
     args = parser.parse_args()
 
     llm_config = LlmConfig(provider=args.provider, api_key=args.api_key, base_url=args.base_url, model=args.model)
@@ -65,15 +80,11 @@ def main() -> None:
             out_f.flush()
 
     try:
-        if not args.no_overview:
-            # Только сторона ПД — никакого "РД/ИД" и никакого сравнения
-            # разделов ПД<->РД (Г.80: РД на этом этапе нет вообще, а
-            # run_overview печатал бы фиктивную "сторону РД", повторяющую
-            # ПД саму по себе, что и порождало путаницу "ищет сравнение с
-            # РД, хотя её нет").
-            _emit(render_volume_summary(summarize_set(args.pd), "ПД"))
-            _emit("")
-
+        # Г.81 — прямое указание пользователя: требования — то, зачем
+        # вообще запущен этот скрипт, идут ПЕРВЫМИ. Всё остальное (какой
+        # это файл, сколько страниц) — только справочный контекст, чтобы
+        # соотнести требования с объёмом тома, не самостоятельный
+        # результат — печатается ПОСЛЕ, не перед требованиями.
         pd_text_facts = _load_text_facts(args.pd)
 
         _emit("=== Требования с кодом (форма 1/2, Г.32/36) ===")
@@ -84,6 +95,11 @@ def main() -> None:
         _emit("=== Общий каталог требований и способов работы (форма 3, Г.47, отфильтрован ЛЛМ Г.69/70) ===")
         general_requirements = extract_general_requirements(pd_text_facts)
         _emit_general_requirements(general_requirements, llm_config, _emit)
+
+        _emit("")
+        _emit("=== Справка: обработанный(е) файл(ы) ===")
+        for path in args.pd:
+            _emit(_identity_line(path))
     finally:
         if out_f:
             out_f.close()
