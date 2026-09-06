@@ -139,17 +139,43 @@ def png_bytes_to_data_url(png_bytes: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
 
 
+# Г.78 — реальный найденный сбой: пачка последовательных вызовов
+# (requirement_text_verify.py делает по вызову на КАЖДУЮ оставшуюся
+# страницу РД для каждого требования — на комплекте с 53+ требованиями и
+# десятком страниц это сотни вызовов подряд) упирается в лимит частоты
+# GigaChat раньше, чем в реальный сбой сети — 429 у КР/НВ (1540 и 14
+# сбоев) на том же прогоне, где ОВ/АР с меньшим числом вызовов отработали
+# чисто. Без ретрая это неотличимо от честного "провайдер недоступен".
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 2.0
+
+
 def _post_json(url: str, **kwargs) -> httpx.Response:
     """httpx.post + raise_for_status, но с телом ответа в тексте ошибки —
     провайдер обычно объясняет причину 4xx (неверная модель, формат запроса),
     а голый код без текста превращает диагностику в гадание вслепую (реальный
-    случай: 400 от Ollama на vision-запросе, причина ясна только из тела)."""
-    resp = httpx.post(url, **kwargs)
-    try:
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        raise httpx.HTTPStatusError(f"{e}\nОтвет провайдера: {resp.text[:2000]}", request=e.request, response=e.response) from e
-    return resp
+    случай: 400 от Ollama на vision-запросе, причина ясна только из тела).
+
+    429 (Too Many Requests) — отдельная ветка: несколько попыток с
+    задержкой (`Retry-After` от провайдера, если есть, иначе экспоненциально
+    растущая пауза) вместо немедленного отказа — см. Г.78."""
+    attempt = 0
+    while True:
+        resp = httpx.post(url, **kwargs)
+        if resp.status_code == 429 and attempt < _RATE_LIMIT_MAX_RETRIES:
+            retry_after = resp.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+            except ValueError:
+                delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+            time.sleep(delay)
+            attempt += 1
+            continue
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise httpx.HTTPStatusError(f"{e}\nОтвет провайдера: {resp.text[:2000]}", request=e.request, response=e.response) from e
+        return resp
 
 
 def call_llm_json(

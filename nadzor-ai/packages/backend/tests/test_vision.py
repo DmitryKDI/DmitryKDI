@@ -21,8 +21,11 @@ def test_render_page_to_data_url_real_pdf():
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = ""
 
     def raise_for_status(self):
         pass

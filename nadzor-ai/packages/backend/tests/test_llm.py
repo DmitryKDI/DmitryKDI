@@ -28,8 +28,11 @@ def test_extract_json_object_invalid_returns_none():
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = ""
 
     def raise_for_status(self):
         pass
@@ -118,6 +121,54 @@ def test_gigachat_gets_token_uploads_image_then_calls_chat_with_attachment(monke
     assert chat_call["json"]["messages"][1]["attachments"] == ["file-1"]
     assert "attachments" not in chat_call["json"]["messages"][0]
     print("OK: GigaChat получает токен, грузит файл и ссылается на него через attachments")
+
+
+def test_post_json_retries_on_429_then_succeeds(monkeypatch):
+    """Г.78 — реальный найденный сбой: пачка последовательных вызовов
+    (requirement_text_verify.py делает по вызову на каждую страницу РД для
+    каждого оставшегося требования — сотни вызовов подряд на комплекте с
+    полсотней требований) упирается в лимит частоты GigaChat раньше, чем в
+    реальный сетевой сбой — 429 без ретрая выглядел неотличимо от
+    "провайдер недоступен"."""
+    monkeypatch.setattr(llm_module, "_RATE_LIMIT_BASE_DELAY", 0.0)  # не ждать реально в тесте
+    llm_module._gigachat_token_cache.clear()
+    attempts = {"oauth": 0}
+
+    def fake_post(url, json=None, data=None, files=None, headers=None, timeout=None, verify=None):
+        if url == llm_module.GIGACHAT_OAUTH_URL:
+            attempts["oauth"] += 1
+            if attempts["oauth"] < 3:
+                return _FakeResponse({}, status_code=429, headers={"Retry-After": "0"})
+            return _FakeResponse({"access_token": "tok-1", "expires_at": (__import__("time").time() + 1800) * 1000})
+        if url.endswith("/chat/completions"):
+            return _FakeResponse({"choices": [{"message": {"content": '{"significant": []}'}}]})
+        raise AssertionError(f"unexpected url: {url}")
+
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        config = LlmConfig(provider="gigachat", api_key="dGVzdC1pZDp0ZXN0LXNlY3JldA==", model="GigaChat-2")
+        result = call_llm_json(config, "система", "текст")
+
+    assert result == {"significant": []}
+    assert attempts["oauth"] == 3, "должен был повторить запрос токена после двух 429, не сдаться сразу"
+    print("OK: 429 (rate limit) от провайдера повторяется с задержкой, а не считается немедленным сбоем")
+
+
+def test_post_json_gives_up_after_max_retries_on_persistent_429(monkeypatch):
+    monkeypatch.setattr(llm_module, "_RATE_LIMIT_BASE_DELAY", 0.0)
+    llm_module._gigachat_token_cache.clear()
+
+    def fake_post(url, json=None, data=None, files=None, headers=None, timeout=None, verify=None):
+        return _FakeResponse({}, status_code=429, headers={})
+
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        config = LlmConfig(provider="gigachat", api_key="dGVzdC1pZDp0ZXN0LXNlY3JldA==", model="GigaChat-2")
+        try:
+            call_llm_json(config, "система", "текст")
+            raised = False
+        except Exception:
+            raised = True
+    assert raised, "постоянный 429 обязан в итоге дать честную ошибку, не бесконечный ретрай и не тихий успех"
+    print("OK: постоянный rate-limit в итоге даёт явную ошибку после ограниченного числа попыток")
 
 
 def test_gigachat_caches_token_across_two_calls(monkeypatch):
