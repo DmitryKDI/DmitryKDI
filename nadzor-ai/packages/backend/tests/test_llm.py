@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import llm as llm_module
@@ -151,6 +153,33 @@ def test_post_json_retries_on_429_then_succeeds(monkeypatch):
     assert result == {"significant": []}
     assert attempts["oauth"] == 3, "должен был повторить запрос токена после двух 429, не сдаться сразу"
     print("OK: 429 (rate limit) от провайдера повторяется с задержкой, а не считается немедленным сбоем")
+
+
+def test_post_json_caps_retry_after_delay(monkeypatch):
+    """Г.82 (независимый аудит Opus) — `Retry-After` не имел верхней
+    границы: провайдер, приславший `Retry-After: 3600`, заставил бы ждать
+    час на КАЖДОЙ из попыток, молча, без единой строки лога. Проверяем,
+    что реально переданная в `time.sleep` задержка не превышает потолок,
+    даже когда провайдер прислал заведомо огромное значение."""
+    llm_module._gigachat_token_cache.clear()
+    sleeps: list[float] = []
+    monkeypatch.setattr(llm_module.time, "sleep", lambda s: sleeps.append(s))
+
+    def fake_post(url, json=None, data=None, files=None, headers=None, timeout=None, verify=None):
+        if url == llm_module.GIGACHAT_OAUTH_URL:
+            return _FakeResponse({}, status_code=429, headers={"Retry-After": "3600"})
+        raise AssertionError(f"unexpected url: {url}")
+
+    with patch("app.llm.httpx.post", side_effect=fake_post):
+        config = LlmConfig(provider="gigachat", api_key="dGVzdC1pZDp0ZXN0LXNlY3JldA==", model="GigaChat-2")
+        with pytest.raises(Exception):
+            call_llm_json(config, "система", "текст")
+
+    assert sleeps, "должен был хотя бы раз попытаться подождать перед ретраем"
+    assert all(s <= llm_module._RATE_LIMIT_MAX_DELAY for s in sleeps), (
+        f"задержка не должна превышать потолок {llm_module._RATE_LIMIT_MAX_DELAY}с, получили {sleeps}"
+    )
+    print("OK: Retry-After от провайдера обрезается потолком, не может усыпить прогон на часы")
 
 
 def test_post_json_gives_up_after_max_retries_on_persistent_429(monkeypatch):

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from app.requirement_registry import (  # noqa: E402
 )
 from app.set_overview import official_section_label  # noqa: E402
 from registry_diff import (  # noqa: E402
+    _PROVIDER_ENV_KEY,
     _emit_general_requirements,
     _extract_requirements_llm_visible,
     _load_text_facts,
@@ -53,7 +55,11 @@ def _identity_line(path: str) -> str:
     label = official_section_label(classification.discipline_code)
     code = f" [{classification.discipline_code}]" if classification.discipline_code else ""
     try:
-        pages = open_pdf(path).page_count
+        doc = open_pdf(path)
+        try:
+            pages = doc.page_count
+        finally:
+            doc.close()
     except Exception:  # noqa: BLE001 — не смогли открыть, но это не повод не показать хоть имя файла
         pages = "?"
     return f"  {Path(path).name} — {label}{code} ({classification.source}), {pages} стр."
@@ -63,13 +69,39 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pd", action="append", required=True, help="Файл(ы) ПД (можно несколько раз)")
     parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
-    parser.add_argument("--api-key", required=True, help="Ключ провайдера — без него смысла в этом скрипте нет (фильтр только через ИИ)")
+    parser.add_argument(
+        "--api-key", default="",
+        help="Ключ провайдера — без него смысла в этом скрипте нет (фильтр только через ИИ). "
+             f"Если не передан, берётся из переменной окружения по провайдеру "
+             f"({', '.join(_PROVIDER_ENV_KEY.values())}), как в registry_diff.py.",
+    )
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41), не только в конце")
     args = parser.parse_args()
 
-    llm_config = LlmConfig(provider=args.provider, api_key=args.api_key, base_url=args.base_url, model=args.model)
+    # Г.82 (независимый аудит Opus, критическая находка №1) — раньше
+    # несуществующий путь в --pd тихо давал чистый отчёт "0 требований" с
+    # exit=0, неотличимый от реального результата "в документе нет
+    # требований". Явная ошибка вместо правдоподобного, но лживого отчёта.
+    missing = [p for p in args.pd if not Path(p).is_file()]
+    if missing:
+        sys.exit("ОШИБКА: файл(ы) --pd не найдены, отчёт НЕ построен (не путать с "
+                  "«в документе нет требований»):\n" + "\n".join(f"  {p}" for p in missing))
+
+    # Г.82 (находка №2) — без этого фолбэка `CURRENT-TASK.md`/`vision-keys.env`
+    # (GIGACHAT_CREDENTIALS, GIGACHAT_CA_BUNDLE) не имели никакого эффекта на
+    # этот скрипт: --api-key был обязательным аргументом без чтения окружения,
+    # в отличие от registry_diff.py (см. _PROVIDER_ENV_KEY, строка ~1023 там).
+    api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
+    if not api_key:
+        sys.exit(
+            f"ОШИБКА: нет ключа провайдера «{args.provider}» — передайте --api-key ИЛИ "
+            f"задайте переменную окружения {_PROVIDER_ENV_KEY.get(args.provider, '?')} "
+            f"(например, через vision-keys.env)."
+        )
+
+    llm_config = LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
 
     out_f = open(args.out, "a", encoding="utf-8") if args.out else None
 

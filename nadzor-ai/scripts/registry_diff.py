@@ -252,9 +252,21 @@ def _emit_general_requirements(general_requirements: list, llm_config: Optional[
     (`RUN-NO-LLM.bat` не теряет функциональность). Общая точка для
     `run_triangulated`/`run_requirements` — раньше обе звали
     `render_general_requirements_summary` напрямую и дублировали бы эту
-    развилку по отдельности."""
+    развилку по отдельности.
+
+    Г.82 (независимый аудит Opus) — `on_batch_error` раньше был объявлен в
+    `classify_general_requirements`, но здесь не прокидывался вообще (в
+    отличие от `triangulated_pipeline.py`): сбойная пачка была видна только
+    как итоговая строка "ВНИМАНИЕ: N кандидатов НЕ получили вердикт" в
+    самом конце, без немедленного сообщения по каждой пачке (Г.41)."""
     if llm_config is not None:
-        verdicts = classify_general_requirements(general_requirements, llm_config)
+        def _on_filter_error(batch: list, exc: Exception) -> None:
+            first_page = batch[0].page if batch else "?"
+            _emit(f"  [сбой пачки ЛЛМ-фильтра формы 3, стр.{first_page}+]: {exc!r}")
+
+        verdicts = classify_general_requirements(
+            general_requirements, llm_config, on_batch_error=_on_filter_error,
+        )
         _emit(render_general_requirements_summary_llm_filtered(verdicts))
     else:
         _emit(render_general_requirements_summary(general_requirements))

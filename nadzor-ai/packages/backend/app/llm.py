@@ -146,8 +146,16 @@ def png_bytes_to_data_url(png_bytes: bytes) -> str:
 # GigaChat раньше, чем в реальный сбой сети — 429 у КР/НВ (1540 и 14
 # сбоев) на том же прогоне, где ОВ/АР с меньшим числом вызовов отработали
 # чисто. Без ретрая это неотличимо от честного "провайдер недоступен".
+# Г.82 (независимый аудит Opus) — реальная находка: `Retry-After` не
+# проверялся на верхнюю границу — провайдер, приславший, например,
+# `Retry-After: 3600`, заставил бы один вызов молча спать час, а с тремя
+# попытками подряд — до нескольких часов, без единой строки лога о том,
+# что происходит. Потолок ниже не устраняет 429 как таковой (для этого и
+# есть ретраи), а не даёт одному сбойному ответу провайдера превратить
+# прогон в многочасовое зависание, неотличимое от простого "не отвечает".
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY = 2.0
+_RATE_LIMIT_MAX_DELAY = 30.0
 
 
 def _post_json(url: str, **kwargs) -> httpx.Response:
@@ -168,6 +176,7 @@ def _post_json(url: str, **kwargs) -> httpx.Response:
                 delay = float(retry_after) if retry_after else _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
             except ValueError:
                 delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+            delay = min(delay, _RATE_LIMIT_MAX_DELAY)
             time.sleep(delay)
             attempt += 1
             continue

@@ -568,7 +568,7 @@ def test_emit_general_requirements_uses_llm_filter_when_config_present(monkeypat
     reqs = [Requirement(rooms=[], page=1, sentence="Экраны должны быть негорючими."),
             Requirement(rooms=[], page=2, sentence="Работы выполнять в соответствии с ПУЭ.")]
 
-    def fake_classify(requirements, config, batch_size=20, timeout=90.0):
+    def fake_classify(requirements, config, batch_size=20, timeout=90.0, on_batch_error=None):
         return [
             RequirementVerdict(requirement=requirements[0], is_requirement=True, reasoning="ok"),
             RequirementVerdict(requirement=requirements[1], is_requirement=False, reasoning="голая ссылка на норму"),
@@ -582,6 +582,27 @@ def test_emit_general_requirements_uses_llm_filter_when_config_present(monkeypat
     assert "оставлено: 1, отсеяно как шум: 1" in text
     assert "голая ссылка на норму" in text
     print("OK: с ключом провайдера каталог формы 3 идёт через ЛЛМ-фильтр (Г.69)")
+
+
+def test_emit_general_requirements_wires_on_batch_error(monkeypatch):
+    """Г.82 (независимый аудит Opus) — `on_batch_error` был объявлен в
+    `classify_general_requirements`, но `_emit_general_requirements`
+    (в отличие от `triangulated_pipeline.py`) его не передавал вообще:
+    сбой пачки был виден только итоговой строкой в конце, не сразу (Г.41)."""
+    reqs = [Requirement(rooms=[], page=5, sentence="Экраны должны быть негорючими.")]
+
+    def fake_classify(requirements, config, batch_size=20, timeout=90.0, on_batch_error=None):
+        assert on_batch_error is not None, "on_batch_error должен прокидываться, не только объявляться"
+        on_batch_error(requirements, RuntimeError("сеть недоступна"))
+        return [RequirementVerdict(requirement=requirements[0], is_requirement=True, reasoning="ok")]
+
+    monkeypatch.setattr(registry_diff, "classify_general_requirements", fake_classify)
+    lines: list[str] = []
+    _emit_general_requirements(reqs, LlmConfig(provider="anthropic"), lines.append)
+    text = "\n".join(lines)
+    assert "сбой пачки ЛЛМ-фильтра формы 3, стр.5" in text
+    assert "сеть недоступна" in text
+    print("OK: сбой пачки ЛЛМ-фильтра формы 3 печатается сразу, не только итоговой строкой")
 
 
 if __name__ == "__main__":
