@@ -225,6 +225,27 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     return out
 
 
+def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: LlmConfig, _emit) -> list:
+    """Обёртка над `extract_requirements_llm` с видимым счётчиком сбоев
+    (Г.77): сбой ВСЕХ пачек (сеть/ключ/сертификат) раньше давал честный, но
+    неотличимый от «в документе нет требований» пустой список — реально
+    наблюдалось на живом прогоне (38-страничный том, «извлечено: 0» при
+    системной SSL-ошибке GigaChat). Печатает предупреждение сразу по
+    каждой упавшей пачке (Г.41) и явно считает, сколько всего не удалось."""
+    failed_pages: list[int] = []
+
+    def _on_error(first_page: int, exc: Exception) -> None:
+        failed_pages.append(first_page)
+        _emit(f"  [сбой пачки требований, стр.{first_page}+]: {exc!r}")
+
+    result = extract_requirements_llm(pd_text_facts, llm_config, on_chunk_error=_on_error)
+    if failed_pages:
+        _emit(f"ВНИМАНИЕ: извлечение требований (Г.36) — {len(failed_pages)} пачек(и) вызова ЛЛМ "
+              f"упали (см. выше) — итоговый список требований по ним НЕ пополнен, "
+              f"это не значит, что там нет требований.")
+    return result
+
+
 def _emit_general_requirements(general_requirements: list, llm_config: Optional[LlmConfig], _emit) -> None:
     """Печатает каталог формы 3 (Г.47) — через ЛЛМ-фильтр (Г.69), если есть
     ключ провайдера, иначе как раньше, сырым regex-каталогом
@@ -490,7 +511,7 @@ def run_triangulated(
         _emit(render_completeness_report(composition_result))
 
         if requirements_llm_config is not None:
-            pd_requirements = extract_requirements_llm(pd_text_facts, requirements_llm_config)
+            pd_requirements = _extract_requirements_llm_visible(pd_text_facts, requirements_llm_config, _emit)
         else:
             pd_requirements = extract_requirements(pd_text_facts)
         _emit(render_requirements_summary(pd_requirements))
@@ -737,7 +758,7 @@ def run_requirements(
     try:
         pd_text_facts = _load_text_facts(before_paths)
         if llm_config is not None:
-            pd_requirements = extract_requirements_llm(pd_text_facts, llm_config)
+            pd_requirements = _extract_requirements_llm_visible(pd_text_facts, llm_config, _emit)
         else:
             pd_requirements = extract_requirements(pd_text_facts)
         _emit(render_requirements_summary(pd_requirements))

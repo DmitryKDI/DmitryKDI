@@ -26,7 +26,7 @@
 умолчанию, когда ключ есть (RUN-VISION.bat)."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from .llm import LlmConfig, call_llm_json
 from .requirement_registry import Requirement
@@ -120,6 +120,7 @@ def extract_requirements_llm(
     discipline: Optional[str] = None,
     max_chars_per_call: int = 6000,
     timeout: float = 120.0,
+    on_chunk_error: Optional[Callable[[int, Exception], None]] = None,
 ) -> list[Requirement]:
     """Требования из ЛЮБОЙ прозы ПД — постранично пачками под потолок
     символов, каждая пачка отдельным вызовом ЛЛМ. Сбой одной пачки (сеть,
@@ -130,13 +131,21 @@ def extract_requirements_llm(
     `discipline` — код раздела (ОВ, ЭОМ, КР…), если известен: фильтрует
     блок известных нарушений в промпте (`known_violations.json`) до
     относящихся к этому разделу и общих; без него — только общие (`*`)."""
+    # Г.77 — реальный найденный пробел: до `on_chunk_error` сбой ВСЕХ пачек
+    # (например, системная SSL-ошибка сертификата GigaChat, наблюдённая на
+    # реальном прогоне) давал на выходе честный пустой список — НЕОТЛИЧИМО
+    # от «в документе действительно нет требований» на 38-страничном томе.
+    # `render_requirements_summary` печатала бы «извлечено: 0» точно так
+    # же в обоих случаях — то самое молчание, что Г.10 запрещает.
     system_prompt = requirement_extraction_system_prompt(discipline)
     out: list[Requirement] = []
     for chunk in _chunk_text_facts(text_facts, max_chars_per_call):
         user_text = _render_chunk(chunk)
         try:
             result = call_llm_json(config, system_prompt, user_text, timeout=timeout)
-        except Exception:  # noqa: BLE001 — сбой одной пачки не должен ронять извлечение по остальным
+        except Exception as exc:  # noqa: BLE001 — сбой одной пачки не должен ронять извлечение по остальным
+            if on_chunk_error:
+                on_chunk_error(chunk[0]["page"] if chunk else -1, exc)
             continue
         if not result:
             continue

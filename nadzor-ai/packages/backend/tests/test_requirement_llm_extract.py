@@ -189,6 +189,33 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
     print("OK: сбой одной пачки не теряет требования из остальных пачек")
 
 
+def test_on_chunk_error_callback_fires_with_page_and_exception():
+    """Г.77 — реальный найденный пробел: до этого колбэка сбой ВСЕХ пачек
+    (например, системная SSL-ошибка сертификата GigaChat, реально
+    наблюдённая на живом прогоне) давал честный, но НЕВИДИМЫЙ пустой
+    список — снаружи неотличимо от «в документе действительно нет
+    требований». Колбэк даёт вызывающему коду шанс показать это явно."""
+    facts = [tf(5, "a" * 4000), tf(9, "b" * 4000)]
+
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+        raise ConnectionError("сеть недоступна")
+
+    errors = []
+    original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
+    try:
+        reqs = extract_requirements_llm(
+            facts, config=None, max_chars_per_call=6000,
+            on_chunk_error=lambda page, exc: errors.append((page, exc)),
+        )
+    finally:
+        requirement_llm_extract.call_llm_json = original
+
+    assert reqs == []
+    assert [page for page, _ in errors] == [5, 9]
+    assert all(isinstance(exc, ConnectionError) for _, exc in errors)
+    print("OK: сбой каждой пачки виден вызывающему коду через колбэк, а не только пустым списком")
+
+
 if __name__ == "__main__":
     test_system_prompt_carries_known_violations_block()
     test_system_prompt_valid_json_schema_after_substitution()
@@ -200,4 +227,5 @@ if __name__ == "__main__":
     test_extract_uses_chunk_first_page_when_model_omits_page()
     test_extract_empty_result_when_model_finds_nothing()
     test_extract_one_chunk_failure_does_not_lose_other_chunks()
+    test_on_chunk_error_callback_fires_with_page_and_exception()
     print("ALL PASS")

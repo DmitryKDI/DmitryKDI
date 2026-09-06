@@ -235,8 +235,21 @@ def run_triangulated_analysis(
 
     use_llm = llm_config is not None and bool(llm_config.api_key) and llm_config.provider not in ("", "local")
 
+    # Г.77 — реальная находка: сбой ВСЕХ пачек вызова ЛЛМ (сеть, ключ,
+    # SSL-сертификат — реально наблюдалось живьём) раньше давал пустой
+    # список требований, неотличимый от «в документе их правда нет».
+    # `llm_call_failures` копится сюда с обоих шагов ниже и попадает в JSON
+    # (`llm.call_failures`), чтобы такой сбой был виден клиенту, а не читался
+    # как «0 найдено».
+    llm_call_failures: list[str] = []
+
     if use_llm:
-        pd_requirements = extract_requirements_llm(pd_text_facts, llm_config)  # type: ignore[arg-type]
+        def _on_extract_error(page: int, exc: Exception) -> None:
+            llm_call_failures.append(f"requirements_llm_extract стр.{page}+: {exc!r}")
+
+        pd_requirements = extract_requirements_llm(  # type: ignore[arg-type]
+            pd_text_facts, llm_config, on_chunk_error=_on_extract_error,
+        )
     else:
         pd_requirements = extract_requirements(pd_text_facts)
         not_run.append("requirements_llm_extract: нет ключа ИИ — извлечение требований узким regex-путём (Г.36)")
@@ -255,7 +268,13 @@ def run_triangulated_analysis(
         # page_pair_comparison ниже). Реальный вызывающий каталог требований
         # без фильтра — то, что пользователь наблюдал как «текст не
         # отправлялся в ЛЛМ для анализа его смысла».
-        general_verdicts = classify_general_requirements(general_requirements, llm_config)  # type: ignore[arg-type]
+        def _on_filter_error(batch: list, exc: Exception) -> None:
+            first_page = batch[0].page if batch else -1
+            llm_call_failures.append(f"requirement_llm_filter стр.{first_page}+ ({len(batch)} шт.): {exc!r}")
+
+        general_verdicts = classify_general_requirements(  # type: ignore[arg-type]
+            general_requirements, llm_config, on_batch_error=_on_filter_error,
+        )
     else:
         not_run.append(
             "requirement_llm_filter (Г.69/70): нет ключа ИИ — каталог формы 3 показан "
@@ -320,6 +339,11 @@ def run_triangulated_analysis(
         "llm": {
             "used": use_llm,
             "provider": llm_config.provider if llm_config else None,
+            # Г.77 — видимый счётчик сбоев вызова (сеть/ключ/сертификат), а
+            # не только регистронезависимая тишина: непустой список здесь
+            # значит, что часть требований/фильтра НЕ является решением
+            # модели, а является дефолтом после сбоя связи.
+            "call_failures": llm_call_failures,
         },
         "not_run": not_run,
         "rooms": {

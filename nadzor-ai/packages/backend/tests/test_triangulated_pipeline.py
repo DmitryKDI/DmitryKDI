@@ -99,9 +99,9 @@ def test_general_requirements_go_through_llm_filter_when_key_present(tmp_path, m
     import app.triangulated_pipeline as pipeline
     from app.requirement_llm_filter import RequirementVerdict
 
-    monkeypatch.setattr(pipeline, "extract_requirements_llm", lambda text_facts, config: [])
+    monkeypatch.setattr(pipeline, "extract_requirements_llm", lambda text_facts, config, **kwargs: [])
 
-    def fake_classify(requirements, config):
+    def fake_classify(requirements, config, **kwargs):
         return [RequirementVerdict(requirement=r, is_requirement=True, reasoning="ok") for r in requirements]
 
     monkeypatch.setattr(pipeline, "classify_general_requirements", fake_classify)

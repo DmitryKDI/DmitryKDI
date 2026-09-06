@@ -197,6 +197,42 @@ def test_classify_handles_string_typed_booleans_from_provider():
     print("OK: строковые true/false от провайдера без строгой JSON-схемы разбираются верно")
 
 
+def test_on_batch_error_callback_fires_and_render_shows_no_verdict_warning():
+    """Г.77 — реальный найденный пробел: сбой ВСЕХ пачек (реально
+    наблюдалось: системная SSL-ошибка сертификата GigaChat) давал каждому
+    кандидату честный, но НЕВИДИМЫЙ фолбэк (is_requirement=True) —
+    невидимый потому что render печатает reasoning только для отсеянных, а
+    этот фолбэк всегда "оставлено". Снаружи 100% сбоев выглядело
+    неотличимо от «модель говорит true на всё» — ровно так и было
+    диагностировано на реальном прогоне, пока не подключили этот колбэк и
+    заголовок отчёта."""
+    reqs = [req(1, "первое"), req(2, "второе")]
+
+    def fake_call_raises(config, system_prompt, user_text, timeout=90.0):
+        raise ConnectionError("сеть недоступна")
+
+    errors = []
+    original = _patch(requirement_llm_filter, "call_llm_json", fake_call_raises)
+    try:
+        verdicts = classify_general_requirements(
+            reqs, _config(), on_batch_error=lambda batch, exc: errors.append((len(batch), exc)),
+        )
+    finally:
+        _patch(requirement_llm_filter, "call_llm_json", original)
+
+    assert errors == [(2, errors[0][1])]
+    assert isinstance(errors[0][1], ConnectionError)
+    assert all(v.is_requirement for v in verdicts)
+
+    text = render_general_requirements_summary_llm_filtered(verdicts)
+    assert "оставлено: 2" in text
+    assert "ВНИМАНИЕ: 2 из 2 кандидатов НЕ получили вердикт" in text, (
+        "без этой строки полный сбой связи неотличим от того, что модель "
+        "реально согласилась с обоими кандидатами"
+    )
+    print("OK: полный сбой вызова виден и через колбэк, и через заголовок отчёта — не читается как «требование подтверждено»")
+
+
 def test_render_filtered_summary_shows_counts_and_visible_noise_section():
     verdicts = [
         RequirementVerdict(requirement=req(9, "Экраны должны быть негорючими."),
@@ -230,6 +266,7 @@ if __name__ == "__main__":
     test_batch_failure_keeps_candidates_as_requirements_not_silently_dropped()
     test_classify_handles_missing_index_in_response_the_same_way()
     test_classify_handles_string_typed_booleans_from_provider()
+    test_on_batch_error_callback_fires_and_render_shows_no_verdict_warning()
     test_render_filtered_summary_shows_counts_and_visible_noise_section()
     test_render_filtered_summary_omits_noise_section_when_nothing_dropped()
     print("ALL PASS")

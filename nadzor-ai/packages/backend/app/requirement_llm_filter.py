@@ -85,6 +85,7 @@ GigaChat на 4 разделах «Школа-600» (236 кандидатов): 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 from .llm import LlmConfig, call_llm_json
 from .requirement_registry import Requirement
@@ -175,6 +176,10 @@ class RequirementVerdict:
     reasoning: str
 
 
+_NO_VERDICT_REASON = ("ЛЛМ не дала вердикт по этому пункту (сбой вызова или "
+                      "пропуск в ответе) — оставлено как требование, не выброшено молча")
+
+
 def _chunk_requirements(requirements: list[Requirement], batch_size: int) -> list[list[Requirement]]:
     return [requirements[i:i + batch_size] for i in range(0, len(requirements), batch_size)]
 
@@ -213,17 +218,35 @@ def classify_general_requirements(
     config: LlmConfig,
     batch_size: int = 20,
     timeout: float = 90.0,
+    on_batch_error: Optional[Callable[[list[Requirement], Exception], None]] = None,
 ) -> list[RequirementVerdict]:
     """Классифицирует ВЕСЬ список кандидатов формы 3 пачками по
     `batch_size`. Порядок сохраняется (индекс в результате соответствует
-    порядку во входном списке, не порядку ответа модели)."""
+    порядку во входном списке, не порядку ответа модели).
+
+    Г.77 — реальный найденный пробел: сбой ВЕЙ пачки (например, системная
+    SSL-ошибка сертификата GigaChat, реально наблюдённая на живом прогоне)
+    давал каждому кандидату честный, но НЕВИДИМЫЙ фолбэк
+    (`is_requirement=True`, `reasoning="ЛЛМ не дала вердикт..."`) —
+    невидимый потому, что `render_general_requirements_summary_llm_filtered`
+    печатает `reasoning` ТОЛЬКО для отсеянных пунктов, а этот фолбэк всегда
+    `is_requirement=True`, то есть кандидат уходит в «оставленные» без
+    единого слова о том, что вердикт вообще не был получен. Снаружи 100%
+    сбоев выглядело неотличимо от «модель говорит true на всё». Теперь
+    видно двумя путями: `on_batch_error` — колбэк сразу при сбое пачки
+    (для вызывающего кода, который печатает по мере готовности, Г.41);
+    заголовок `render_general_requirements_summary_llm_filtered` —
+    агрегированный счётчик такого фолбэка, виден всегда, даже если колбэк
+    не передан."""
     out: list[RequirementVerdict] = []
     for batch in _chunk_requirements(requirements, batch_size):
         user_text = _render_batch(batch)
         try:
             result = call_llm_json(config, _FILTER_SYSTEM_PROMPT, user_text, timeout=timeout)
-        except Exception:  # noqa: BLE001 — сбой одной пачки не должен ронять весь фильтр
+        except Exception as exc:  # noqa: BLE001 — сбой одной пачки не должен ронять весь фильтр
             result = None
+            if on_batch_error:
+                on_batch_error(batch, exc)
         verdicts_by_index: dict[int, dict] = {}
         if result:
             for item in result.get("verdicts", []):
@@ -235,8 +258,7 @@ def classify_general_requirements(
             if item is None:
                 out.append(RequirementVerdict(
                     requirement=req, is_requirement=True,
-                    reasoning="ЛЛМ не дала вердикт по этому пункту (сбой вызова или "
-                              "пропуск в ответе) — оставлено как требование, не выброшено молча",
+                    reasoning=_NO_VERDICT_REASON,
                 ))
                 continue
             out.append(RequirementVerdict(
@@ -256,10 +278,20 @@ def render_general_requirements_summary_llm_filtered(verdicts: list[RequirementV
     может проверить решение."""
     kept = [v for v in verdicts if v.is_requirement]
     dropped = [v for v in verdicts if not v.is_requirement]
+    no_verdict = [v for v in verdicts if v.reasoning == _NO_VERDICT_REASON]
     lines = [
         f"=== Требования ПД после ЛЛМ-фильтра (Г.69, форма 3) — "
         f"кандидатов: {len(verdicts)}, оставлено: {len(kept)}, отсеяно как шум: {len(dropped)} ===",
     ]
+    if no_verdict:
+        # Г.77 — реальная находка: сбой вызова (сеть/ключ/SSL) у ВСЕХ пачек
+        # даёт то же "оставлено: N", что и настоящий вердикт модели "это
+        # требование" — без этой строки снаружи неотличимо от "модель
+        # ничего не отсеивает", хотя на деле она вообще не отвечала.
+        lines.append(f"ВНИМАНИЕ: {len(no_verdict)} из {len(verdicts)} кандидатов НЕ получили вердикт "
+                     f"ЛЛМ вообще (сбой вызова — сеть, ключ, сертификат) и включены как требования "
+                     f"по умолчанию, а не по решению модели — «оставлено» выше по этой причине "
+                     f"не значит «модель согласилась».")
     for i, v in enumerate(kept, 1):
         req = v.requirement
         rooms = f" — помещения: {', '.join(req.rooms)}" if req.rooms else ""
