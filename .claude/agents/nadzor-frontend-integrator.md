@@ -38,32 +38,45 @@ There are **two separate backends** in this repo, and they are easy to confuse:
    `app/requirement_llm_filter.py`, `app/table_registry.py`,
    `app/composition_registry.py`, `app/ventilation_mo.py`,
    `app/routing_diff.py`, `app/room_cross_check.py`, `app/equip_cross_check.py`
-   — all of it validated against real documents across 70+ iterations. **This
-   engine has zero HTTP exposure.** Its only caller is
-   `nadzor-ai/scripts/registry_diff.py`, a CLI script. `packages/backend/app/main.py`
-   currently only exposes `/documents`, `/analysis-runs`, `/findings`,
-   `/settings` — built early, before the triangulation/verdict_synthesis/
-   escalation work existed, and never updated to call it.
+   — all of it validated against real documents across 70+ iterations. Its
+   original, only caller was `nadzor-ai/scripts/registry_diff.py`, a CLI script
+   (`run_triangulated()`).
 
-**This is the actual reason the product looks like "a CRM shell with demo
-data" instead of "the real mechanism"**: the real mechanism was built and
-proven on the CLI side, and nobody connected it to an HTTP endpoint yet. Fixing
-that connection is usually the highest-leverage thing you can do here, more
-than any visual polish.
+   **Update, no longer zero HTTP exposure**: `POST /triangulated-runs` +
+   `GET /triangulated-runs/{id}`, backed by `app/triangulated_pipeline.py`
+   (`run_triangulated_analysis`), were added and wired to
+   `frontend/src/pages/AttentionMap.tsx` ("Карта внимания") — verified
+   end-to-end with real `nadzor_sample` files and a headless-browser test.
+   **But `triangulated_pipeline.py` is a PARTIAL mirror of the CLI's
+   `run_triangulated()`, not a full one** — check its imports before assuming
+   parity. As of this writing it covers: room/equipment cross-check,
+   composition/completeness, requirements extraction+cross-check, routing
+   graph, triangulation, escalation tickets, verdict synthesis. It does
+   **NOT** yet call: `requirement_llm_filter.py` (Г.69/70 — form-3 catalog
+   noise filter), `ventilation_mo.py` (Г.58/60/65 — local-exhaust cross-check,
+   ОВ-specific), `vision_page_compare.py`'s direct page-pair drawing
+   comparison (Г.51) or its no-code-requirement vision escalation (Г.33/35) —
+   all four require a real provider key and are comparatively expensive, so
+   confirm with the user whether a given screen actually needs them before
+   wiring more in (cost/latency tradeoff, same reasoning `scripts/registry_diff.py`
+   already documents for each of these blocks).
+
+**This is the actual reason the product used to look like "a CRM shell with
+demo data" instead of "the real mechanism"**: most of the real mechanism is
+now reachable over HTTP for one screen (Карта внимания); other screens may
+still be on demo/mocked data — check each screen's actual fetch calls before
+assuming it's wired, don't infer from this file alone (Г.11).
 
 ## Your mandate
 
-1. **Expose the real pipeline.** Add endpoints to `packages/backend/app/main.py`
-   (or a new router module imported into it) that call the real functions —
-   `registry_diff.run_triangulated`-equivalent logic (you may need to refactor
-   pieces of `scripts/registry_diff.py` into an importable function in
-   `packages/backend/app/`, since scripts aren't meant to be imported directly
-   — check for a testable core function first, e.g. `_run_mo_cross_check`-style
-   extraction is the established pattern in this codebase for "make the CLI
-   logic callable, not just runnable"). Return structured JSON the frontend can
-   render: triangulation confirmations/candidates, escalation tickets, verdicts,
-   the requirements catalog (raw or LLM-filtered per `requirement_llm_filter.py`
-   depending on whether a provider key is configured), completeness findings.
+1. **Expose more of the real pipeline where a screen needs it.** Extend
+   `packages/backend/app/triangulated_pipeline.py` (don't duplicate it) or add
+   new endpoints in `packages/backend/app/main.py` that call the real
+   functions still missing from the mirror (see the gap list above). Return
+   structured JSON the frontend can render: triangulation confirmations/
+   candidates, escalation tickets, verdicts, the requirements catalog (raw or
+   LLM-filtered per `requirement_llm_filter.py` depending on whether a
+   provider key is configured), completeness findings.
 2. **Wire the frontend to it, for real.** Replace demo/mocked data in the
    relevant `nadzor-ai/frontend/src/pages/*.tsx` screens with real `fetch`/API
    client calls against the new endpoints. Never leave a screen silently
