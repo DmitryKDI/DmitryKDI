@@ -1,0 +1,34 @@
+[project]
+name = "nadzor-ai"
+version = "0.1.0"
+description = "НАДЗОР.ИИ — модуль предиктивного строительного надзора"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["packages"]
+
+[tool.pytest.ini_options]
+pythonpath = ["packages", "."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "S", "A", "C4", "RET", "SIM"]
+ignore = [
+    "S101",   # assert в тестах допустим
+    "B008",   # Depends(...) в значении по умолчанию — штатный приём FastAPI
+    "UP042",  # str + Enum выбран осознанно: предсказуемая сериализация в JSON
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "E501"]
+"scripts/*" = ["S", "E501"]
+
+[tool.coverage.run]
+source = ["packages"]
+omit = ["*/tests/*"]

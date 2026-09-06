@@ -1,0 +1,83 @@
+name: nadzor-ai
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql+asyncpg://nadzor:${POSTGRES_PASSWORD:-nadzor}@db:5432/nadzor
+  APP_ROOT: /app
+  IDENTITY_PROVIDER: ${IDENTITY_PROVIDER:-mock}
+  URBAN_DATA_PROVIDER: ${URBAN_DATA_PROVIDER:-mock}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+  PYTHONPATH: /app/packages:/app
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: nadzor
+      POSTGRES_USER: nadzor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nadzor}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nadzor -d nadzor"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment: *api-env
+    volumes:
+      # Эталон нужен скрипту метрик; конфигурация и демо-комплект лежат внутри
+      # образа и принадлежат непривилегированному пользователю, иначе экран
+      # администратора не смог бы сохранить переключение провайдера.
+      - ./data/ground_truth.json:/app/data/ground_truth.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python scripts/gen_dataset.py --out data/demo/generated &&
+             alembic -c db/alembic.ini upgrade head &&
+             uvicorn api.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "5173:5173"
+
+  # Локальная модель в изолированном контуре — реализация LocalVLLM из
+  # llm_core (OpenAICompatProvider). Требует GPU, поэтому вынесена в отдельный
+  # профиль: `docker compose up` по умолчанию поднимается и без видеокарты,
+  # а `docker compose --profile local-llm up` добавляет и её.
+  vllm:
+    image: vllm/vllm-openai:latest
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    command: >
+      --model t-tech/T-lite-it-1.0
+      --max-model-len 32000
+      --gpu-memory-utilization 0.90
+      --host 0.0.0.0 --port 8000
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ports:
+      - "8100:8000"
+
+volumes:
+  pgdata:
+  vllm_cache:

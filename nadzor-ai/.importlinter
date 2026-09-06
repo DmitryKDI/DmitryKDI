@@ -1,0 +1,65 @@
+[importlinter]
+root_packages =
+    llm_core
+    documents
+    norms
+    analysis
+    integrations
+    audit
+    api
+
+[importlinter:contract:layers]
+name = Слои: интерфейсный слой выше прикладного, прикладной выше базового
+type = layers
+layers =
+    api
+    analysis
+    documents | norms | integrations | audit
+    llm_core
+
+[importlinter:contract:llm-core-independent]
+name = Пакет llm_core не знает о предметной области
+type = forbidden
+source_modules =
+    llm_core
+forbidden_modules =
+    analysis
+    documents
+    norms
+    api
+    integrations
+    audit
+
+[importlinter:contract:documents-independent]
+name = Пакет documents не зависит от анализа и интерфейсного слоя
+type = forbidden
+source_modules =
+    documents
+forbidden_modules =
+    analysis
+    api
+    integrations
+    norms
+
+[importlinter:contract:audit-independent]
+name = Журнал аудита не зависит ни от чего, кроме стандартной библиотеки
+type = forbidden
+source_modules =
+    audit
+forbidden_modules =
+    analysis
+    api
+    documents
+    integrations
+    llm_core
+    norms
+
+[importlinter:contract:integrations-independent]
+name = Внешние адаптеры не знают о движке анализа
+type = forbidden
+source_modules =
+    integrations
+forbidden_modules =
+    analysis
+    api
+    documents

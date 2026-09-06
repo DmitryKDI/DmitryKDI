@@ -1,0 +1,71 @@
+name: Проверки безопасности
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-analysis:
+    name: Статический анализ и зависимости
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Установка инструментов
+        run: pip install ruff bandit pip-audit cyclonedx-bom semgrep
+
+      - name: ruff — стиль и небезопасные конструкции
+        run: ruff check packages scripts
+
+      - name: bandit — уязвимости в коде
+        run: bandit -q -r packages -c pyproject.toml
+
+      - name: semgrep — правила OWASP и правила проекта
+        run: semgrep --config p/python --config p/owasp-top-ten --config .semgrep.yml --error packages
+
+      - name: pip-audit — уязвимости зависимостей
+        run: pip-audit -r requirements.txt
+
+      - name: Формирование SBOM в формате CycloneDX
+        run: cyclonedx-py requirements requirements.txt -o sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: nadzor-ai/sbom.json
+
+  secrets:
+    name: gitleaks — секреты в истории
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  containers:
+    name: trivy — уязвимости образов
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Сборка образа приложения
+        run: docker build -f nadzor-ai/docker/api.Dockerfile -t nadzor-api:ci nadzor-ai
+      - name: Сканирование образа
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: nadzor-api:ci
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true

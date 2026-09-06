@@ -1,0 +1,101 @@
+{
+  "_note": "Классификатор расхождений и нарушений. Региональный, подключается конфигом.",
+  "version": "1.0",
+  "classes": [
+    {"code": "D-01", "group": "Проектные решения", "transitions": ["T1", "T3"],
+     "title": "Изменение геометрических параметров несущей конструкции",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "СП 20.13330.2016", "clause": "8.2.2"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.4", "part": "2"}]},
+
+    {"code": "D-02", "group": "Материалы", "transitions": ["T1", "T3", "T5"],
+     "title": "Класс или марка материала ниже проектного",
+     "default_severity": "critical",
+     "norm_refs": [{"doc": "СП 63.13330.2018", "clause": "6.1.6"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.4", "part": "2"}]},
+
+    {"code": "D-03", "group": "Материалы", "transitions": ["T1", "T3", "T5"],
+     "title": "Замена класса арматуры",
+     "default_severity": "critical",
+     "norm_refs": [{"doc": "СП 63.13330.2018", "clause": "6.2.3"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.4", "part": "2"}]},
+
+    {"code": "D-04", "group": "Материалы", "transitions": ["T1", "T5"],
+     "title": "Снижение марки по морозостойкости или водонепроницаемости",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "ГОСТ 26633-2015", "clause": "4.3"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.4", "part": "2"}]},
+
+    {"code": "D-05", "group": "Хронология", "transitions": ["T5", "T6"],
+     "title": "Нарушение хронологии документов исполнительной документации",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "РД-11-05-2007", "clause": "4"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.5", "part": "5"}]},
+
+    {"code": "D-06", "group": "Хронология", "transitions": ["T5", "T6"],
+     "title": "Работы выполнены до оформления разрешительных документов",
+     "default_severity": "critical",
+     "norm_refs": [{"doc": "СП 48.13330.2019", "clause": "9.2"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.5", "part": "5"}]},
+
+    {"code": "D-07", "group": "Комплектность", "transitions": ["T5", "T6"],
+     "title": "Отсутствует протокол испытаний или документ о качестве",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "РД-11-02-2006", "clause": "7"}, {"doc": "СП 70.13330.2012", "clause": "5.3.5"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.5", "part": "5"}]},
+
+    {"code": "D-08", "group": "Комплектность", "transitions": ["T5", "T6"],
+     "title": "Не заполнены обязательные реквизиты формы",
+     "default_severity": "minor",
+     "norm_refs": [{"doc": "РД-11-02-2006", "clause": "5"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.5", "part": "5"}]},
+
+    {"code": "D-09", "group": "Проектные решения", "transitions": ["T1"],
+     "title": "Изменение объёмно-планировочного решения",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "ГрК РФ", "clause": "49 ч.3.8"}],
+     "legal_refs": []},
+
+    {"code": "D-10", "group": "Проектные решения", "transitions": ["T1", "T3"],
+     "title": "Изменение отметки или положения конструкции",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "СП 22.13330.2016", "clause": "5.6.4"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.4", "part": "2"}]},
+
+    {"code": "D-11", "group": "Объёмы", "transitions": ["T5"],
+     "title": "Расхождение объёмов работ с расчётным значением",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "СП 70.13330.2012", "clause": "5.18.2"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.5", "part": "5"}]},
+
+    {"code": "D-12", "group": "Армирование", "transitions": ["T3", "T5"],
+     "title": "Отступление по шагу или количеству арматуры",
+     "default_severity": "critical",
+     "norm_refs": [{"doc": "СП 63.13330.2018", "clause": "10.3.9"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.4", "part": "2"}]},
+
+    {"code": "D-13", "group": "Экспертиза", "transitions": ["T1", "T2"],
+     "title": "Изменение требует повторной экспертизы",
+     "default_severity": "critical",
+     "norm_refs": [{"doc": "ГрК РФ", "clause": "49 ч.3.8"}],
+     "legal_refs": []},
+
+    {"code": "D-14", "group": "Допуски", "transitions": ["T5", "T6"],
+     "title": "Свидетельство СРО недействительно на дату работ",
+     "default_severity": "critical",
+     "norm_refs": [{"doc": "ГрК РФ", "clause": "52 ч.2"}],
+     "legal_refs": [{"act": "КоАП РФ", "article": "9.5.1", "part": "1"}]},
+
+    {"code": "D-15", "group": "Экспертиза", "transitions": ["T2"],
+     "title": "Замечание экспертизы не учтено в проектной документации",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "ГрК РФ", "clause": "49 ч.3.8"}],
+     "legal_refs": []},
+
+    {"code": "D-90", "group": "Добросовестность", "transitions": ["T1","T2","T3","T4","T5","T6","T7"],
+     "title": "В документе обнаружена попытка воздействия на систему анализа",
+     "default_severity": "major",
+     "norm_refs": [{"doc": "ГрК РФ", "clause": "53"}],
+     "legal_refs": []}
+  ]
+}

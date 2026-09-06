@@ -155,6 +155,7 @@ Vendored from [WorldFlowAI/everything-claude-code](https://github.com/WorldFlowA
 | e2e-runner | Playwright E2E testing |
 | refactor-cleaner | Dead code cleanup |
 | doc-updater | Documentation sync |
+| nadzor-frontend-integrator | nadzor-ai: wiring frontend to the real `packages/backend` pipeline (not the older `packages/api` demo engine) and simplifying screens |
 
 ## Commands (`.claude/commands/`)
 
@@ -162,7 +163,9 @@ Vendored from [WorldFlowAI/everything-claude-code](https://github.com/WorldFlowA
 
 ## Skills (`.claude/skills/`)
 
-Added: `backend-patterns`, `clickhouse-io`, `coding-standards`, `continuous-learning`, `eval-harness`, `frontend-patterns`, `project-guidelines-example`, `security-review`, `strategic-compact`, `tdd-workflow`, `verification-loop` — alongside the existing HyperFrames video skills.
+Added: `coding-standards`, `continuous-learning`, `eval-harness`, `security-review`, `strategic-compact`, `tdd-workflow`, `verification-loop`.
+
+Removed (repo cleanup, this project is Python/FastAPI backend + React/Vite frontend, not Node/Next.js): `backend-patterns` and `frontend-patterns` (both Next.js/Express-specific — zero overlap with this stack), `clickhouse-io` (ClickHouse isn't used anywhere here), `project-guidelines-example` (unfilled template referencing an unrelated product, never adapted to this repo). Also removed ~24 dangling symlinks under `.claude/skills/` (captions-overlay, hyperframes-*, motion-graphics, remotion-to-hyperframes, etc.) pointing at `.agents/skills/` — that directory was deleted in an earlier cleanup commit ("удалить видео/HyperFrames-скиллы из репозитория"), which removed the video-tooling content itself but missed these leftover broken symlinks.
 
 ## Rules (always-follow guidelines, loaded below)
 

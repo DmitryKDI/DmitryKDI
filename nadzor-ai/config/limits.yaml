@@ -1,0 +1,30 @@
+# Лимиты обработки загружаемых файлов (Приложение Б.4).
+upload:
+  max_file_bytes: 104857600        # 100 МБ на файл
+  max_files_per_batch: 200
+  max_total_bytes: 2147483648      # 2 ГБ на пакет
+  allowed_signatures: [pdf, docx, xlsx, png, jpeg, dxf, zip]
+
+pdf:
+  max_pages: 1500
+  disable_embedded_scripts: true   # встроенный код не выполняется
+  resolve_external_links: false    # внешние ссылки не разрешаются
+
+archive:
+  max_depth: 3
+  max_entries: 2000
+  max_expansion_ratio: 120         # защита от архивных бомб
+  max_uncompressed_bytes: 4294967296
+
+processing:
+  worker_timeout_seconds: 900
+  worker_memory_limit_mb: 2048
+  ocr_enabled: false               # включается, когда в PDF нет текстового слоя
+
+antivirus:
+  enabled: false                   # в демо мок, в продуктиве реальный сканер
+  scanner: mock
+
+rate_limit:
+  uploads_per_minute: 30
+  analysis_runs_per_hour: 60

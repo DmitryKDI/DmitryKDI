@@ -1,0 +1,23 @@
+# Региональный пакет. Подключение нового субъекта — добавление такого файла,
+# а не доработка кода.
+region:
+  code: RU-MOW
+  name: город Москва
+  supervisory_body: Комитет государственного строительного надзора города Москвы
+  short_name: Мосгосстройнадзор
+
+norms_package: data/norms/norms.json
+classifier: data/norms/classifier.json
+
+document_forms:
+  inspection_act: act_msk.docx.j2
+  prescription: prescription_msk.docx.j2
+
+integrations:
+  urban_data: iais_ogd          # ИАИС ОГД
+  identity: sudir               # СУДИР
+
+economics:
+  # Нормативное время ручной подготовки к выездной проверке, часы.
+  manual_review_hours_per_document: 0.35
+  inspector_hour_cost_rub: 1450
