@@ -52,6 +52,21 @@ def test_system_prompt_does_not_require_obligation_wording():
     print("OK: промпт фильтра явно не сводит требование к повелительному наклонению")
 
 
+def test_system_prompt_excludes_scope_and_category_meta_statements():
+    """Г.76 — прямая поправка пользователя после реального прогона (236
+    кандидатов, 0 отсеяно): критерий Г.70 «описывает способ исполнения —
+    тоже требование» интерпретировался моделью слишком широко и засчитывал
+    как требование любое упоминание системы/материала, включая явный шум
+    («нет необходимости», «не относится к производственным»). Промпт
+    обязан явно называть эти два случая шумом, не полагаясь на то, что
+    модель выведет это сама из общего принципа."""
+    assert "нет необходимости" in _FILTER_SYSTEM_PROMPT
+    assert "не относится" in _FILTER_SYSTEM_PROMPT
+    assert "ОБЪЁМЕ САМОГО РАЗДЕЛА" in _FILTER_SYSTEM_PROMPT or "объёме самого раздела" in _FILTER_SYSTEM_PROMPT.lower()
+    assert "ПОЛОЖИТЕЛЬНОЕ" in _FILTER_SYSTEM_PROMPT or "положительное" in _FILTER_SYSTEM_PROMPT.lower()
+    print("OK: промпт явно называет мета-утверждения об объёме раздела и о категории объекта шумом")
+
+
 def test_chunk_requirements_respects_batch_size():
     reqs = [req(1, f"предложение {i}") for i in range(5)]
     chunks = _chunk_requirements(reqs, batch_size=2)
@@ -208,6 +223,7 @@ def test_render_filtered_summary_omits_noise_section_when_nothing_dropped():
 
 if __name__ == "__main__":
     test_system_prompt_does_not_require_obligation_wording()
+    test_system_prompt_excludes_scope_and_category_meta_statements()
     test_chunk_requirements_respects_batch_size()
     test_classify_marks_requirement_and_noise_by_index()
     test_classify_across_two_batches_preserves_order()
