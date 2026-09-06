@@ -6,7 +6,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.classification import classify_document, open_pdf, scan_text_for_discipline_codes
+from app.classification import (
+    _section_number_code,
+    classify_document,
+    open_pdf,
+    scan_text_for_discipline_codes,
+)
 
 SAMPLE_DIR = Path(
     "/tmp/claude-0/-home-user-DmitryKDI/0870a421-62c2-59a8-8978-c9163f520b16/scratchpad"
@@ -56,6 +61,43 @@ def test_scan_finds_codes_added_from_real_composition_registry():
         codes = scan_text_for_discipline_codes(text)
         assert expect in codes, f"{text}: {codes} не содержит {expect}"
     print("OK: реальные коды разделов из Состава документации распознаются")
+
+
+def test_section_number_fallback_for_files_without_letter_code():
+    """Г.80 — реальная находка: два тома того же комплекта («8.1», «8.2»)
+    не несут буквенного кода в имени файла ВООБЩЕ (в отличие от соседних
+    «ООС8.3»/«ООС8.4») — раньше не классифицировались никак. Номер
+    раздела ПП№87 (второе число маркировки) даёт код однозначно для
+    разделов, не делящихся на подсистемы внутри себя."""
+    cases = {
+        "V2_01-08-00-01-04_Том 8.1.pdf": "ООС",
+        "V2_01-08-00-02-03_том 8.2.pdf": "ООС",
+        "V2_01-03-00-01-20_Том 3.РЕД.pdf": "АР",
+        # Раздел 5 (инженерное оборудование) сознательно НЕ входит в
+        # таблицу — делится на подсистемы (ОВ/ВК/ЭОМ/...) с разными
+        # кодами, номер раздела один их не различает (Г.21/Г.63).
+        "V2_01-05-04-01-09_Том 5.4.1.pdf": None,
+        "просто обычный текст без кода.pdf": None,
+    }
+    for name, expect in cases.items():
+        assert _section_number_code(name) == expect, name
+    print("OK: номер раздела ПП№87 в маркировке файла даёт код там, где буквенного кода нет")
+
+
+def test_classify_document_uses_section_number_when_no_letter_code_in_filename(tmp_path):
+    """Сквозная проверка: `classify_document()` реально доходит до
+    резервного пути по номеру раздела и возвращает честный источник
+    `filename_section_number`, отличимый от прямого буквенного совпадения."""
+    pdf_path = tmp_path / "V2_01-08-00-01-04_Том 8.1.pdf"
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.save(str(pdf_path))
+    doc.close()
+
+    result = classify_document(str(pdf_path), pdf_path.name)
+    assert result.discipline_code == "ООС"
+    assert result.source == "filename_section_number"
+    print("OK: classify_document находит код раздела по номеру маркировки, когда буквенного кода в имени нет")
 
 
 def test_real_document_stamp_is_image_not_text():
