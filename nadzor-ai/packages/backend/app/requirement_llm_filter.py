@@ -125,6 +125,30 @@ def _chunk_requirements(requirements: list[Requirement], batch_size: int) -> lis
     return [requirements[i:i + batch_size] for i in range(0, len(requirements), batch_size)]
 
 
+def _parse_verdict_bool(value, default: bool) -> bool:
+    """`item.get("is_requirement", True)` было бы честной логикой ТОЛЬКО
+    если бы значение всегда приходило JSON-литералом (`true`/`false`).
+    GigaChat здесь не даёт строгой JSON-схемы (Г.39 — отклоняет
+    `response_format: json_object`, JSON запрашивается текстом промпта) —
+    реальный наблюдённый случай (Г.74): модель может вернуть булево как
+    СТРОКУ `"false"`, и `bool("false")` в Python — `True` (любая непустая
+    строка истинна), то есть каждый настоящий отрицательный вердикт молча
+    превращался бы в положительный уже на этапе разбора ответа, ДО того,
+    как решение модели вообще увидит `render_general_requirements_summary_llm_filtered`
+    — снаружи это неотличимо от «модель просто ничего не отсеивает»."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "да"):
+            return True
+        if normalized in ("false", "0", "no", "нет"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def _render_batch(batch: list[Requirement]) -> str:
     body = "\n".join(f"{i}. «{r.sentence}»" for i, r in enumerate(batch, 1))
     return f"<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\nСписок кандидатов:\n{body}\n</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
@@ -163,7 +187,7 @@ def classify_general_requirements(
                 continue
             out.append(RequirementVerdict(
                 requirement=req,
-                is_requirement=bool(item.get("is_requirement", True)),
+                is_requirement=_parse_verdict_bool(item.get("is_requirement"), True),
                 reasoning=str(item.get("reasoning") or ""),
             ))
     return out

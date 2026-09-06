@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pymupdf
 import pytest
 
+from app.llm import LlmConfig
 from app.triangulated_pipeline import run_triangulated_analysis
 
 
@@ -79,3 +80,59 @@ def test_room_missing_in_rd_produces_an_escalation_ticket_with_display_names(tmp
     assert result["triangulation"]["confirmed"] == []
     print("OK: расхождение по синтетическому помещению 301 дошло до очереди эскалации "
           "с реальными переданными именами документов, не с UUID-путями на диске")
+
+
+@pytest.mark.skipif(not Path(_CYRILLIC_FONT).is_file(), reason="нет системного шрифта с кириллицей для синтетического PDF")
+def test_general_requirements_go_through_llm_filter_when_key_present(tmp_path, monkeypatch):
+    """Реальный найденный пробел (Г.75): этот эндпоинт (используется
+    /triangulated-runs -> AttentionMap.tsx, то есть САМ СЕРВИС, не только
+    CLI-скрипт registry_diff.py) извлекал каталог формы 3 регуляркой и
+    НИКОГДА не прогонял его через ЛЛМ-фильтр шума (Г.69/70), даже когда
+    ключ ИИ уже используется для соседних шагов того же прогона — молчаливый
+    пробел, не отражённый в `not_run` в отличие от честно помеченных
+    ventilation_mo/page_pair_comparison."""
+    pd_path = tmp_path / "AAAA.pdf"
+    rd_path = tmp_path / "BBBB.pdf"
+    _make_pdf(pd_path, ["301", "Школьный зал", "50.0", "Экраны должны быть негорючими."])
+    _make_pdf(rd_path, ["301", "Школьный зал", "50.0"])
+
+    import app.triangulated_pipeline as pipeline
+    from app.requirement_llm_filter import RequirementVerdict
+
+    monkeypatch.setattr(pipeline, "extract_requirements_llm", lambda text_facts, config: [])
+
+    def fake_classify(requirements, config):
+        return [RequirementVerdict(requirement=r, is_requirement=True, reasoning="ok") for r in requirements]
+
+    monkeypatch.setattr(pipeline, "classify_general_requirements", fake_classify)
+
+    config = LlmConfig(provider="anthropic", api_key="fake-key-for-test")
+    result = run_triangulated_analysis([str(pd_path)], [str(rd_path)], llm_config=config)
+
+    assert result["llm"]["used"] is True
+    assert not any("requirement_llm_filter" in n for n in result["not_run"]), (
+        "с ключом ИИ фильтр обязан запускаться, а не попадать в список непрогнанного"
+    )
+    general = result["requirements"]["general"]["llm_filter"]
+    assert general["used"] is True
+    assert general["kept"] == 1
+    assert general["dropped_as_noise"] == []
+    print("OK: с ключом ИИ каталог формы 3 реально проходит через requirement_llm_filter, "
+          "а не молча извлекается только регуляркой")
+
+
+def test_general_requirements_stay_regex_only_without_llm_key(tmp_path):
+    """Без ключа — как раньше: каталог формы 3 остаётся regex-путём, и это
+    честно видно в `not_run`, не молчит."""
+    pd_path = tmp_path / "AAAA.pdf"
+    rd_path = tmp_path / "BBBB.pdf"
+    _make_pdf(pd_path, ["301", "Школьный зал", "50.0"])
+    _make_pdf(rd_path, ["301", "Школьный зал", "50.0"])
+
+    result = run_triangulated_analysis([str(pd_path)], [str(rd_path)])
+
+    assert result["llm"]["used"] is False
+    assert any("requirement_llm_filter" in n for n in result["not_run"])
+    assert result["requirements"]["general"]["llm_filter"]["used"] is False
+    assert result["requirements"]["general"]["llm_filter"]["kept"] is None
+    print("OK: без ключа ИИ фильтр честно помечен как непрогнанный, каталог не выдаётся за отфильтрованный")

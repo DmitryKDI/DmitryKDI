@@ -149,6 +149,39 @@ def test_classify_handles_missing_index_in_response_the_same_way():
     print("OK: пропущенный моделью номер тоже не теряет кандидата молча")
 
 
+def test_classify_handles_string_typed_booleans_from_provider():
+    """Реальный найденный баг (Г.74): GigaChat не даёт строгой JSON-схемы
+    (Г.39 — response_format:{"type":"json_object"} отклоняется, JSON
+    запрашивается текстом промпта), и на реальном прогоне (347 кандидатов,
+    4 раздела) НИ ОДИН не был отсеян — подозрение пало на промпт/модель,
+    но фактическая причина была в разборе ответа: `bool("false")` в Python
+    равно `True` (любая непустая строка истинна), поэтому если модель
+    вернула булево строкой `"false"` вместо литерала `false`, отрицательный
+    вердикт молча превращался в положительный ДО того, как дойти до
+    render — снаружи неотличимо от «модель ничего не фильтрует»."""
+    reqs = [req(1, "Экраны должны быть негорючими."),
+            req(2, "Обоснование рациональности трассировки... нет необходимости.")]
+
+    def fake_call(config, system_prompt, user_text, timeout=90.0):
+        return {"verdicts": [
+            {"index": 1, "is_requirement": "true", "reasoning": "требование"},
+            {"index": 2, "is_requirement": "false", "reasoning": "декларация без факта"},
+        ]}
+
+    original = _patch(requirement_llm_filter, "call_llm_json", fake_call)
+    try:
+        verdicts = classify_general_requirements(reqs, _config())
+    finally:
+        _patch(requirement_llm_filter, "call_llm_json", original)
+
+    assert verdicts[0].is_requirement is True
+    assert verdicts[1].is_requirement is False, (
+        "строковое \"false\" от провайдера должно давать False, а не "
+        "bool(\"false\")==True — иначе фильтр никогда ничего не отсеивает"
+    )
+    print("OK: строковые true/false от провайдера без строгой JSON-схемы разбираются верно")
+
+
 def test_render_filtered_summary_shows_counts_and_visible_noise_section():
     verdicts = [
         RequirementVerdict(requirement=req(9, "Экраны должны быть негорючими."),
@@ -180,6 +213,7 @@ if __name__ == "__main__":
     test_classify_across_two_batches_preserves_order()
     test_batch_failure_keeps_candidates_as_requirements_not_silently_dropped()
     test_classify_handles_missing_index_in_response_the_same_way()
+    test_classify_handles_string_typed_booleans_from_provider()
     test_render_filtered_summary_shows_counts_and_visible_noise_section()
     test_render_filtered_summary_omits_noise_section_when_nothing_dropped()
     print("ALL PASS")

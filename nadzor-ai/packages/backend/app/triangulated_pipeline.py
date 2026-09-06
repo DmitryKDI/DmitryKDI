@@ -54,6 +54,7 @@ from .matching import DocumentInput
 from .equip_cross_check import cross_check_equipment
 from .requirement_cross_check import cross_check_general_requirements, cross_check_requirements
 from .requirement_llm_extract import extract_requirements_llm
+from .requirement_llm_filter import classify_general_requirements
 from .requirement_registry import extract_general_requirements, extract_requirements
 from .room_cross_check import cross_check_rooms
 from .routing_diff import diff_room_routing
@@ -242,6 +243,25 @@ def run_triangulated_analysis(
 
     general_requirements = extract_general_requirements(pd_text_facts)
 
+    general_verdicts = None
+    if use_llm:
+        # Г.69/70, реально подключено здесь только сейчас (Г.75) — раньше
+        # этот эндпоинт (используется /triangulated-runs -> AttentionMap.tsx,
+        # т.е. САМ СЕРВИС, не только CLI-скрипт registry_diff.py) извлекал
+        # каталог формы 3 регуляркой и НИКОГДА не прогонял его через
+        # ЛЛМ-фильтр шума, даже когда ключ ИИ уже есть и используется для
+        # соседних шагов того же прогона — молчаливый пробел, не отражённый
+        # в `not_run` (в отличие от честно помеченных ventilation_mo/
+        # page_pair_comparison ниже). Реальный вызывающий каталог требований
+        # без фильтра — то, что пользователь наблюдал как «текст не
+        # отправлялся в ЛЛМ для анализа его смысла».
+        general_verdicts = classify_general_requirements(general_requirements, llm_config)  # type: ignore[arg-type]
+    else:
+        not_run.append(
+            "requirement_llm_filter (Г.69/70): нет ключа ИИ — каталог формы 3 показан "
+            "как есть (regex), без ЛЛМ-фильтра шума"
+        )
+
     req_after = [DocumentInput(name="РД", pages=1, text_facts=after_text_facts)]
     req_result = cross_check_requirements(pd_requirements, req_after)
     general_req_result = cross_check_general_requirements(general_requirements, req_after)
@@ -337,6 +357,13 @@ def run_triangulated_analysis(
                 "token_missing": general_req_result.token_missing,
                 "no_token": general_req_result.no_token,
                 "findings": _to_jsonable(general_req_result.findings),
+                "llm_filter": {
+                    "used": general_verdicts is not None,
+                    "kept": sum(1 for v in general_verdicts if v.is_requirement) if general_verdicts else None,
+                    "dropped_as_noise": _to_jsonable(
+                        [v for v in general_verdicts if not v.is_requirement]
+                    ) if general_verdicts else [],
+                },
             },
         },
         "routing": {
