@@ -153,7 +153,8 @@ def test_rd_run_reports_composition_even_without_requirements(tmp_path, monkeypa
     monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(main_module, "extract_requirements_llm", lambda facts, config, **kw: [])
 
-    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "after"}).json()["id"])
+    started = client.post("/pd-runs", json={"document_ids": [doc_id], "side": "after"})
+    body = _wait(started.json()["id"])
 
     assert body["status"] == "done"
     assert body["side"] == "after"
@@ -172,7 +173,8 @@ def test_pd_run_still_saves_to_store_and_gets_composition_too(tmp_path, monkeypa
             rooms=[], page=1, sentence="Экраны негорючие.", code=None,
             document="pd.pdf", section="ОВ", summary="Экраны негорючие")],
     )
-    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"}).json()["id"])
+    started = client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"})
+    body = _wait(started.json()["id"])
 
     assert body["status"] == "done" and body["side"] == "before"
     assert "листов всего" in body["composition"]
@@ -194,7 +196,8 @@ def _done_pd_run(tmp_path, monkeypatch) -> int:
             rooms=[], page=1, sentence="Регистры по ГОСТ 8732-78.", code=None,
             document="pd.pdf", section="ОВ", summary="Регистры ГОСТ 8732-78")],
     )
-    return _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"}).json()["id"])["id"]
+    started = client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"})
+    return _wait(started.json()["id"])["id"]
 
 
 def _wait_compliance(run_id: int, timeout: float = 20.0) -> dict:
@@ -265,7 +268,8 @@ def test_manual_section_reaches_the_run_and_wins_over_guessing(tmp_path, monkeyp
         return []
 
     monkeypatch.setattr(main_module, "extract_requirements_llm", fake_extract)
-    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"}).json()["id"])
+    started = client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"})
+    body = _wait(started.json()["id"])
 
     assert body["status"] == "done"
     assert seen == ["ЭОМ"], f"раздел из ручной правки не доехал до разбора: {seen}"
@@ -288,3 +292,38 @@ def test_manual_section_can_be_cleared_back_to_automatic(tmp_path):
     r = client.patch(f"/documents/{doc_id}", json={"discipline_code": None})
     assert r.status_code == 200
     assert r.json()["classification_source"] != "manual"
+
+
+def test_level_fallback_is_wired_into_the_room_index(tmp_path, monkeypatch):
+    """Г.98 — резерв по отметке этажа (Г.40) подключён к сверке: план и его
+    экспликация лежат на разных листах, и без резерва требование, чьё
+    помещение не нашлось в текстовом слое РД, оставалось бы без единого
+    кандидата на просмотр."""
+    called = []
+    monkeypatch.setattr(main_module, "augment_room_index_with_level_fallback",
+                        lambda index, paths: called.append(paths) or index)
+    doc_id = _upload(tmp_path)
+    assert any(d["id"] == doc_id for d in client.get("/documents").json())
+
+    index = main_module._rd_room_index([("путь.pdf", "рд.pdf", None)])
+
+    assert isinstance(index, dict)
+    assert called, "резерв по отметке этажа вызывается при построении реестра"
+
+
+def test_composition_is_produced_even_when_llm_is_unavailable(tmp_path, monkeypatch):
+    """Г.98 — найдено прогоном «как инспектор» на реальном комплекте: без
+    ключа обе кнопки возвращали только ошибку, хотя состав комплекта —
+    детерминированная работа, модели не требующая. Теперь состав считается
+    ДО проверки связи и отдаётся вместе с причиной, по которой требования не
+    извлекались."""
+    doc_id = _upload(tmp_path)
+    monkeypatch.setattr(main_module, "check_llm_reachable",
+                        lambda cfg: (False, "ключ ЛЛМ не задан — проверять нечего"))
+
+    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id]}).json()["id"])
+
+    assert body["status"] == "error", "прогон не выдаёт себя за успешный"
+    assert "листов всего" in body["composition"], "состав всё равно посчитан и отдан"
+    assert "требования НЕ извлекались" in (body["error"] or "")
+    assert body["requirements_total"] == 0

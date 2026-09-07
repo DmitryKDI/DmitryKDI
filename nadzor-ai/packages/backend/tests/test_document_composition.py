@@ -21,13 +21,23 @@ from app.document_composition import describe_volume, render_composition  # noqa
 CYRILLIC_TTF = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
-def _pdf(path: Path, pages: list[tuple[str, tuple[float, float]]]) -> str:
-    """Страницы как (текст, размер листа в пунктах)."""
+def _pdf(path: Path, pages: list[tuple[str, tuple[float, float]]],
+         stamp: str | None = None) -> str:
+    """Страницы как (текст, размер листа в пунктах).
+
+    `stamp` кладётся в ПРАВЫЙ НИЖНИЙ угол — туда, где штамп ищет `read_stamp`
+    (ГОСТ Р 21.1101). Текст в теле листа туда не попадает, и фикстура со
+    штампом вверху молча проверяла бы не то, что написано в названии теста.
+    """
     doc = pymupdf.open()
     font = pymupdf.Font(fontfile=CYRILLIC_TTF)
     for text, size in pages:
         page = doc.new_page(width=size[0], height=size[1])
         page.insert_font(fontname="F0", fontbuffer=font.buffer)
+        if stamp:
+            page.insert_textbox(
+                pymupdf.Rect(size[0] * 0.57, size[1] * 0.62, size[0] - 10, size[1] - 10),
+                stamp, fontname="F0", fontsize=9)
         if text:
             # insert_textbox переносит строки внутри рамки. Через insert_text
             # длинный текст молча уезжал за край листа и не извлекался — тест
@@ -127,3 +137,60 @@ def test_prose_page_mentioning_specification_is_not_counted_as_one(tmp_path):
     path = _pdf(tmp_path / "prose.pdf", [(prose, A4)])
     c = describe_volume(path, "prose.pdf")
     assert dict(c.tables_by_kind).get("equipment_specification") is None, c.tables_by_kind
+
+
+def test_graphic_sheets_are_listed_with_their_names(tmp_path):
+    """Г.98 — сводка обязана покрывать ВЕСЬ документ. Прямое указание
+    пользователя: «весь документ сканирует и должна быть сводка... значит
+    граф и другие материалы игнорятся, их можно в сводке отобразить, что на
+    таких-то листах граф материал». Наименование чертежа берётся из штампа
+    текстом: он остаётся текстом чаще, чем содержимое листа (Г.59)."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE)],
+                stamp="План 1 этажа (вентиляция)\nЛист 17")
+    c = describe_volume(path, "gr.pdf")
+
+    assert c.sheets, "перечень листов построен"
+    named = [s for s in c.sheets if s.name]
+    assert named and "План 1 этажа" in named[0].name, c.sheets
+
+
+def test_sheets_without_readable_stamp_are_named_as_such(tmp_path):
+    """Лист, у которого и штамп в кривых, не пропадает из сводки: он
+    попадает туда как «наименование не прочитано» — пропуск обязан быть
+    видимым состоянием (Г.10)."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE), ("", A1_LANDSCAPE)])
+    c = describe_volume(path, "gr.pdf")
+    text = render_composition([c])
+
+    assert len(c.sheets) == 2
+    assert all(s.name is None for s in c.sheets)
+    assert "наименование не прочитано" in text
+
+
+def test_identical_sheet_names_collapse_into_one_line_with_pages(tmp_path):
+    """Как и в сводке требований (Г.90): повтор сворачивается в одну строку
+    со списком листов, иначе перечень из 700 листов нечитаем."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE)] * 3,
+                stamp="Принципиальная схема системы\nЛист 5")
+    text = render_composition([describe_volume(path, "gr.pdf")])
+
+    assert text.count("Принципиальная схема системы") == 1, text
+    assert "листы 1, 2, 3" in text or "листы 1-3" in text, text
+
+
+def test_plan_content_caught_in_the_stamp_zone_is_not_taken_for_a_sheet_name():
+    """Г.98 — замер на реальных томах: зона штампа на листе А0/А1 занимает
+    четверть площади, и в неё попадает содержимое чертежа. В перечень шли
+    обрывки «икация помещений 1 этажа Наименование» и «188 Холодный 186
+    Овощной» — причём второе на листе, где шифр и номер прочитаны верно.
+    Выдуманное название хуже честного «не прочитано» (Г.11/Г.10)."""
+    from app.document_composition import _clean_sheet_name
+
+    assert _clean_sheet_name("икация помещений 1 этажа Наименование") is None
+    assert _clean_sheet_name("188 Холодный 186 Овощной") is None
+    assert _clean_sheet_name("") is None and _clean_sheet_name(None) is None
+
+    assert _clean_sheet_name("План 1 этажа (вентиляция)") == "План 1 этажа (вентиляция)"
+    assert _clean_sheet_name("Принципиальная схема системы отопления") is not None
+    assert _clean_sheet_name("Ведомость объемов работ") is not None
+    assert _clean_sheet_name("Спецификация оборудования") is not None

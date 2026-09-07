@@ -27,6 +27,7 @@ CAD-экспорт переводит подписи в кривые, и `get_te
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -34,12 +35,56 @@ import pymupdf
 
 from .classification import PAGE_KIND_DRAWING, classify_document, classify_page_kind
 from .set_overview import official_section_label
+from .stamp import read_stamp
 from .table_registry import classify_table_page
+
+# Г.98 — наименование чертежа принимается, только если начинается как
+# НАЗВАНИЕ ЛИСТА по ГОСТ Р 21.1101. Замер на реальных томах показал, почему
+# фильтр обязателен: зона штампа на листе формата А0/А1 — это четверть
+# площади, и в неё попадает содержимое самого чертежа. `read_stamp` честно
+# возвращал оттуда первые длинные строки, и в перечень шли обрывки вроде
+# «икация помещений 1 этажа Наименование» (кусок таблицы экспликации) и
+# «188 Холодный 186 Овощной» (подписи помещений на плане) — причём второе
+# на листе, где шифр и номер листа прочитаны верно, то есть признак
+# «штамп настоящий» здесь не спасает. Показать инспектору выдуманное
+# название хуже, чем честно сказать «не прочитано» (Г.11/Г.10).
+#
+# Список открывающих слов общий по ГОСТ и к разделу не привязан: план,
+# схема, разрез, узел, фасад, ведомость, спецификация, таблица и т.п.
+_SHEET_TITLE_RE = re.compile(
+    r"^(план|схема|принципиальная|разрез|узел|фасад|деталь|ведомость|"
+    r"спецификация|таблица|характеристика|экспликация|аксонометри\w*|"
+    r"общие\s+данные|условные\s+обозначения|генеральный\s+план)\b",
+    re.IGNORECASE)
+
+
+def _clean_sheet_name(name: str | None) -> str | None:
+    """Наименование листа или None, если прочитанное на название не похоже."""
+    if not name:
+        return None
+    cleaned = " ".join(name.split())
+    return cleaned if _SHEET_TITLE_RE.match(cleaned) else None
+
 
 # Порог «текстовый слой практически пуст»: штамп листа даёт порядка
 # 300-500 символов даже там, где вся остальная графика в кривых (замер
 # Г.59). Всё, что ниже, содержательного текста не несёт.
 POOR_TEXT_LAYER_CHARS = 200
+
+
+@dataclass
+class SheetEntry:
+    """Один лист графической части: номер и наименование чертежа.
+
+    Г.98 — наименование берётся из ШТАМПА текстом. Он остаётся текстом
+    заметно чаще, чем содержимое листа (Г.59: на листах таблиц в кривых
+    текстовый слой несёт только штамп), поэтому перечень графики строится
+    без единого вызова модели. `name=None` — штамп тоже в кривых: лист всё
+    равно попадает в перечень как «наименование не прочитано», а не
+    исчезает из сводки (Г.10).
+    """
+    page: int
+    name: str | None = None
 
 
 @dataclass
@@ -57,6 +102,9 @@ class VolumeComposition:
     # Листы с содержательной прозой: из них и только из них может выйти
     # сводка требований. Их число прямо объясняет размер сводки.
     prose_pages: int = 0
+    # Г.98 — перечень листов графической части с наименованиями: сводка
+    # обязана покрывать ВЕСЬ документ, а не только его текстовую часть.
+    sheets: list[SheetEntry] = field(default_factory=list)
     error: str | None = None
 
 
@@ -90,6 +138,11 @@ def describe_volume(pdf_path: str, name: str,
             text_facts.append({"page": i + 1, "text": text})
             if classify_page_kind(page) == PAGE_KIND_DRAWING:
                 out.drawing_pages += 1
+                try:
+                    name = _clean_sheet_name(read_stamp(page).sheet_name)
+                except Exception:  # noqa: BLE001 — нечитаемый штамп не роняет разбор
+                    name = None
+                out.sheets.append(SheetEntry(page=i + 1, name=name))
             else:
                 out.text_pages += 1
             if len(text) < POOR_TEXT_LAYER_CHARS:
@@ -143,7 +196,48 @@ def render_composition(volumes: list[VolumeComposition]) -> str:
             lines.append("  связного текста нет — сводка требований из этого тома НЕ строится. "
                          "Это не сбой: подписи чертежей переведены в кривые, "
                          "проверять их нужно по изображению листа.")
+        lines.extend(_render_sheets(v.sheets))
     return "\n".join(lines)
+
+
+def _pages_range(pages: list[int]) -> str:
+    """«1-3, 7» вместо «1, 2, 3, 7»: перечень на сотни листов иначе нечитаем."""
+    out: list[str] = []
+    start = prev = pages[0]
+    for page in pages[1:] + [None]:
+        if page is not None and page == prev + 1:
+            prev = page
+            continue
+        out.append(str(start) if start == prev else f"{start}-{prev}")
+        if page is not None:
+            start = prev = page
+    return ", ".join(out)
+
+
+def _render_sheets(sheets: list[SheetEntry]) -> list[str]:
+    """Перечень графической части: наименование → листы.
+
+    Г.98/Г.90 — одинаковые наименования сворачиваются в одну строку со
+    списком листов: у тома в 700 листов перечень по строке на лист
+    нечитаем, а сжимается ВИД, не данные — ни один лист не теряется.
+    """
+    if not sheets:
+        return []
+    by_name: dict[str, list[int]] = {}
+    unnamed: list[int] = []
+    for sheet in sheets:
+        if sheet.name:
+            by_name.setdefault(sheet.name, []).append(sheet.page)
+        else:
+            unnamed.append(sheet.page)
+
+    lines = ["  графическая часть:"]
+    for name, pages in sorted(by_name.items(), key=lambda kv: kv[1][0]):
+        lines.append(f"    листы {_pages_range(sorted(pages))} — {name}")
+    if unnamed:
+        lines.append(f"    листы {_pages_range(sorted(unnamed))} — наименование не прочитано "
+                     f"(штамп тоже в кривых), нужен просмотр изображения")
+    return lines
 
 
 # Человеческие названия типов таблиц реестра. Сам реестр держит нормативный

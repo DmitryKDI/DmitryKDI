@@ -280,7 +280,16 @@ function ParseCard({
       )}
       {run?.status === 'running' && <Skeleton rows={3} />}
       {run?.status === 'error' && (
-        <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">{run.error}</div>
+        <div className="space-y-2">
+          <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">{run.error}</div>
+          {/* Г.98 — состав считается до обращения к модели и полезен сам по
+              себе: показываем его даже когда требования извлечь не удалось. */}
+          {run.composition && (
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-surface-line bg-surface-muted/60 p-3 text-xs leading-relaxed text-ink">
+              {run.composition}
+            </pre>
+          )}
+        </div>
       )}
       {run?.status === 'done' && (
         <div className="space-y-2">

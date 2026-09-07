@@ -24,6 +24,7 @@ from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
 from .document_composition import describe_volume, render_composition
 from .documents import extract_document_facts
+from .level_pages import augment_room_index_with_level_fallback
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import load_text_facts, render_summary
@@ -549,24 +550,29 @@ def _run_pd(run_id: int) -> None:
         run.provider = config.provider
         db.commit()
 
-        reachable, why = check_llm_reachable(config if config.api_key else None)
-        if not reachable:
-            run.status = "error"
-            run.error = (f"связь с провайдером {config.provider} не прошла — {why}. "
-                         "Разбор НЕ выполнен: это не «в документах нет требований».")
-            db.commit()
-            return
-
         # Г.97 — третий элемент: раздел, заданный вручную; он побеждает.
         sources = [(d.file_path, d.name, _manual_section(d)) for _, d in docs]
 
-        # Г.95 — состав считается ВСЕГДА и первым: он дёшев, не требует
-        # модели и объясняет, чего ждать от сводки. У рабочей документации
-        # текстового слоя почти нет по природе (Г.8), и пустая сводка без
-        # состава неотличима от сбоя.
+        # Г.95/Г.98 — состав считается ПЕРВЫМ и БЕЗ УСЛОВИЙ, до проверки
+        # связи: он детерминированный, модели не требует и полезен сам по
+        # себе. Раньше он стоял после проверки, и прогон без ключа возвращал
+        # инспектору ноль — хотя перечень листов, таблиц и графики можно
+        # было отдать. Найдено прогоном «как инспектор» на реальном
+        # комплекте: обе кнопки вернули только ошибку.
         run.composition = render_composition(
             [describe_volume(path, name, manual) for path, name, manual in sources])
         db.commit()
+
+        reachable, why = check_llm_reachable(config if config.api_key else None)
+        if not reachable:
+            # Состав уже посчитан и сохранён выше — инспектор увидит его
+            # вместе с причиной, по которой требования не извлекались.
+            run.status = "error"
+            run.error = (f"состав комплекта разобран, но требования НЕ извлекались: "
+                         f"связь с провайдером {config.provider} не прошла — {why}. "
+                         "Это не «в документах нет требований».")
+            db.commit()
+            return
 
         requirements = extract_requirements_llm(load_text_facts(sources), config=config)
         run.summary = render_summary(requirements)
@@ -650,6 +656,19 @@ def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
             key = str(fact.get("key") or "")
             if key:
                 index.setdefault(key, []).append({"path": path, "page": fact["page"], "name": name})
+
+    # Г.98 — резерв по отметке этажа (Г.40): план и его экспликация физически
+    # лежат на РАЗНЫХ листах, и номер помещения на самом плане в текстовом
+    # слое часто отсутствует. Отметка высоты (`+X.XXX`) остаётся текстом даже
+    # там, где остальная графика в кривых, и даёт листы ТОГО ЖЕ ЭТАЖА — не
+    # гарантированно то же помещение, поэтому кандидаты добавляются ПОСЛЕ
+    # найденных по номеру и берутся только если бюджет листов не исчерпан
+    # настоящими совпадениями.
+    try:
+        index = augment_room_index_with_level_fallback(index, [p for p, _ in
+                                                               [(s[0], s[1]) for s in sources]])
+    except Exception as exc:  # noqa: BLE001 — резерв не обязан работать всегда
+        print(f"резерв по отметке этажа не построен: {exc}", file=sys.stderr)
     return index
 
 
