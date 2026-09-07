@@ -39,8 +39,10 @@ def test_system_prompt_carries_known_violations_block():
     этот модуль был написан с нуля и забыл про существующий механизм
     few-shot-примеров, что и обнаружилось при проверке)."""
     prompt = requirement_extraction_system_prompt()
-    assert "хронология освидетельствования" in prompt or "материала" in prompt or "Объём работ" in prompt
-    print("OK: известные нарушения из known_violations.json попадают в промпт извлечения требований")
+    assert ("хронология освидетельствования" in prompt
+            or "материала" in prompt
+            or "Объём работ" in prompt)
+    print("OK: примеры из known_violations.json попадают в промпт извлечения требований")
 
 
 def test_system_prompt_valid_json_schema_after_substitution():
@@ -129,7 +131,10 @@ def test_extract_keeps_requirement_without_rooms():
     facts = [tf(1, "текст")]
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
-        return {"requirements": [{"rooms": [], "code": None, "requirement": "общее указание без помещения", "sentence": "..."}]}
+        return {"requirements": [{
+            "rooms": [], "code": None,
+            "requirement": "общее указание без помещения", "sentence": "...",
+        }]}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
     try:
@@ -145,7 +150,9 @@ def test_extract_uses_chunk_first_page_when_model_omits_page():
     facts = [tf(3, "текст")]
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
-        return {"requirements": [{"rooms": ["1"], "code": None, "requirement": "x", "sentence": "y"}]}
+        return {"requirements": [
+            {"rooms": ["1"], "code": None, "requirement": "x", "sentence": "y"},
+        ]}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
     try:
@@ -175,7 +182,8 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
     """Сбой вызова модели на одной пачке (сеть, лимит) не должен ронять
     извлечение по остальным страницам — тот же принцип устойчивости, что
     у vision_page_compare.check_requirement_on_page."""
-    facts = [tf(1, "a" * 4000), tf(2, "b" * 4000)]  # каждая страница — отдельная пачка при max_chars=6000
+    # каждая страница — отдельная пачка при max_chars=6000
+    facts = [tf(1, "a" * 4000), tf(2, "b" * 4000)]
 
     calls = []
 
@@ -183,7 +191,10 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
         calls.append(user_text)
         if len(calls) == 1:
             raise ConnectionError("сеть недоступна")
-        return {"requirements": [{"rooms": ["2"], "code": None, "requirement": "x", "sentence": "y", "page": 2}]}
+        return {"requirements": [{
+            "rooms": ["2"], "code": None,
+            "requirement": "x", "sentence": "y", "page": 2,
+        }]}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
     try:
@@ -287,6 +298,52 @@ def test_chunks_never_span_two_documents():
     print("OK: пачка не смешивает документы")
 
 
+def test_page_longer_than_budget_is_split_not_sent_oversized():
+    """Г.89 — реальный пробел, найденный замером на томе в 177 страниц: одна
+    страница дала 6051 символ при бюджете 6000 и уезжала в модель ОДНОЙ
+    пачкой сверх лимита. Проверка стояла на СУММЕ пачки, а одиночный элемент
+    сверх бюджета ею не ловился. На плотном документе такой вызов упал бы
+    целиком — потерялась бы вся страница, а не её хвост."""
+    facts = [{"page": 7, "text": "Требование номер один. " * 500,
+              "document": "том.pdf", "section": "АР"}]
+    chunks = _chunk_text_facts(facts, max_chars=2000)
+    sizes = [sum(len(f["text"]) for f in c) for c in chunks]
+
+    assert len(chunks) > 1, "длинная страница обязана разрезаться"
+    assert all(s <= 2000 for s in sizes), f"пачки сверх бюджета: {sizes}"
+    assert all(f["page"] == 7 for c in chunks for f in c), "номер страницы обязан сохраниться"
+    print("OK: страница длиннее бюджета режется, ни одна пачка не выходит за лимит")
+
+
+def test_split_page_parts_are_labelled_in_prompt():
+    """Метка обязана называть часть: иначе модель видит две метки с одним
+    номером страницы и может счесть, что страница повторяется."""
+    facts = [{"page": 3, "text": "Предложение. " * 400, "document": "т.pdf", "section": "АР"}]
+    rendered = requirement_llm_extract._render_chunk(_chunk_text_facts(facts, 1500)[0])
+    assert "Страница 3 (часть 1 из" in rendered
+    print("OK: у разрезанной страницы метка называет номер части")
+
+
+def test_page_without_sentence_breaks_is_still_split():
+    """Сплошной текст без знаков препинания (таблица, выгруженная в строку)
+    обязан резаться жёстко: потеря на разрыве — меньшее зло, чем упавший
+    вызов на всю страницу."""
+    facts = [{"page": 1, "text": "А" * 5000, "document": "т.pdf", "section": "КР"}]
+    sizes = [sum(len(f["text"]) for f in c) for c in _chunk_text_facts(facts, 1000)]
+    assert all(s <= 1000 for s in sizes), f"жёсткая резка не сработала: {sizes}"
+    print("OK: страница без границ предложений всё равно режется под бюджет")
+
+
+def test_short_pages_are_untouched_by_splitting():
+    """Обычные страницы не должны обрастать полем части — иначе в метке
+    появится «часть 1 из 1» на каждой странице тома."""
+    facts = [{"page": 1, "text": "Короткая страница.", "document": "т.pdf", "section": "АР"}]
+    chunk = _chunk_text_facts(facts, 6000)[0]
+    assert "part" not in chunk[0]
+    assert "часть" not in requirement_llm_extract._render_chunk(chunk)
+    print("OK: короткие страницы разбиением не затронуты")
+
+
 if __name__ == "__main__":
     test_system_prompt_carries_known_violations_block()
     test_system_prompt_valid_json_schema_after_substitution()
@@ -302,4 +359,8 @@ if __name__ == "__main__":
     test_requirement_without_room_is_kept_not_dropped()
     test_requirement_carries_document_and_section()
     test_chunks_never_span_two_documents()
+    test_page_longer_than_budget_is_split_not_sent_oversized()
+    test_split_page_parts_are_labelled_in_prompt()
+    test_page_without_sentence_breaks_is_still_split()
+    test_short_pages_are_untouched_by_splitting()
     print("ALL PASS")

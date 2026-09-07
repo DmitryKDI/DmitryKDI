@@ -44,8 +44,8 @@ class DocumentInput:
     page_kinds: dict[int, str] = field(default_factory=dict)  # {page: 'drawing'|'text'}
     # [{page, key, name, parent?, qty?}] — позиции ведомости оборудования (Г.20)
     equipment_facts: list[dict] = field(default_factory=list)
-    # [{page, room_key, system_code?, приток_м3ч?, вытяжка_м3ч?}] — баланс-рамка
-    # у номера помещения (Г.30, п.1)
+    # [{page, room_key, system_code?, ...}] — числовые значения у номера
+    # помещения (баланс-рамка, Г.30 п.1)
     balance_facts: list[dict] = field(default_factory=list)
 
 
@@ -56,7 +56,7 @@ class _PageRef:
     tokens: set[str]
     kind: str
     room_keys: set[str] = field(default_factory=set)
-    lean: Optional[str] = None  # subsystem.subsystem_lean — 'вент' | 'тепл' | None
+    lean: Optional[str] = None  # ключ подсистемы из subsystem.subsystem_lean, если раздел её различает
 
 
 @dataclass
@@ -166,8 +166,8 @@ def _match_pool(
                 # смешиваем — один хороший сигнал не должен тонуть в другом.
                 score = max(score, jaccard(b.room_keys, a.room_keys))
             if b.lean and a.lean and b.lean != a.lean:
-                # Оба тома одного раздела ОВ, но по словам явно разные
-                # подсистемы (вентиляция/отопление) — не блокируем совсем
+                # Оба тома одного раздела, но по словам явно разные
+                # подсистемы раздела (см. subsystem.py) — не блокируем совсем
                 # (эвристика по словам ненадёжна на 100%), но совпадение
                 # номеров помещений в общем техническом подполье не должно
                 # перевешивать явный текстовый признак другой подсистемы.
