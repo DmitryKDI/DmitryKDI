@@ -20,7 +20,7 @@ from .requirement_registry import Requirement, _normalize_for_dedup
 from .set_overview import official_section_label
 
 
-def load_text_facts(sources: list[tuple[str, str]]) -> list[dict]:
+def load_text_facts(sources: list[tuple]) -> list[dict]:
     """[{page, text, document, section}] по ВСЕМ страницам всех файлов.
 
     `sources` — пары «путь на диске, отображаемое имя»: на сервере файл
@@ -38,7 +38,9 @@ def load_text_facts(sources: list[tuple[str, str]]) -> list[dict]:
     печатается, работа продолжается (Г.10 — пропуск виден, не молчит).
     """
     out: list[dict] = []
-    for path, display_name in sources:
+    for source in sources:
+        path, display_name = source[0], source[1]
+        manual_section = source[2] if len(source) > 2 else None
         p = Path(path)
         if not p.is_file():
             print(f"пропущен (не найден): {display_name}", file=sys.stderr)
@@ -48,11 +50,14 @@ def load_text_facts(sources: list[tuple[str, str]]) -> list[dict]:
         except Exception as exc:  # noqa: BLE001 — один битый файл не роняет прогон
             print(f"пропущен ({exc}): {display_name}", file=sys.stderr)
             continue
-        try:
-            section = classify_document(str(p), display_name).discipline_code
-        except Exception as exc:  # noqa: BLE001 — раздел не определён, текст всё равно нужен
-            print(f"раздел не определён ({exc}): {display_name}", file=sys.stderr)
-            section = None
+        if manual_section:
+            section = manual_section
+        else:
+            try:
+                section = classify_document(str(p), display_name).discipline_code
+            except Exception as exc:  # noqa: BLE001 — раздел не определён, текст всё равно нужен
+                print(f"раздел не определён ({exc}): {display_name}", file=sys.stderr)
+                section = None
         try:
             for i in range(doc.page_count):
                 text = doc[i].get_text("text").strip()

@@ -1,8 +1,13 @@
 """Состав тома: сколько листов чертежей, сколько таблиц и каких (Г.95).
 
-Прямое указание пользователя по стадии разбора РД: «если в РД нет текста
-для сводки, то просто он должен говорить, что в документе столько листов
-графической части, столько спецификаций и т.д.».
+Работает на ЛЮБОМ виде документации — проектной, рабочей, исполнительной:
+механизм один, отдельного «разбора РД» в коде нет и быть не должно
+(прямое требование пользователя: «РД имеет тот же принцип, что и ПД, код
+общий на любой вид документации»). Поводом послужила стадия разбора
+рабочей документации: «если в РД нет текста для сводки, то просто он
+должен говорить, что в документе столько листов графической части, столько
+спецификаций и т.д.», — но ограничивать модуль этой стороной значило бы
+завести раздельные пути там, где различия нет.
 
 Почему это НЕ запасной вариант на случай неудачи, а самостоятельный
 результат. У рабочей документации текстового слоя почти нет по природе:
@@ -55,19 +60,27 @@ class VolumeComposition:
     error: str | None = None
 
 
-def describe_volume(pdf_path: str, name: str) -> VolumeComposition:
+def describe_volume(pdf_path: str, name: str,
+                    manual_section: str | None = None) -> VolumeComposition:
     """Состав одного тома. Битый файл не роняет разбор комплекта: причина
-    попадает в поле `error` и в отчёт (Г.10)."""
+    попадает в поле `error` и в отчёт (Г.10).
+
+    `manual_section` — раздел, заданный инспектором вручную (Г.97): он
+    побеждает автоматическое определение и отменяет его.
+    """
     try:
         doc = pymupdf.open(pdf_path)
     except Exception as exc:  # noqa: BLE001 — один битый файл не роняет прогон
         return VolumeComposition(name=name, error=f"файл не прочитан: {exc}")
 
     try:
-        try:
-            section = classify_document(pdf_path, name).discipline_code
-        except Exception:  # noqa: BLE001 — раздел не определён, состав всё равно нужен
-            section = None
+        if manual_section:
+            section = manual_section
+        else:
+            try:
+                section = classify_document(pdf_path, name).discipline_code
+            except Exception:  # noqa: BLE001 — раздел не определён, состав всё равно нужен
+                section = None
 
         out = VolumeComposition(name=name, section=section, pages=doc.page_count)
         text_facts: list[dict] = []

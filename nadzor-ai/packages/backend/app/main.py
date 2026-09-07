@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import uuid
 from pathlib import Path
 
@@ -18,17 +19,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from . import models, schemas
-from .classification import classify_document
+from .classification import DISCIPLINE_CODES, classify_document
+from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
+from .document_composition import describe_volume, render_composition
 from .documents import extract_document_facts
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import load_text_facts, render_summary
-from .rd_overview import describe_volume, render_composition
-from .pd_store import save_run
+from .pd_store import load_run, save_run
 from .requirement_llm_extract import extract_requirements_llm
+from .requirement_text_verify import verify_general_requirements_llm
 from .triangulated_pipeline import run_triangulated_analysis
-from .vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier, render_page_to_png_bytes
+from .vision import (
+    compare_page_pair,
+    compare_text_pair,
+    make_llm_stamp_classifier,
+    render_page_to_png_bytes,
+)
+from .vision_page_compare import check_requirement_on_page
 
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -184,6 +193,47 @@ def delete_document(document_id: int, db: Session = Depends(get_session)):
     db.delete(doc)
     db.commit()
     return {"ok": True}
+
+
+@app.patch("/documents/{document_id}", response_model=schemas.DocumentOut)
+def update_document(document_id: int, body: schemas.DocumentUpdate, db: Session = Depends(get_session)):
+    """Ручной выбор или исправление раздела/тома (Г.97).
+
+    Автоматическое определение (имя файла, титульный лист, штамп, номер
+    раздела по ПП №87 — Г.13/79/80) остаётся и работает как раньше. Но у
+    инспектора должно быть последнее слово: не опознанный файл иначе уходит
+    в разбор с «раздел не определён», и требования остаются без привязки к
+    разделу — а привязка это прямое требование пользователя (Г.86).
+
+    `discipline_code=null` снимает ручную правку и возвращает то, что
+    определила программа: ошибочный ввод не должен быть необратимым.
+    """
+    doc = db.get(models.Document, document_id)
+    if doc is None:
+        raise HTTPException(404, "not found")
+
+    if body.discipline_code is None:
+        # Возврат к автоматике: пересчитываем, а не оставляем прежнее
+        # значение — иначе «отменил правку» тихо сохранило бы её результат.
+        try:
+            result = classify_document(doc.file_path, doc.name)
+            doc.discipline_code = result.discipline_code
+            doc.classification_source = result.source
+        except Exception as exc:  # noqa: BLE001 — не определили: честное «нет», а не падение
+            doc.discipline_code = None
+            doc.classification_source = f"не определён: {exc}"
+    else:
+        code = body.discipline_code.strip().upper()
+        if code not in DISCIPLINE_CODES:
+            raise HTTPException(400, "неизвестный код раздела; допустимые: "
+                                     + ", ".join(DISCIPLINE_CODES))
+        doc.discipline_code = code
+        # Источник виден в списке файлов: инспектор должен различать, что
+        # определила программа, а что он поправил сам (Г.10).
+        doc.classification_source = "manual"
+    db.commit()
+    db.refresh(doc)
+    return doc
 
 
 @app.get("/page-image/{document_id}/{page}")
@@ -507,13 +557,15 @@ def _run_pd(run_id: int) -> None:
             db.commit()
             return
 
-        sources = [(d.file_path, d.name) for _, d in docs]
+        # Г.97 — третий элемент: раздел, заданный вручную; он побеждает.
+        sources = [(d.file_path, d.name, _manual_section(d)) for _, d in docs]
 
         # Г.95 — состав считается ВСЕГДА и первым: он дёшев, не требует
         # модели и объясняет, чего ждать от сводки. У рабочей документации
         # текстового слоя почти нет по природе (Г.8), и пустая сводка без
         # состава неотличима от сбоя.
-        run.composition = render_composition([describe_volume(path, name) for path, name in sources])
+        run.composition = render_composition(
+            [describe_volume(path, name, manual) for path, name, manual in sources])
         db.commit()
 
         requirements = extract_requirements_llm(load_text_facts(sources), config=config)
@@ -573,6 +625,143 @@ def get_pd_run(run_id: int, db: Session = Depends(get_session)):
 @app.get("/pd-runs", response_model=list[schemas.PdRunOut])
 def list_pd_runs(db: Session = Depends(get_session)):
     return db.query(models.PdRun).order_by(models.PdRun.id.desc()).limit(50).all()
+
+
+def _manual_section(doc: models.Document) -> str | None:
+    """Раздел, заданный инспектором вручную, или None (Г.97)."""
+    return doc.discipline_code if doc.classification_source == "manual" else None
+
+
+def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
+    """{номер помещения: [{path, page}]} по рабочей документации.
+
+    Единственный способ узнать, КАКОЙ лист смотреть под требование: у
+    требования из прозы ПД нет строки реестра, которая указала бы лист
+    (Г.35). Битый файл пропускается с причиной, а не роняет прогон."""
+    index: dict[str, list[dict]] = {}
+    for source in sources:
+        path, name = source[0], source[1]
+        try:
+            facts = extract_document_facts(path, name)
+        except Exception as exc:  # noqa: BLE001 — один файл не роняет сверку
+            print(f"реестр помещений РД не построен ({exc}): {name}", file=sys.stderr)
+            continue
+        for fact in facts.room_facts:
+            key = str(fact.get("key") or "")
+            if key:
+                index.setdefault(key, []).append({"path": path, "page": fact["page"], "name": name})
+    return index
+
+
+def _run_compliance(run_id: int) -> None:
+    """Фоновая задача: сверка требований ПД с рабочей документацией (Г.96).
+
+    Требования берутся из СОХРАНЁННОГО разбора ПД, а не извлекаются заново.
+    Связь проверяется до работы (Г.91), как и в стадии 1.
+    """
+    db = next(get_session())
+    try:
+        run = db.get(models.ComplianceRun, run_id)
+        if run is None:
+            return
+        pd_run = db.get(models.PdRun, run.pd_run_id)
+        if pd_run is None or pd_run.store_run_id is None:
+            run.status = "error"
+            run.error = ("разбор ПД не найден или не сохранён — сначала выполните разбор "
+                         "проектной документации")
+            db.commit()
+            return
+
+        requirements = load_run(pd_run.store_run_id)
+        if not requirements:
+            run.status = "error"
+            run.error = ("в сохранённом разборе ПД нет ни одного требования — сверять не с чем "
+                         "(это не «в РД всё выполнено»)")
+            db.commit()
+            return
+        run.requirements_total = len(requirements)
+
+        rd_docs = [(i, db.get(models.Document, i)) for i in run.rd_document_ids]
+        missing = [str(i) for i, d in rd_docs if d is None]
+        if missing:
+            run.status = "error"
+            run.error = "документы РД не найдены: " + ", ".join(missing)
+            db.commit()
+            return
+
+        config = _llm_config(db)
+        run.provider = config.provider
+        db.commit()
+        has_key = bool(config.api_key)
+        if has_key:
+            reachable, why = check_llm_reachable(config)
+            if not reachable:
+                run.status = "error"
+                run.error = (f"связь с провайдером {config.provider} не прошла — {why}. "
+                             "Сверка НЕ выполнена: это не «в РД ничего не подтвердилось».")
+                db.commit()
+                return
+
+        sources = [(d.file_path, d.name, _manual_section(d)) for _, d in rd_docs]
+        room_index = _rd_room_index(sources) if has_key else {}
+
+        def _candidates(rooms: list[str], _sources) -> list[tuple[str, int]]:
+            pages: list[tuple[str, int]] = []
+            for room in rooms:
+                for entry in room_index.get(str(room), []):
+                    pair = (entry["path"], entry["page"])
+                    if pair not in pages:
+                        pages.append(pair)
+            return pages
+
+        result = check_compliance(
+            requirements,
+            rd_text_facts=load_text_facts(sources),
+            rd_sources=sources,
+            config=config if has_key else None,
+            llm_verify=(lambda reqs, facts, cfg: verify_general_requirements_llm(reqs, facts, cfg))
+            if has_key else None,
+            vision_check=check_requirement_on_page if has_key else None,
+            candidate_pages=_candidates if has_key else None,
+        )
+        run.report = render_compliance_report(result)
+        run.counts = result.counts
+        run.status = "done"
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — сбой виден инспектору, сервер жив
+        run = db.get(models.ComplianceRun, run_id)
+        if run is not None:
+            run.status = "error"
+            run.error = f"{type(exc).__name__}: {exc}"
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/compliance-runs", response_model=schemas.ComplianceRunOut)
+def create_compliance_run(
+    body: schemas.ComplianceRunCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+):
+    """Кнопка «Сверить РД с требованиями ПД» — третья и последняя."""
+    if not body.rd_document_ids:
+        raise HTTPException(400, "не выбран ни один документ рабочей документации")
+    run = models.ComplianceRun(
+        pd_run_id=body.pd_run_id, rd_document_ids=body.rd_document_ids, status="running")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    background_tasks.add_task(_run_compliance, run.id)
+    return run
+
+
+@app.get("/compliance-runs/{run_id}", response_model=schemas.ComplianceRunOut)
+def get_compliance_run(run_id: int, db: Session = Depends(get_session)):
+    run = db.get(models.ComplianceRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    return run
 
 
 @app.get("/llm-check", response_model=schemas.LlmCheckOut)

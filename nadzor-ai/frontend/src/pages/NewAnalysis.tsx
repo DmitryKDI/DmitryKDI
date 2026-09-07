@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  backendApi, pageImageUrl, type BackendDocument, type BackendFinding, type BackendSettings,
+  backendApi, pageImageUrl, type BackendDocument, type BackendFinding, type BackendPdRun,
+  type BackendSettings, type LlmCheck,
 } from '../backendApi'
 import { useApp, type PendingUpload } from '../store'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
@@ -30,25 +31,58 @@ const PROVIDER_DEFAULT_MODEL: Record<BackendSettings['provider'], string> = {
 
 const CLASSIFICATION_SOURCE_LABELS: Record<string, string> = {
   filename: 'по имени файла', title_page: 'по титульному листу', stamp_text: 'по штампу (текст)',
-  stamp_vision: 'по штампу (зрение)', none: 'не определён',
+  stamp_vision: 'по штампу (зрение)', none: 'не определён', manual: 'указан вручную',
+  filename_section_number: 'по номеру раздела в имени',
 }
 
-function DisciplineBadge({ doc }: { doc: BackendDocument }) {
-  if (!doc.discipline_code) {
-    return <Chip tone="warn">раздел не определён</Chip>
-  }
+/**
+ * Раздел документа: что определила программа и возможность поправить (Г.97).
+ * Автоопределение остаётся, но последнее слово за инспектором: не опознанный
+ * файл иначе уходит в разбор без раздела, а привязка требования к разделу —
+ * прямое требование пользователя (Г.86).
+ */
+function DisciplineBadge({ doc, onChange }: {
+  doc: BackendDocument
+  onChange?: (code: string | null) => void
+}) {
+  const manual = doc.classification_source === 'manual'
   return (
-    <Chip tone="accent">
-      {doc.discipline_code} · {CLASSIFICATION_SOURCE_LABELS[doc.classification_source ?? ''] ?? doc.classification_source}
-    </Chip>
+    <span className="inline-flex items-center gap-1">
+      {doc.discipline_code ? (
+        <Chip tone={manual ? 'accent' : 'accent'}>
+          {doc.discipline_code} · {CLASSIFICATION_SOURCE_LABELS[doc.classification_source ?? ''] ?? doc.classification_source}
+        </Chip>
+      ) : (
+        <Chip tone="warn">раздел не определён</Chip>
+      )}
+      {onChange && (
+        <select
+          aria-label="Раздел документа"
+          value={manual ? (doc.discipline_code ?? '') : ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          className="rounded border border-surface-line bg-surface px-1 py-0.5 text-[11px] text-ink-muted">
+          <option value="">{doc.discipline_code ? 'вернуть автоопределение' : 'указать раздел…'}</option>
+          {DISCIPLINE_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      )}
+    </span>
   )
 }
 
+// Список кодов разделов для ручного выбора. Держится здесь, а не приходит с
+// сервера: это короткий справочник по ГОСТ Р 21.1101, меняется вместе с
+// реестром на бэкенде, и лишний запрос ради него не нужен.
+const DISCIPLINE_OPTIONS = [
+  'ГП', 'АР', 'АС', 'КР', 'КЖ', 'КМ', 'ОВ', 'ВК', 'НВК', 'НВ', 'ВВ', 'ЭОМ', 'ЭС', 'СС',
+  'АПС', 'ОПС', 'СКС', 'СКУД', 'АУПТ', 'ИТП', 'ВТ', 'ТХ', 'ПОС', 'ООС', 'ПБ',
+]
+
 function UploadZone({
-  title, subtitle, docs, onFiles, onRemove, pending,
+  title, subtitle, docs, onFiles, onRemove, onSetSection, pending,
 }: {
   title: string; subtitle: string; docs: BackendDocument[]
   onFiles: (files: FileList | null) => void; onRemove: (id: number) => void
+  onSetSection: (id: number, code: string | null) => void
   pending: PendingUpload[]
 }) {
   const [dragOver, setDragOver] = useState(false)
@@ -96,7 +130,7 @@ function UploadZone({
                   {doc.name} <span className="text-ink-faint">· {doc.pages} л.</span>
                 </span>
                 <span className="flex items-center gap-2">
-                  <DisciplineBadge doc={doc} />
+                  <DisciplineBadge doc={doc} onChange={(code) => onSetSection(doc.id, code)} />
                   <button className="text-xs text-ink-faint hover:text-critical" onClick={() => onRemove(doc.id)} aria-label="Удалить">✕</button>
                 </span>
               </div>
@@ -200,6 +234,82 @@ function FindingGroup({ label, findings, onReview }: {
     </li>
   )
 }
+
+/**
+ * Карточка разбора комплекта — ОДНА на обе стороны (Г.95). Проектная и
+ * рабочая документация разбираются одним механизмом; отдельного компонента
+ * «разбор РД» нет намеренно, чтобы различие не завелось там, где его нет.
+ */
+function ParseCard({
+  title, subtitle, docs, run, onStart, pending, llmCheck,
+}: {
+  title: string
+  subtitle: string
+  docs: BackendDocument[]
+  run: BackendPdRun | undefined
+  onStart: () => void
+  pending: boolean
+  llmCheck?: LlmCheck
+}) {
+  const running = run?.status === 'running' || pending
+  return (
+    <SectionCard title={title} subtitle={subtitle}>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={docs.length === 0 || running}
+          onClick={onStart}
+          className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
+          {running ? 'Разбираем…' : 'Разобрать документацию'}
+        </button>
+        {docs.length === 0 && <span className="text-xs text-ink-muted">Сначала загрузите документы выше.</span>}
+        {/* Г.91 — состояние связи видно ДО запуска: разбор тома это десятки
+            вызовов и минуты, а при оборванной связи каждый молча вернул бы
+            пустой результат. */}
+        {llmCheck && (
+          <span className={`text-xs ${llmCheck.reachable ? 'text-ink-muted' : 'text-danger'}`}>
+            {llmCheck.reachable ? `ИИ (${llmCheck.provider}): связь есть` : `ИИ (${llmCheck.provider}): ${llmCheck.message}`}
+          </span>
+        )}
+      </div>
+
+      {!run && (
+        <p className="text-sm text-ink-muted">
+          Загрузите документы и нажмите кнопку. Настраивать ничего не нужно: правила извлечения и модель заданы в системе.
+        </p>
+      )}
+      {run?.status === 'running' && <Skeleton rows={3} />}
+      {run?.status === 'error' && (
+        <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">{run.error}</div>
+      )}
+      {run?.status === 'done' && (
+        <div className="space-y-2">
+          <p className="text-xs text-ink-muted">
+            Извлечено требований: <span className="font-medium text-ink">{run.requirements_total}</span>
+            {' · '}ИИ: {run.provider}
+            {run.store_run_id !== null && <> · разбор №{run.store_run_id} сохранён для сверки</>}
+          </p>
+          {/* Г.95 — состав показывается всегда: у рабочей документации текста
+              почти нет по природе, и пустая сводка без состава неотличима от сбоя. */}
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-surface-line bg-surface-muted/60 p-3 text-xs leading-relaxed text-ink">
+            {run.composition}
+          </pre>
+          {run.requirements_total > 0 ? (
+            <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-md border border-surface-line bg-surface-muted/60 p-3 text-xs leading-relaxed text-ink">
+              {run.summary}
+            </pre>
+          ) : (
+            <p className="text-sm text-ink-muted">
+              Требований из текста не извлечено — см. состав выше: если связного текста в томе нет,
+              это ожидаемо, проверять нужно по листам.
+            </p>
+          )}
+        </div>
+      )}
+    </SectionCard>
+  )
+}
+
 
 export default function NewAnalysis() {
   const queryClient = useQueryClient()
@@ -305,16 +415,49 @@ export default function NewAnalysis() {
   // ПЕРЕД ним: разбор ПД самодостаточен, рабочей документации на половине
   // объектов нет вовсе, и её отсутствие не должно мешать получить сводку.
   const [pdRunId, setPdRunId] = useState<number | null>(null)
+  const [rdRunId, setRdRunId] = useState<number | null>(null)
   const pdRun = useQuery({
     queryKey: ['pd-run', pdRunId],
     queryFn: () => backendApi.getPdRun(pdRunId as number),
     enabled: pdRunId !== null,
     refetchInterval: (q) => (q.state.data?.status === 'running' ? 1500 : false),
   })
+  // Г.95 — разбор РД идёт ТЕМ ЖЕ механизмом, отличается только стороной
+  // комплекта: отдельного пути для рабочей документации в коде нет.
+  const rdRun = useQuery({
+    queryKey: ['pd-run', rdRunId],
+    queryFn: () => backendApi.getPdRun(rdRunId as number),
+    enabled: rdRunId !== null,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 1500 : false),
+  })
   const llmCheck = useQuery({ queryKey: ['llm-check'], queryFn: backendApi.checkLlm })
+  // Г.97 — ручная правка раздела: после ответа сервера список файлов
+  // перечитывается, чтобы источник («указан вручную») был виден сразу.
+  const setSection = useMutation({
+    mutationFn: ({ id, code }: { id: number; code: string | null }) =>
+      backendApi.updateDocumentSection(id, code),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['backend-documents'] }) },
+  })
   const startPdRun = useMutation({
-    mutationFn: () => backendApi.createPdRun(beforeDocs.map((d) => d.id)),
+    mutationFn: () => backendApi.createPdRun(beforeDocs.map((d) => d.id), 'before'),
     onSuccess: (run) => setPdRunId(run.id),
+  })
+  const startRdRun = useMutation({
+    mutationFn: () => backendApi.createPdRun(afterDocs.map((d) => d.id), 'after'),
+    onSuccess: (run) => setRdRunId(run.id),
+  })
+
+  // Г.96 — третья кнопка: сверка по СОХРАНЁННОМУ разбору ПД.
+  const [complianceRunId, setComplianceRunId] = useState<number | null>(null)
+  const complianceRun = useQuery({
+    queryKey: ['compliance-run', complianceRunId],
+    queryFn: () => backendApi.getComplianceRun(complianceRunId as number),
+    enabled: complianceRunId !== null,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 2000 : false),
+  })
+  const startCompliance = useMutation({
+    mutationFn: () => backendApi.createComplianceRun(pdRunId as number, afterDocs.map((d) => d.id)),
+    onSuccess: (run) => setComplianceRunId(run.id),
   })
 
   const [groupByLabel, setGroupByLabel] = useState(false)
@@ -333,58 +476,68 @@ export default function NewAnalysis() {
       <div className="space-y-4 lg:col-span-2">
         <UploadZone title="1. Проектная документация (ПД)" subtitle="Комплект «до» — эталон, с которым сравниваем"
           docs={beforeDocs} onFiles={(f) => uploadTo('before', f)} onRemove={(id) => removeFrom('before', id)}
+          onSetSection={(id, code) => setSection.mutate({ id, code })}
           pending={pendingBefore} />
         <UploadZone title="2. Рабочая / исполнительная документация (РД/ИД)" subtitle="Комплект «после» — что проверяем на соответствие"
           docs={afterDocs} onFiles={(f) => uploadTo('after', f)} onRemove={(id) => removeFrom('after', id)}
+          onSetSection={(id, code) => setSection.mutate({ id, code })}
           pending={pendingAfter} />
 
+        <ParseCard
+          title="1. Разбор проектной документации"
+          subtitle="Требования и способы производства работ + состав тома. Рабочая документация не нужна: её отсутствие не ошибка"
+          docs={beforeDocs} run={pdRun.data} pending={startPdRun.isPending}
+          onStart={() => startPdRun.mutate()} llmCheck={llmCheck.data} />
+
+        <ParseCard
+          title="2. Разбор рабочей документации"
+          subtitle="Тот же механизм, другая сторона комплекта. Если связного текста нет — показывается состав тома: листы чертежей, таблицы"
+          docs={afterDocs} run={rdRun.data} pending={startRdRun.isPending}
+          onStart={() => startRdRun.mutate()} />
+
         <SectionCard
-          title="Разбор проектной документации"
-          subtitle="Требования и способы производства работ из ПД — сводка для инспектора. Рабочая документация не нужна: её отсутствие не ошибка">
+          title="3. Соответствие РД требованиям ПД"
+          subtitle="По списку требований из разбора ПД: что подтверждается текстом или чертежами РД, а что нужно посмотреть глазами">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
-              disabled={beforeDocs.length === 0 || pdRun.data?.status === 'running' || startPdRun.isPending}
-              onClick={() => startPdRun.mutate()}
+              disabled={!pdRun.data?.store_run_id || afterDocs.length === 0
+                        || complianceRun.data?.status === 'running' || startCompliance.isPending}
+              onClick={() => startCompliance.mutate()}
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
-              {pdRun.data?.status === 'running' || startPdRun.isPending ? 'Разбираем…' : 'Разобрать документацию'}
+              {complianceRun.data?.status === 'running' || startCompliance.isPending ? 'Сверяем…' : 'Сверить'}
             </button>
-            {beforeDocs.length === 0 && (
-              <span className="text-xs text-ink-muted">Сначала загрузите проектную документацию выше.</span>
+            {!pdRun.data?.store_run_id && (
+              <span className="text-xs text-ink-muted">Сначала выполните разбор проектной документации.</span>
             )}
-            {/* Г.91 — состояние связи видно ДО запуска: разбор тома это
-                десятки вызовов и минуты, а при оборванной связи каждый молча
-                вернул бы пустой результат. */}
-            {llmCheck.data && (
-              <span className={`text-xs ${llmCheck.data.reachable ? 'text-ink-muted' : 'text-danger'}`}>
-                {llmCheck.data.reachable
-                  ? `ИИ (${llmCheck.data.provider}): связь есть`
-                  : `ИИ (${llmCheck.data.provider}): ${llmCheck.data.message}`}
-              </span>
+            {pdRun.data?.store_run_id && afterDocs.length === 0 && (
+              <span className="text-xs text-ink-muted">Загрузите рабочую документацию.</span>
             )}
           </div>
 
-          {pdRunId === null && (
-            <p className="text-sm text-ink-muted">
-              Загрузите тома ПД и нажмите кнопку. Настраивать ничего не нужно: правила извлечения
-              и модель заданы в системе.
-            </p>
-          )}
-          {pdRun.data?.status === 'running' && <Skeleton rows={3} />}
-          {pdRun.data?.status === 'error' && (
+          {/* Прямое предупреждение пользователя: в РД текста мало по природе,
+              поэтому «не подтверждено» здесь ожидаемо и НЕ является нарушением
+              (Б.6/Г.96). Оговорка стоит до цифр, а не после. */}
+          <p className="mb-3 rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2 text-xs text-ink-muted">
+            Результат — гипотезы для проверки, не заключение о нарушениях. В рабочей документации
+            связного текста мало по природе, поэтому «требует проверки» означает «подтверждения не
+            нашлось в доступных данных», а решение принимает инспектор.
+          </p>
+
+          {complianceRun.data?.status === 'running' && <Skeleton rows={3} />}
+          {complianceRun.data?.status === 'error' && (
             <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">
-              {pdRun.data.error}
+              {complianceRun.data.error}
             </div>
           )}
-          {pdRun.data?.status === 'done' && (
+          {complianceRun.data?.status === 'done' && (
             <div className="space-y-2">
               <p className="text-xs text-ink-muted">
-                Извлечено требований: <span className="font-medium text-ink">{pdRun.data.requirements_total}</span>
-                {' · '}ИИ: {pdRun.data.provider}
-                {pdRun.data.store_run_id !== null && <> · разбор №{pdRun.data.store_run_id} сохранён для сверки с РД</>}
+                Требований проверено: <span className="font-medium text-ink">{complianceRun.data.requirements_total}</span>
+                {' · '}ИИ: {complianceRun.data.provider}
               </p>
-              <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-md border border-surface-line bg-surface-muted/60 p-3 text-xs leading-relaxed text-ink">
-                {pdRun.data.summary}
+              <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border border-surface-line bg-surface-muted/60 p-3 text-xs leading-relaxed text-ink">
+                {complianceRun.data.report}
               </pre>
             </div>
           )}

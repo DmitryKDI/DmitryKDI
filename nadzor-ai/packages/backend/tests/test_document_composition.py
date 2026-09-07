@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pymupdf  # noqa: E402
-from app.rd_overview import describe_volume, render_composition  # noqa: E402
+from app.document_composition import describe_volume, render_composition  # noqa: E402
 
 # Кириллица требует шрифта с её поддержкой: встроенный helv её не кодирует
 # и `get_text` возвращает точки вместо букв — синтетика молча получалась бы

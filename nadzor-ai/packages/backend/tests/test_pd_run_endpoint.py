@@ -183,3 +183,108 @@ def test_unknown_side_is_rejected_explicitly(tmp_path):
     doc_id = _upload(tmp_path)
     r = client.post("/pd-runs", json={"document_ids": [doc_id], "side": "сбоку"})
     assert r.status_code == 400 and "side" in r.json()["detail"]
+
+
+def _done_pd_run(tmp_path, monkeypatch) -> int:
+    doc_id = _upload(tmp_path)
+    monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "мок"))
+    monkeypatch.setattr(
+        main_module, "extract_requirements_llm",
+        lambda facts, config, **kw: [Requirement(
+            rooms=[], page=1, sentence="Регистры по ГОСТ 8732-78.", code=None,
+            document="pd.pdf", section="ОВ", summary="Регистры ГОСТ 8732-78")],
+    )
+    return _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"}).json()["id"])["id"]
+
+
+def _wait_compliance(run_id: int, timeout: float = 20.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body = client.get(f"/compliance-runs/{run_id}").json()
+        if body["status"] != "running":
+            return body
+        time.sleep(0.05)
+    raise AssertionError("сверка не завершилась за отведённое время")
+
+
+def test_compliance_uses_saved_pd_run_and_never_says_violation(tmp_path, monkeypatch):
+    """Г.96 — третья кнопка: требования берутся из сохранённого разбора ПД,
+    а не извлекаются заново. Отчёт не называет ничего нарушением."""
+    _set_provider("gigachat", api_key="")
+    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
+    pd_run_id = _done_pd_run(tmp_path, monkeypatch)
+    rd_id = _upload(tmp_path, text="Трубы стальные бесшовные ГОСТ 8732-78 по спецификации.")
+
+    body = _wait_compliance(client.post(
+        "/compliance-runs", json={"pd_run_id": pd_run_id, "rd_document_ids": [rd_id]},
+    ).json()["id"])
+
+    assert body["status"] == "done", body
+    assert body["requirements_total"] == 1
+    assert "не является заключением" in body["report"].lower()
+    assert body["counts"], body
+
+
+def test_compliance_without_pd_run_refuses_explicitly(tmp_path):
+    rd_id = _upload(tmp_path)
+    body = _wait_compliance(client.post(
+        "/compliance-runs", json={"pd_run_id": 999999, "rd_document_ids": [rd_id]},
+    ).json()["id"])
+    assert body["status"] == "error"
+    assert "разбор ПД" in (body["error"] or "")
+
+
+def test_section_can_be_set_by_hand_when_file_is_not_recognised(tmp_path, monkeypatch):
+    """Г.97 — автоматическое определение раздела остаётся, но у инспектора
+    есть последнее слово. Файл без узнаваемых признаков (имя, титул, штамп)
+    раньше уходил в разбор с «раздел не определён», и требования оставались
+    без привязки — а привязка к разделу это прямое требование пользователя
+    (Г.86)."""
+    doc_id = _upload(tmp_path, text="Ничего узнаваемого.")
+    before = client.get("/documents").json()
+    mine = [d for d in before if d["id"] == doc_id][0]
+    assert mine["discipline_code"] is None, "файл действительно не опознан автоматически"
+
+    r = client.patch(f"/documents/{doc_id}", json={"discipline_code": "ВК"})
+    assert r.status_code == 200, r.text
+    assert r.json()["discipline_code"] == "ВК"
+    assert r.json()["classification_source"] == "manual", "источник виден: раздел задан руками"
+
+
+def test_manual_section_reaches_the_run_and_wins_over_guessing(tmp_path, monkeypatch):
+    """Ручной выбор должен доезжать до разбора, а не оставаться меткой в
+    списке файлов: иначе «поправил» и ничего не изменилось."""
+    doc_id = _upload(tmp_path, text="Ничего узнаваемого.")
+    client.patch(f"/documents/{doc_id}", json={"discipline_code": "ЭОМ"})
+
+    seen: list = []
+    monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "мок"))
+
+    def fake_extract(facts, config, **kw):
+        seen.extend({f.get("section") for f in facts})
+        return []
+
+    monkeypatch.setattr(main_module, "extract_requirements_llm", fake_extract)
+    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"}).json()["id"])
+
+    assert body["status"] == "done"
+    assert seen == ["ЭОМ"], f"раздел из ручной правки не доехал до разбора: {seen}"
+
+
+def test_unknown_section_code_is_rejected_with_the_list(tmp_path):
+    """Опечатка в коде раздела не должна тихо сохраниться: ошибка называет
+    допустимые значения, иначе инспектор не поймёт, что ввёл не то."""
+    doc_id = _upload(tmp_path)
+    r = client.patch(f"/documents/{doc_id}", json={"discipline_code": "ЫЫЫ"})
+    assert r.status_code == 400
+    assert "ОВ" in r.json()["detail"], r.json()
+
+
+def test_manual_section_can_be_cleared_back_to_automatic(tmp_path):
+    """Ручную правку можно отменить — вернуться к тому, что определила
+    программа, а не остаться навсегда с ошибочным вводом."""
+    doc_id = _upload(tmp_path)
+    client.patch(f"/documents/{doc_id}", json={"discipline_code": "КР"})
+    r = client.patch(f"/documents/{doc_id}", json={"discipline_code": None})
+    assert r.status_code == 200
+    assert r.json()["classification_source"] != "manual"

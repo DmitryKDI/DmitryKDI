@@ -202,6 +202,32 @@ class PdRun(Base):
     composition: Mapped[str] = mapped_column(Text, default="")
 
 
+class ComplianceRun(Base):
+    """Прогон СТАДИИ 3 — сверки «выполнено ли в РД то, что требует ПД» (Г.96).
+
+    Ссылается на СОХРАНЁННЫЙ разбор ПД (`pd_run_id`), а не извлекает
+    требования заново: разбор тома — десятки вызовов модели, повторять их
+    ради сверки бессмысленно (Г.87, ровно тот довод, ради которого
+    хранилище разборов и заводилось).
+
+    `report` — готовый текст для инспектора, `counts` — сводка по статусам
+    для интерфейса. Ни один статус не является вердиктом о нарушении:
+    отсутствие подтверждения в рабочей документации ожидаемо (Б.6, Г.96).
+    """
+    __tablename__ = "compliance_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    status: Mapped[str] = mapped_column(String, default="running")  # running|done|error
+    pd_run_id: Mapped[int] = mapped_column(Integer, default=0)
+    rd_document_ids: Mapped[list] = mapped_column(JSON, default=list)
+    provider: Mapped[str] = mapped_column(String, default="")
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    report: Mapped[str] = mapped_column(Text, default="")
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    requirements_total: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class Settings(Base):
     __tablename__ = "settings"
 

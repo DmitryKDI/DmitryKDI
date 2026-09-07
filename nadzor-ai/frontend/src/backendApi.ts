@@ -184,6 +184,23 @@ export interface BackendPdRun {
   requirements_total: number
   /** Ссылка на запись в хранилище разборов — по ней идёт сверка с РД. */
   store_run_id: number | null
+  side: 'before' | 'after'
+  /** Состав тома: листов чертежей, таблиц по типам. Считается всегда (Г.95). */
+  composition: string
+}
+
+/** Прогон сверки «выполнено ли в РД то, что требует ПД» (Г.96). */
+export interface BackendComplianceRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error'
+  pd_run_id: number
+  provider: string
+  error: string | null
+  /** Готовый отчёт. Ни один статус не является вердиктом о нарушении. */
+  report: string
+  counts: Record<string, number>
+  requirements_total: number
 }
 
 /** Предполётная проверка связи (Г.91): узнать о проблеме ДО разбора. */
@@ -208,6 +225,13 @@ export const backendApi = {
   },
   listDocuments: () => request<BackendDocument[]>('/documents'),
   deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, { method: 'DELETE' }),
+  /** Ручной выбор раздела; null возвращает автоопределение (Г.97). */
+  updateDocumentSection: (id: number, disciplineCode: string | null) =>
+    request<BackendDocument>(`/documents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ discipline_code: disciplineCode }),
+    }),
 
   createAnalysisRun: (beforeIds: number[], afterIds: number[]) =>
     request<BackendAnalysisRun>('/analysis-runs', {
@@ -235,15 +259,24 @@ export const backendApi = {
   getTriangulatedRun: (id: number) => request<BackendTriangulatedRun>(`/triangulated-runs/${id}`),
 
   /** Кнопка «Разобрать документацию»: на входе только список документов. */
-  createPdRun: (documentIds: number[]) =>
+  createPdRun: (documentIds: number[], side: 'before' | 'after' = 'before') =>
     request<BackendPdRun>('/pd-runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ document_ids: documentIds }),
+      body: JSON.stringify({ document_ids: documentIds, side }),
     }),
   getPdRun: (id: number) => request<BackendPdRun>(`/pd-runs/${id}`),
   listPdRuns: () => request<BackendPdRun[]>('/pd-runs'),
   checkLlm: () => request<LlmCheck>('/llm-check'),
+
+  /** Кнопка «Сверить РД с требованиями ПД» — по сохранённому разбору ПД. */
+  createComplianceRun: (pdRunId: number, rdDocumentIds: number[]) =>
+    request<BackendComplianceRun>('/compliance-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pd_run_id: pdRunId, rd_document_ids: rdDocumentIds }),
+    }),
+  getComplianceRun: (id: number) => request<BackendComplianceRun>(`/compliance-runs/${id}`),
 
   getSettings: () => request<BackendSettings>('/settings'),
   updateSettings: (settings: BackendSettings) =>

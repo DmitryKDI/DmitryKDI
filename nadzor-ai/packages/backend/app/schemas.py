@@ -142,3 +142,33 @@ class LlmCheckOut(BaseModel):
     reachable: bool
     provider: str
     message: str
+
+
+class ComplianceRunCreate(BaseModel):
+    """Кнопка «Сверить РД с требованиями ПД»: на входе сохранённый разбор ПД
+    и документы РД. Требования не передаются — они уже разобраны (Г.96)."""
+    pd_run_id: int
+    rd_document_ids: list[int]
+
+
+class ComplianceRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: dt.datetime
+    status: str
+    pd_run_id: int
+    provider: str
+    error: str | None
+    report: str
+    counts: dict
+    requirements_total: int
+
+
+class DocumentUpdate(BaseModel):
+    """Ручная правка раздела/тома (Г.97).
+
+    `None` — снять ручную правку и вернуться к автоматическому определению:
+    ошибочный ввод не должен становиться необратимым.
+    """
+    discipline_code: str | None = None
