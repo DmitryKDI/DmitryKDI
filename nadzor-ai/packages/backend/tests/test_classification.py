@@ -153,6 +153,40 @@ def test_vision_fallback_reads_real_stamp_code():
     print("OK: vision fallback correctly classifies image-only stamp")
 
 
+def test_vision_stamp_failure_does_not_crash_the_run(capsys):
+    """Г.84 — реальный пробел того же класса, что Г.73 нашёл в
+    `ventilation_mo.py`: за `vision_stamp_fn` стоит цепочка
+    `make_llm_stamp_classifier` → `read_stamp_by_vision` → `call_llm_json`
+    БЕЗ try/except, а `scan_cli.py::_load_side` не имел защиты у себя.
+    Истёкший ключ, 429 или SSL-сертификат (всё наблюдалось живьём, Г.77/78)
+    ронял ВЕСЬ прогон на первом же документе с растровым штампом вместо
+    честного «раздел не определён» — того же поведения, что штатно даёт
+    режим `--no-llm`."""
+    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
+
+    def failing_vision_fn(png_bytes: bytes):
+        raise ConnectionError("[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate")
+
+    result = classify_document(str(pdf_path), "rd_floor1.pdf", vision_stamp_fn=failing_vision_fn)
+
+    assert result.discipline_code is None, "код не прочитан — это честный результат, не выдумка"
+    assert result.source == "none"
+    assert result.vision_error is not None, "сбой обязан быть виден полем, а не пропасть молча (Г.10)"
+    assert "CERTIFICATE_VERIFY_FAILED" in result.vision_error
+    assert "пропущено чтение штампа зрением" in capsys.readouterr().err
+    print("OK: сбой vision-вызова даёт видимую ошибку и «раздел не определён», а не падение прогона")
+
+
+def test_successful_vision_leaves_error_field_empty():
+    """`vision_error=None` должно означать именно «сбоя не было», иначе поле
+    бесполезно — проверяем, что успешный путь его не заполняет."""
+    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
+    result = classify_document(str(pdf_path), "rd_floor1.pdf", vision_stamp_fn=lambda png: "ОВ")
+    assert result.discipline_code == "ОВ"
+    assert result.vision_error is None
+    print("OK: при успешном чтении штампа поле ошибки остаётся пустым")
+
+
 def test_title_page_signal():
     """Синтетический случай: титульный лист (без ключевых слов штампа) с
     шифром прямым текстом должен сработать без похода в штамп/vision."""

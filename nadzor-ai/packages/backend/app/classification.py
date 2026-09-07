@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -210,6 +211,13 @@ class ClassificationResult:
     source: str  # 'filename' | 'filename_section_number' | 'title_page' | 'stamp_text' | 'stamp_vision' | 'none'
     scores: dict[str, int] = field(default_factory=dict)
     used_vision: bool = False
+    # Г.84 — текст сбоя vision-вызова, если он был. `None` означает «сбоя не
+    # было», а НЕ «vision не понадобился»: отличать эти два случая нужно
+    # именно потому, что оба дают `discipline_code=None` (Г.10 — «раздел не
+    # определён» и «раздел не прочитан из-за сбоя связи» не должны выглядеть
+    # одинаково). Тот же приём, что уже применён у `extract_mo_table_page`
+    # (поле `error` в возвращаемом словаре, Г.73).
+    vision_error: Optional[str] = None
 
 
 def classify_document(
@@ -276,7 +284,21 @@ def classify_document(
         # докстринг модуля): без vision-модели код не прочитать.
         if vision_stamp_fn is not None:
             crop = render_stamp_crop_png(doc[0])
-            vision_code = vision_stamp_fn(crop)
+            # Г.84 — реальный пробел того же класса, что Г.73 нашёл в
+            # `ventilation_mo.py`: за `vision_stamp_fn` стоит
+            # `vision.make_llm_stamp_classifier` → `read_stamp_by_vision` →
+            # `call_llm_json` БЕЗ try/except. Любой сбой вызова (истёкший
+            # ключ, 429, SSL-сертификат — всё это реально наблюдалось живьём,
+            # Г.77/Г.78) ронял ВЕСЬ прогон на первом же документе с растровым
+            # штампом, вместо честного «раздел не определён» — того самого
+            # поведения, которое режим `--no-llm` даёт штатно. Ловим здесь, в
+            # единой точке, а не у каждого вызывающего: `scan_cli.py`
+            # (`_load_side`) не имел защиты вообще, `main.py` имел свою.
+            try:
+                vision_code = vision_stamp_fn(crop)
+            except Exception as exc:  # noqa: BLE001 — сбой чтения штампа не должен ронять прогон
+                print(f"пропущено чтение штампа зрением ({filename}): {exc!r}", file=sys.stderr)
+                return ClassificationResult(None, "none", scores, vision_error=repr(exc))
             if vision_code:
                 code = vision_code.strip().upper()
                 if code in DISCIPLINE_CODE_SET:
