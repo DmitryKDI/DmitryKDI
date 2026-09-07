@@ -198,8 +198,8 @@ def test_mo_cross_check_reports_uncovered_when_table_found_but_room_missing(monk
     обязан появиться."""
     text_facts = [{"page": 1, "text": "Таблица воздухообменов помещений"}]
     monkeypatch.setattr(registry_diff, "_load_text_facts", lambda paths: text_facts)
-    monkeypatch.setattr(registry_diff, "extract_mo_table_page",
-                         lambda path, page, cfg, **kw: {"rooms": [], "rooms_seen": ["100"]})
+    monkeypatch.setattr(registry_diff, "extract_table_page",
+                         lambda path, page, kind, cfg, **kw: {"rooms": [], "rooms_seen": ["100"]})
     result = registry_diff._run_mo_cross_check(["pd.pdf"], ["rd.pdf"], ["314"], llm_config=None)
     assert result.table_pages_found == 1
     assert result.uncovered == ["314"]
@@ -239,9 +239,9 @@ def test_run_triangulated_auto_wires_mo_signals_when_routing_rooms_selected(tmp_
                 "unchanged": [], "unusable": [], "room_only_before": [], "room_only_after": []}
 
     def fake_run_mo_cross_check(before_paths, after_paths, room_keys, llm_config):
-        from app.ventilation_mo import MoFinding
+        from app.room_entity_check import EntityFinding
         assert room_keys == ["140"]  # тот же список, что выбрал routing auto-select
-        finding = MoFinding(room="140", finding_type="system_mismatch", detail="П6 -> П2")
+        finding = EntityFinding(room="140", finding_type="system_mismatch", detail="П6 -> П2")
         return registry_diff.MoCheckResult(
             table_pages_found=1, pd_entries=[{"room": "140"}], rooms_seen_all={"140"},
             uncovered=[], candidate_pages_count=1, rd_branches_count=1, findings=[finding],

@@ -88,14 +88,14 @@ from app.vision import (  # noqa: E402
     render_page_to_png_bytes,
     verify_candidate,
 )
-from app.ventilation_mo import (  # noqa: E402
-    cross_check_mo_branches,
-    extract_branch_locations,
-    extract_mo_table_page,
+from app.room_entity_check import (  # noqa: E402
+    cross_check_entities,
+    extract_plan_entities,
+    extract_table_page,
     find_uncovered_rooms,
-    is_mo_table_page,
-    render_mo_cross_check_report,
+    render_report as render_entity_report,
 )
+from app.table_registry import all_known_kinds, classify_table_page  # noqa: E402
 from app.visual_prefilter import diff_hot_zone, is_visually_different  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
@@ -627,7 +627,7 @@ def run_triangulated(
                 _emit(f"Запрошенные помещения не найдены в таблице воздухообменов ВООБЩЕ "
                       f"(Г.60): {', '.join(mo_result.uncovered)}")
             if mo_result.pd_entries:
-                _emit(render_mo_cross_check_report(mo_result.findings))
+                _emit(render_entity_report(mo_result.findings))
                 for f in mo_result.findings:
                     signals.append(Signal(source="mo_table", domain="room", key=f.room, detail=f.detail))
             for room in mo_result.uncovered:
@@ -910,10 +910,14 @@ def _run_mo_cross_check(
         text_facts = _load_text_facts([path])
         pages = sorted({f["page"] for f in text_facts})
         for page in pages:
-            if not is_mo_table_page(text_facts, page):
+            # Г.88: тип таблицы приходит из реестра, а не зашит. Годится
+            # ЛЮБАЯ таблица распределения, у которой заполнено описание
+            # сущности — не только вентиляционная.
+            kind = classify_table_page(text_facts, page)
+            if kind is None or not kind.entity_name:
                 continue
             table_pages_found += 1
-            page_result = extract_mo_table_page(path, page, llm_config)
+            page_result = extract_table_page(path, page, kind, llm_config)
             if page_result.get("error"):
                 page_errors.append(f"{Path(path).name} стр.{page}: {page_result['error']}")
                 continue
@@ -938,11 +942,16 @@ def _run_mo_cross_check(
         for ref in room_index.get(entry.get("room", ""), []):
             candidate_pages.add((ref["path"], ref["page"]))
 
+    # Тип таблицы для чтения листов РД — тот же, что опознан на стороне ПД.
+    kinds = [k for k in all_known_kinds() if k.entity_name]
+    plan_kind = kinds[0] if kinds else None
+
     rd_branches: list[dict] = []
     for path, page in sorted(candidate_pages):
-        rd_branches.extend(extract_branch_locations(path, page, llm_config))
+        if plan_kind is not None:
+            rd_branches.extend(extract_plan_entities(path, page, plan_kind, llm_config))
 
-    findings = cross_check_mo_branches(pd_entries, rd_branches)
+    findings = cross_check_entities(pd_entries, rd_branches)
     return MoCheckResult(table_pages_found, pd_entries, rooms_seen_all, uncovered,
                           len(candidate_pages), len(rd_branches), findings, page_errors)
 
@@ -995,7 +1004,7 @@ def run_mo_check(
         _emit(f"Листов РД просмотрено: {result.candidate_pages_count}, "
               f"веток найдено: {result.rd_branches_count}")
         _emit("")
-        _emit(render_mo_cross_check_report(result.findings))
+        _emit(render_entity_report(result.findings))
     finally:
         if out_f:
             out_f.close()

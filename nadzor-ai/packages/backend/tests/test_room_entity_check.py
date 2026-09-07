@@ -104,3 +104,54 @@ def test_entity_drawn_at_the_right_room_is_not_a_finding():
     )
     assert findings == []
     print("OK: совпавшее назначение расхождением не считается")
+
+
+def test_unusable_model_response_gives_empty_not_crash():
+    """Неразбираемый ответ модели — легитимный случай, а не исключение: но
+    он обязан быть отличим от сбоя связи и от честного «на листе пусто»."""
+    original = room_entity_check.call_llm_json
+    original_render = room_entity_check.render_page_to_data_url
+    room_entity_check.call_llm_json = lambda *a, **kw: None
+    room_entity_check.render_page_to_data_url = lambda *a, **kw: "data:,"
+    try:
+        result = extract_table_page("любой.pdf", 1, VENT, config=None)
+    finally:
+        room_entity_check.call_llm_json = original
+        room_entity_check.render_page_to_data_url = original_render
+
+    assert result["rooms"] == []
+    assert result["error"] == "неразбираемый ответ модели"
+    print("OK: неразбираемый ответ помечен, а не выдан за пустой лист")
+
+
+def test_plan_read_failure_returns_empty_instead_of_crashing():
+    """Сбой чтения одного листа плана РД не должен ронять весь прогон."""
+    original = room_entity_check.call_llm_json
+    original_render = room_entity_check.render_page_to_data_url
+    room_entity_check.call_llm_json = lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("таймаут"))
+    room_entity_check.render_page_to_data_url = lambda *a, **kw: "data:,"
+    try:
+        assert room_entity_check.extract_plan_entities("любой.pdf", 1, VENT, config=None) == []
+    finally:
+        room_entity_check.call_llm_json = original
+        room_entity_check.render_page_to_data_url = original_render
+    print("OK: сбой на листе плана даёт пустой список, а не падение")
+
+
+def test_room_without_entities_is_ignored():
+    """Помещение есть строкой, но столбец сущностей пуст — это не находка:
+    таблица честно говорит, что назначать нечего (Г.60, отличие от «строки
+    нет вообще»)."""
+    findings = cross_check_entities([{"room": "101", "system": "П1", "entities": []}], [])
+    assert findings == []
+    print("OK: помещение без назначенных сущностей расхождением не считается")
+
+
+def test_report_lists_findings_and_says_when_clean():
+    findings = cross_check_entities(
+        [{"room": "140", "system": "П6", "entities": ["В2.7"]}], [],
+    )
+    text = room_entity_check.render_report(findings, VENT)
+    assert "В2.7" in text and "140" in text
+    assert "Расхождений не найдено" in room_entity_check.render_report([], VENT)
+    print("OK: отчёт перечисляет находки и прямо говорит, когда их нет")
