@@ -147,11 +147,16 @@ def test_first_match_wins_when_page_ambiguous():
 def test_all_known_kinds_lists_every_registry_entry_with_honest_status():
     kinds = all_known_kinds()
     assert len(kinds) >= 10
-    n1 = [k for k in kinds if k.status.startswith("n=1")]
+    n1 = {k.kind for k in kinds if k.status.startswith("n=1")}
     n0 = [k for k in kinds if k.status.startswith("n=0")]
-    assert len(n1) == 1 and n1[0].kind == "ventilation_balance"
-    assert len(n0) == len(kinds) - 1
-    print("OK: реестр честно показывает n=1 только у вентиляции, остальное — n=0 заготовка")
+    # Список n=1 ведётся ЯВНО: статус повышается только после наблюдения на
+    # реальном документе, и тест должен ловить самовольное повышение.
+    # ventilation_balance — Г.59 (распознавание + извлечение + сверка),
+    # equipment_specification — Г.95 (только распознавание листа, замер на
+    # трёх реальных томах; извлечения и сверки у него нет).
+    assert n1 == {"ventilation_balance", "equipment_specification"}, n1
+    assert len(n0) == len(kinds) - len(n1)
+    print("OK: реестр честно показывает статус каждого типа, n=1 только у наблюдённых")
 
 
 if __name__ == "__main__":

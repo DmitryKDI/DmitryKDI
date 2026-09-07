@@ -143,3 +143,43 @@ def test_gigachat_is_the_default_provider():
     """
     from app import models
     assert models.Settings.__table__.c.provider.default.arg == "gigachat"
+
+
+def test_rd_run_reports_composition_even_without_requirements(tmp_path, monkeypatch):
+    """Г.95 — разбор РД: если связного текста нет, инспектор всё равно должен
+    увидеть, ИЗ ЧЕГО состоит том. Пустая сводка без состава неотличима от
+    сбоя, а у рабочей документации текста нет по природе (Г.8)."""
+    doc_id = _upload(tmp_path, text="")
+    monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "мок"))
+    monkeypatch.setattr(main_module, "extract_requirements_llm", lambda facts, config, **kw: [])
+
+    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "after"}).json()["id"])
+
+    assert body["status"] == "done"
+    assert body["side"] == "after"
+    assert "листов всего" in body["composition"], body["composition"]
+    assert body["requirements_total"] == 0
+    assert body["store_run_id"] is None, "разбор РД в хранилище разборов ПД не попадает"
+
+
+def test_pd_run_still_saves_to_store_and_gets_composition_too(tmp_path, monkeypatch):
+    """Состав считается для обеих сторон, а в хранилище идёт только ПД."""
+    doc_id = _upload(tmp_path)
+    monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "мок"))
+    monkeypatch.setattr(
+        main_module, "extract_requirements_llm",
+        lambda facts, config, **kw: [Requirement(
+            rooms=[], page=1, sentence="Экраны негорючие.", code=None,
+            document="pd.pdf", section="ОВ", summary="Экраны негорючие")],
+    )
+    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id], "side": "before"}).json()["id"])
+
+    assert body["status"] == "done" and body["side"] == "before"
+    assert "листов всего" in body["composition"]
+    assert body["store_run_id"], "разбор ПД сохранён для стадии сверки"
+
+
+def test_unknown_side_is_rejected_explicitly(tmp_path):
+    doc_id = _upload(tmp_path)
+    r = client.post("/pd-runs", json={"document_ids": [doc_id], "side": "сбоку"})
+    assert r.status_code == 400 and "side" in r.json()["detail"]

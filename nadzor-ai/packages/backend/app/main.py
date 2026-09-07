@@ -24,6 +24,7 @@ from .documents import extract_document_facts
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import load_text_facts, render_summary
+from .rd_overview import describe_volume, render_composition
 from .pd_store import save_run
 from .requirement_llm_extract import extract_requirements_llm
 from .triangulated_pipeline import run_triangulated_analysis
@@ -507,16 +508,28 @@ def _run_pd(run_id: int) -> None:
             return
 
         sources = [(d.file_path, d.name) for _, d in docs]
+
+        # Г.95 — состав считается ВСЕГДА и первым: он дёшев, не требует
+        # модели и объясняет, чего ждать от сводки. У рабочей документации
+        # текстового слоя почти нет по природе (Г.8), и пустая сводка без
+        # состава неотличима от сбоя.
+        run.composition = render_composition([describe_volume(path, name) for path, name in sources])
+        db.commit()
+
         requirements = extract_requirements_llm(load_text_facts(sources), config=config)
         run.summary = render_summary(requirements)
         run.requirements_total = len(requirements)
         run.extractor = "llm"
-        # Г.87 — тот же склад, что у CLI: отсюда его берёт стадия сверки с РД
-        # и здесь же копится датасет с полным контекстом получения строки.
-        run.store_run_id = save_run(
-            requirements, documents=[d.name for _, d in docs], extractor="llm",
-            provider=config.provider, model=config.model,
-        )
+        if run.side == "before":
+            # Г.87 — тот же склад, что у CLI: отсюда разбор ПД берёт стадия
+            # сверки с РД, здесь же копится датасет. Разбор РД сюда НЕ идёт:
+            # сверке нужен текст рабочей документации, а не извлечённые из
+            # неё требования, и смешивать их в одном хранилище значило бы
+            # потом гадать, чей это разбор.
+            run.store_run_id = save_run(
+                requirements, documents=[d.name for _, d in docs], extractor="llm",
+                provider=config.provider, model=config.model,
+            )
         run.status = "done"
         db.commit()
     except Exception as exc:  # noqa: BLE001 — сбой прогона виден инспектору, сервер жив
@@ -539,7 +552,9 @@ def create_pd_run(
     интерфейса: на входе — какие документы, больше ничего."""
     if not body.document_ids:
         raise HTTPException(400, "не выбран ни один документ")
-    run = models.PdRun(document_ids=body.document_ids, status="running")
+    if body.side not in ("before", "after"):
+        raise HTTPException(400, "side должен быть 'before' (ПД) или 'after' (РД)")
+    run = models.PdRun(document_ids=body.document_ids, side=body.side, status="running")
     db.add(run)
     db.commit()
     db.refresh(run)

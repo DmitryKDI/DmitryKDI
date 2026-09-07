@@ -183,12 +183,23 @@ class PdRun(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     status: Mapped[str] = mapped_column(String, default="running")  # running|done|error
     document_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # Г.95 — сторона комплекта: 'before' (ПД) | 'after' (РД/ИД). Механизм
+    # разбора один и тот же, поэтому не заводится вторая таблица: разница
+    # только в том, что разбор ПД сохраняется в хранилище для стадии сверки,
+    # а разбор РД — нет (сверке нужен ТЕКСТ рабочей документации, а не
+    # извлечённые из неё требования).
+    side: Mapped[str] = mapped_column(String, default="before")
     provider: Mapped[str] = mapped_column(String, default="")
     extractor: Mapped[str] = mapped_column(String, default="")  # llm|regex
     error: Mapped[str | None] = mapped_column(String, nullable=True)
     summary: Mapped[str] = mapped_column(Text, default="")
     requirements_total: Mapped[int] = mapped_column(Integer, default=0)
     store_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Г.95 — состав комплекта: сколько листов чертежей, сколько таблиц и
+    # каких. Считается ВСЕГДА, а не только когда сводка пуста: у рабочей
+    # документации текстового слоя почти нет по природе, и без состава
+    # пустая сводка неотличима от сбоя (Г.8/Г.10).
+    composition: Mapped[str] = mapped_column(Text, default="")
 
 
 class Settings(Base):

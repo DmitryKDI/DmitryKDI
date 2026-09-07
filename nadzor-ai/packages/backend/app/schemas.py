@@ -117,6 +117,8 @@ class PdRunCreate(BaseModel):
     """Запрос инспектора: «разобрать вот эти документы». Больше ничего —
     ни промпта, ни модели, ни ключа: всё это Г.94 держит на сервере."""
     document_ids: list[int]
+    # 'before' — проектная документация, 'after' — рабочая (Г.95).
+    side: str = "before"
 
 
 class PdRunOut(BaseModel):
@@ -131,6 +133,8 @@ class PdRunOut(BaseModel):
     summary: str
     requirements_total: int
     store_run_id: int | None
+    side: str
+    composition: str
 
 
 class LlmCheckOut(BaseModel):
