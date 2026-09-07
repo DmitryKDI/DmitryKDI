@@ -118,7 +118,14 @@ def test_extract_parses_requirement_stated_as_table_row_not_list():
     print("OK: требование из табличной строки (не список, не абзац) тоже разбирается")
 
 
-def test_extract_skips_requirement_without_rooms():
+def test_extract_keeps_requirement_without_rooms():
+    """Г.86 — ОБРАТНОЕ прежнему поведению, и это намеренно. Раньше здесь
+    проверялось, что требование без помещения отбрасывается: тогда модуль
+    питал только автоматическую сверку с РД по номеру помещения, которой
+    пустой `rooms` бесполезен. Теперь это главный путь извлечения, и такой
+    отброс терял почти весь результат на разделах, где требования по своей
+    природе относятся к объекту целиком (ООС, ПОС, ПБ). Фильтрует тот, кому
+    нужны именно привязанные к помещению, — на своей стороне."""
     facts = [tf(1, "текст")]
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
@@ -130,8 +137,8 @@ def test_extract_skips_requirement_without_rooms():
     finally:
         requirement_llm_extract.call_llm_json = original
 
-    assert reqs == []
-    print("OK: требование без единого помещения не превращается в запись реестра")
+    assert len(reqs) == 1 and reqs[0].rooms == []
+    print("OK: требование к объекту целиком сохраняется, а не отбрасывается")
 
 
 def test_extract_uses_chunk_first_page_when_model_omits_page():
@@ -216,55 +223,68 @@ def test_on_chunk_error_callback_fires_with_page_and_exception():
     print("OK: сбой каждой пачки виден вызывающему коду через колбэк, а не только пустым списком")
 
 
-def test_on_skipped_no_rooms_reports_requirements_dropped_for_lacking_a_room():
-    """Г.83 — вторая, тихая половина слепоты Г.77: даже при полностью
-    исправной связи требование без номера помещения выбрасывалось БЕЗ
-    СЛЕДА, и «извлечено: 0» читалось как «в документе нет требований».
-    На разделах, где требования по природе относятся к объекту целиком
-    (ООС — воздух/отходы/шум, ПОС, ПБ), так выглядел ЛЮБОЙ прогон — это и
-    была нерешённая побочная находка Г.78. Отброс правилен (форма 1/2
-    питает сверку по номеру помещения), молчание о нём — нет (Г.10)."""
-    facts = [tf(3, "текст страницы")]
+def test_requirement_without_room_is_kept_not_dropped():
+    """Г.86 — отбраковка требований без помещения снята. Г.83 сделал её
+    видимой, но оставил: тогда модуль питал только сверку по номеру
+    помещения. Теперь это ГЛАВНЫЙ путь извлечения, и выбрасывать требование
+    за то, что оно относится к объекту целиком, значит терять почти весь
+    результат на разделах ООС/ПОС/ПБ, где требования по своей природе не
+    привязаны к помещению."""
+    facts = [{"page": 3, "text": "текст", "document": "ООС8.1.pdf", "section": "ООС"}]
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
         return {"requirements": [
-            {"rooms": [], "requirement": "Отходы вывозить по договору",
-             "sentence": "Вывоз отходов осуществляется по договору со спецорганизацией.", "page": 3},
-            {"rooms": [], "requirement": "Шумозащита", "sentence": "Предусмотрены шумозащитные экраны.", "page": 3},
-            {"rooms": ["12"], "requirement": "Вентиляция", "sentence": "В пом. 12 предусмотреть вытяжку.", "page": 3},
+            {"rooms": [], "sentence": "Вывоз отходов по договору со спецорганизацией.", "page": 3},
+            {"rooms": [], "sentence": "Предусмотрены шумозащитные экраны.", "page": 3},
+            {"rooms": ["12"], "sentence": "В пом. 12 предусмотреть вытяжку.", "page": 3},
         ]}
 
-    skipped: list[int] = []
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
     try:
-        reqs = extract_requirements_llm(
-            facts, config=None, on_skipped_no_rooms=skipped.append,
-        )
+        reqs = extract_requirements_llm(facts, config=None)
     finally:
         requirement_llm_extract.call_llm_json = original
 
-    assert len(reqs) == 1, "требование с помещением остаётся, как и раньше"
-    assert skipped == [2], "два отброшенных требования должны быть явно сосчитаны, не пропасть молча"
-    print("OK: требования, отброшенные из-за отсутствия помещения, видны вызывающему коду, а не пропадают молча")
+    assert len(reqs) == 3, "все три требования должны остаться, включая два без помещения"
+    assert [r.rooms for r in reqs] == [[], [], ["12"]]
+    print("OK: требование без помещения сохраняется, а не отбрасывается")
 
 
-def test_on_skipped_no_rooms_silent_when_nothing_dropped():
-    """Колбэк не должен срабатывать вхолостую — иначе честное «ничего не
-    отброшено» превратится в шум, который перестанут читать."""
-    facts = [tf(1, "текст")]
+def test_requirement_carries_document_and_section():
+    """Г.86 — «требования должны быть уже привязаны к разделам... инспектор
+    просто видит, на какой странице требование». Без имени файла номер
+    страницы бессмыслен на комплекте: нумерация в каждом томе своя."""
+    facts = [{"page": 7, "text": "текст", "document": "Том ООС8.1.pdf", "section": "ООС"}]
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
-        return {"requirements": [{"rooms": ["7"], "sentence": "В пом. 7 предусмотреть X.", "page": 1}]}
+        return {"requirements": [{"rooms": [], "sentence": "Шумозащита предусмотрена.", "page": 7}]}
 
-    skipped: list[int] = []
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
     try:
-        extract_requirements_llm(facts, config=None, on_skipped_no_rooms=skipped.append)
+        reqs = extract_requirements_llm(facts, config=None)
     finally:
         requirement_llm_extract.call_llm_json = original
 
-    assert skipped == []
-    print("OK: колбэк молчит, когда отбрасывать нечего")
+    assert reqs[0].document == "Том ООС8.1.pdf"
+    assert reqs[0].section == "ООС"
+    assert reqs[0].page == 7
+    print("OK: требование несёт раздел, файл и страницу")
+
+
+def test_chunks_never_span_two_documents():
+    """Г.86 — пачка не пересекает границу документа: иначе модель увидит две
+    страницы с одним номером (нумерация в каждом томе начинается заново) и
+    требование нельзя будет привязать к файлу."""
+    facts = [
+        {"page": 1, "text": "a" * 100, "document": "том1.pdf", "section": "ООС"},
+        {"page": 2, "text": "b" * 100, "document": "том1.pdf", "section": "ООС"},
+        {"page": 1, "text": "c" * 100, "document": "том2.pdf", "section": "АР"},
+    ]
+    chunks = requirement_llm_extract._chunk_text_facts(facts, max_chars=100000)
+    assert len(chunks) == 2, f"ожидалось 2 пачки по числу документов, получено {len(chunks)}"
+    assert {f["document"] for f in chunks[0]} == {"том1.pdf"}
+    assert {f["document"] for f in chunks[1]} == {"том2.pdf"}
+    print("OK: пачка не смешивает документы")
 
 
 if __name__ == "__main__":
@@ -274,9 +294,12 @@ if __name__ == "__main__":
     test_chunk_text_facts_groups_small_pages_together()
     test_extract_parses_requirement_with_different_room_marker_and_verb()
     test_extract_parses_requirement_stated_as_table_row_not_list()
-    test_extract_skips_requirement_without_rooms()
+    test_extract_keeps_requirement_without_rooms()
     test_extract_uses_chunk_first_page_when_model_omits_page()
     test_extract_empty_result_when_model_finds_nothing()
     test_extract_one_chunk_failure_does_not_lose_other_chunks()
     test_on_chunk_error_callback_fires_with_page_and_exception()
+    test_requirement_without_room_is_kept_not_dropped()
+    test_requirement_carries_document_and_section()
+    test_chunks_never_span_two_documents()
     print("ALL PASS")

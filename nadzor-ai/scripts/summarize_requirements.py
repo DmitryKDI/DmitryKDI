@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
-"""Краткая сводка требований и способов производства работ по файлу(ам)
-ПД — БЕЗ сравнения с РД, без графа маршрутизации, без триангуляции.
+"""СТАДИЯ 1 — разбор проектной документации. Самодостаточна: рабочей
+документации (РД) не требует и о ней ничего не знает.
 
-Г.80 — прямая правка схемы работы: `registry_diff.py --kind requirements
---verify-requirements` всё равно прогонял шаги сверки с РД (семантическая
-проверка Г.49 по тексту РД, эскалация в зрение по листу РД, Г.33/35) даже
-когда `--after` дан тем же файлом, что `--before` — реального РД на этом
-этапе работы попросту нет. Эти шаги не просто бесполезны без настоящего
-РД — они жрут основную часть лимита запросов (Г.78: сотни-полторы тысячи
-вызовов на один раздел с полусотней требований, именно они упирались в
-429). Здесь — только извлечение (форма 1/2 + форма 3) и ЛЛМ-фильтр шума
-(Г.69/70), больше ничего: то, что реально нужно на этой стадии.
+Г.86 — перестройка по прямым указаниям пользователя. Раньше вся программа
+была построена как «сравнение ПД↔РД», а извлечение из ПД шло приложением к
+нему. Теперь наоборот: разбор ПД — основной продукт, сверка с РД — отдельная
+надстройка (`scripts/compare_with_rd.py`), которая берёт готовый результат
+этой стадии. **Отсутствие РД не режим ошибки, а норма** — её нет и не будет
+на половине документов.
 
-Г.83 — приоритет внутри самого скрипта: ПЕРВЫМ и по умолчанию ЕДИНСТВЕННЫМ
-идёт извлечение требований и способов производства работ ИЗ ТЕКСТА (форма 3
-+ ЛЛМ-фильтр шума). Форма 1/2 (требования с привязкой к номеру помещения)
-переведена в опцию `--with-room-requirements`: она по контракту питает
-автоматическую сверку с РД по номеру помещения (Г.33/46) — этапа, которого
-сейчас нет, — стоит десятки вызовов ЛЛМ против пяти у формы 3 и на разделах,
-где требования относятся к объекту целиком (ООС, ПОС, ПБ), по своей природе
-даёт ноль. Программа последовательна: пока этот бесполезный здесь шаг стоял
-первым, он выбирал лимит частоты провайдера ДО того, как очередь доходила до
-полезного (так КР/НВ и упирались в 429, Г.78).
+Порядок шагов задан пользователем и меняется только по новому прямому
+указанию:
+
+  1. комплект — какие файлы, какие разделы;
+  2. факты   — текст страниц;
+  3. требования и способы производства работ — ЛЛМ читает текст и сразу
+     отдаёт готовый список с разделом и страницей;
+  4. сводка  — то, что видит инспектор;
+  5. реестры — помещения, оборудование, спецификации, таблицы;
+  6. графика — что есть на чертежах.
+
+Шаг 3 — главный. ЛЛМ читает текст напрямую (прямое решение пользователя:
+«можно просто весь текст целиком отправлять в ЛЛМ, чтобы она сразу делала
+сводку»), поэтому отдельного прохода на отсев шума больше нет: промпт сам
+отделяет требование от декларации. Цена известна и принята — на томе в 177
+страниц это ~69 вызовов против ~5 у regex-пути; взамен исчезает слепое
+пятно регулярки (реальный пропуск Г.56). Без ключа ЛЛМ шаг 3 деградирует
+на regex-каталог: сводка выходит сырой, но программа не встаёт.
 
 Запуск:
-    python scripts/summarize_requirements.py --pd том1.pdf [--pd том2.pdf ...] \
+    python scripts/summarize_requirements.py --pd том.pdf [--pd том2.pdf ...] \
         --provider gigachat --api-key ВАШ_КЛЮЧ [--out summary.txt]
-
-Несколько `--pd` — как несколько `--before` в registry_diff.py: тексты
-всех файлов объединяются в один корпус перед извлечением (годится, когда
-один том раскидан по нескольким PDF-частям — не наш нынешний случай с
-ООС8.1-8.4, там это РАЗНЫЕ тома, каждый гоняется отдельным запуском
-скрипта, не через несколько --pd разом)."""
+"""
 from __future__ import annotations
 
 import argparse
@@ -45,23 +45,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backe
 from app.classification import classify_document, open_pdf  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
+    Requirement,
     extract_general_requirements,
-    render_requirements_summary,
 )
 from app.set_overview import official_section_label  # noqa: E402
 from registry_diff import (  # noqa: E402
     _PROVIDER_ENV_KEY,
-    _emit_general_requirements,
     _extract_requirements_llm_visible,
     _load_text_facts,
 )
 
 
+def render_summary(requirements: list[Requirement]) -> str:
+    """Сводка для инспектора: раздел, страница, текст требования.
+
+    Г.86 — прямое требование пользователя: «требования должны быть уже
+    привязаны к разделам... чтобы инспектор просто увидел результат, на
+    какой странице требование». Поэтому группировка по разделу (а внутри —
+    по документу и странице), а не сплошной список: на комплекте из
+    нескольких томов сплошной список нечитаем, и непонятно, к чему
+    относится требование.
+    """
+    if not requirements:
+        return "Требований не извлечено."
+
+    by_section: dict[tuple[str, str], list[Requirement]] = {}
+    for req in requirements:
+        by_section.setdefault((req.section or "", req.document or ""), []).append(req)
+
+    out: list[str] = []
+    for (section, document), items in sorted(by_section.items()):
+        label = official_section_label(section) if section else "Раздел не определён"
+        code = f" [{section}]" if section else ""
+        out.append(f"\n=== {label}{code} — {document or 'файл не указан'} "
+                   f"({len(items)} требований) ===")
+        for req in sorted(items, key=lambda r: r.page):
+            rooms = f" (пом. {', '.join(req.rooms)})" if req.rooms else ""
+            mark = f" [{req.code}]" if req.code else ""
+            out.append(f"  стр.{req.page}{mark}{rooms}")
+            out.append(f"    {req.sentence}")
+    return "\n".join(out)
+
+
 def _identity_line(path: str) -> str:
-    """Одна строка «что это за файл» — раздел и число страниц, БЕЗ числа
-    помещений/оборудования (Г.81: этот скрипт про текстовые требования,
-    счётчики помещений из другой, не запущенной здесь механики создавали
-    ложное впечатление, что регистры помещений — приоритет)."""
+    """Одна строка «что это за файл» — раздел и число страниц."""
     classification = classify_document(path, Path(path).name)
     label = official_section_label(classification.discipline_code)
     code = f" [{classification.discipline_code}]" if classification.discipline_code else ""
@@ -71,54 +98,38 @@ def _identity_line(path: str) -> str:
             pages = doc.page_count
         finally:
             doc.close()
-    except Exception:  # noqa: BLE001 — не смогли открыть, но это не повод не показать хоть имя файла
+    except Exception:  # noqa: BLE001 — не смогли открыть, но имя файла показать всё равно надо
         pages = "?"
     return f"  {Path(path).name} — {label}{code} ({classification.source}), {pages} стр."
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--pd", action="append", required=True, help="Файл(ы) ПД (можно несколько раз)")
+    parser.add_argument("--pd", action="append", required=True, help="Файл(ы) проектной документации")
     parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
     parser.add_argument(
         "--api-key", default="",
-        help="Ключ провайдера — без него смысла в этом скрипте нет (фильтр только через ИИ). "
-             f"Если не передан, берётся из переменной окружения по провайдеру "
-             f"({', '.join(_PROVIDER_ENV_KEY.values())}), как в registry_diff.py.",
+        help="Ключ провайдера. Если не передан, берётся из переменной окружения по провайдеру "
+             f"({', '.join(_PROVIDER_ENV_KEY.values())}). Без ключа работает regex-путь: "
+             "сводка выходит сырой, но прогон не падает.",
     )
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
-    parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41), не только в конце")
-    parser.add_argument(
-        "--with-room-requirements", action="store_true",
-        help="Дополнительно прогнать форму 1/2 — требования с привязкой к номеру помещения "
-             "(Г.32/36). По умолчанию выключена (Г.83): вход в сверку с РД по номеру, которой "
-             "на этом этапе нет; десятки лишних вызовов ЛЛМ; на ООС/ПОС/ПБ по природе даёт 0.",
-    )
+    parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41)")
     args = parser.parse_args()
 
-    # Г.82 (независимый аудит Opus, критическая находка №1) — раньше
-    # несуществующий путь в --pd тихо давал чистый отчёт "0 требований" с
-    # exit=0, неотличимый от реального результата "в документе нет
-    # требований". Явная ошибка вместо правдоподобного, но лживого отчёта.
+    # Г.82 — несуществующий путь раньше давал чистый отчёт из нулей с
+    # exit=0, неотличимый от «в документе нет требований».
     missing = [p for p in args.pd if not Path(p).is_file()]
     if missing:
         sys.exit("ОШИБКА: файл(ы) --pd не найдены, отчёт НЕ построен (не путать с "
-                  "«в документе нет требований»):\n" + "\n".join(f"  {p}" for p in missing))
+                 "«в документе нет требований»):\n" + "\n".join(f"  {p}" for p in missing))
 
-    # Г.82 (находка №2) — без этого фолбэка `CURRENT-TASK.md`/`vision-keys.env`
-    # (GIGACHAT_CREDENTIALS, GIGACHAT_CA_BUNDLE) не имели никакого эффекта на
-    # этот скрипт: --api-key был обязательным аргументом без чтения окружения,
-    # в отличие от registry_diff.py (см. _PROVIDER_ENV_KEY, строка ~1023 там).
     api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
-    if not api_key:
-        sys.exit(
-            f"ОШИБКА: нет ключа провайдера «{args.provider}» — передайте --api-key ИЛИ "
-            f"задайте переменную окружения {_PROVIDER_ENV_KEY.get(args.provider, '?')} "
-            f"(например, через vision-keys.env)."
-        )
-
-    llm_config = LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
+    llm_config = (
+        LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
+        if api_key else None
+    )
 
     out_f = open(args.out, "a", encoding="utf-8") if args.out else None
 
@@ -129,44 +140,47 @@ def main() -> None:
             out_f.flush()
 
     try:
-        # Г.81/83 — прямое указание пользователя: требования — то, зачем
-        # вообще запущен этот скрипт, идут ПЕРВЫМИ. Всё остальное (какой
-        # это файл, сколько страниц) — только справочный контекст, чтобы
-        # соотнести требования с объёмом тома, не самостоятельный
-        # результат — печатается ПОСЛЕ, не перед требованиями.
-        pd_text_facts = _load_text_facts(args.pd)
-
-        # Г.83 — ГЛАВНЫЙ путь этого скрипта: извлечение требований и
-        # способов производства работ ИЗ ТЕКСТА, без предварительного
-        # условия «требование должно быть привязано к номеру помещения».
-        # Раньше первой шла форма 1/2, и это ломало прогон дважды:
-        # содержательно (на ООС/ПОС/ПБ она по своей природе даёт 0 —
-        # требования там об объекте целиком, не о помещении N) и
-        # количественно (на 177-страничном томе — 69 вызовов ЛЛМ против 5
-        # у формы 3; программа последовательна, поэтому лимит частоты
-        # выбирался бесполезным шагом ДО того, как очередь доходила до
-        # полезного — ровно так КР/НВ упирались в 429, Г.78).
-        _emit("=== Требования и способы производства работ из текста (форма 3, Г.47, отфильтрован ЛЛМ Г.69/70) ===")
-        general_requirements = extract_general_requirements(pd_text_facts)
-        _emit_general_requirements(general_requirements, llm_config, _emit)
-        _emit("")
-
-        if args.with_room_requirements:
-            _emit("=== Дополнительно: требования с привязкой к помещению (форма 1/2, Г.32/36) ===")
-            pd_requirements = _extract_requirements_llm_visible(pd_text_facts, llm_config, _emit)
-            _emit(render_requirements_summary(pd_requirements))
-        else:
-            _emit("=== Форма 1/2 (требования с привязкой к номеру помещения) — НЕ запускалась ===")
-            _emit("  Отключена по умолчанию (Г.83): она собирает только требования, привязанные к")
-            _emit("  конкретному помещению — вход в автоматическую сверку с РД по номеру (Г.33/46),")
-            _emit("  которой на этом этапе нет. Дорога (десятки вызовов ЛЛМ против пяти у формы 3)")
-            _emit("  и на разделах вроде ООС/ПОС/ПБ по своей природе даёт 0. Нужна — добавь флаг")
-            _emit("  --with-room-requirements.")
-        _emit("")
-
-        _emit("=== Справка: обработанный(е) файл(ы) ===")
+        # Шаг 1 — комплект.
+        _emit("=== Шаг 1. Комплект ===")
         for path in args.pd:
             _emit(_identity_line(path))
+        _emit("")
+
+        # Шаг 2 — факты (текст страниц с разделом и именем файла, Г.86).
+        _emit("=== Шаг 2. Текст ===")
+        pd_text_facts = _load_text_facts(args.pd)
+        _emit(f"  страниц с текстом: {len(pd_text_facts)}")
+        _emit("")
+
+        # Шаг 3 — требования. Главный шаг.
+        _emit("=== Шаг 3. Требования и способы производства работ ===")
+        if llm_config is not None:
+            requirements = _extract_requirements_llm_visible(pd_text_facts, llm_config, _emit)
+        else:
+            _emit("  Ключ ЛЛМ не задан — regex-путь: сводка будет СЫРОЙ, с шумом.")
+            _emit("  Это не ошибка, но результат хуже: чтобы модель отсеяла шум сама,")
+            _emit("  передайте --api-key или задайте переменную окружения.")
+            requirements = extract_general_requirements(pd_text_facts)
+            for req in requirements:  # Г.86: regex-путь не знает про раздел, проставляем из страниц
+                for fact in pd_text_facts:
+                    if fact.get("page") == req.page:
+                        req.document = fact.get("document", "")
+                        req.section = fact.get("section")
+                        break
+        _emit(f"  извлечено: {len(requirements)}")
+        _emit("")
+
+        # Шаг 4 — сводка: то, ради чего всё запускалось.
+        _emit("=== Шаг 4. Сводка для инспектора ===")
+        _emit(render_summary(requirements))
+        _emit("")
+
+        # Шаги 5-6 — реестры и графика. Пока не подключены к этой стадии:
+        # Г.10 требует сказать об этом явно, а не молчать.
+        _emit("=== Шаги 5-6. Реестры и графика — пока не подключены к этой стадии ===")
+        _emit("  Реестры помещений/оборудования, спецификации, таблицы и разбор чертежей")
+        _emit("  в движке есть и работают, но к стадии разбора ПД ещё не подключены —")
+        _emit("  они писались для сверки с РД. Подключение — отдельный шаг.")
     finally:
         if out_f:
             out_f.close()

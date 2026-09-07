@@ -37,6 +37,7 @@ from app.composition_registry import (  # noqa: E402
     find_document_references,
     render_completeness_report,
 )
+from app.classification import classify_document  # noqa: E402
 from app.documents import extract_document_facts  # noqa: E402
 from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
 from app.escalation import build_ticket, build_tickets, render_ticket_markdown, render_tickets_markdown  # noqa: E402
@@ -203,7 +204,16 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     а да/нет по конкретной подстроке. Применить тот же фильтр здесь —
     значит потерять единственный источник подтверждения кода в РД (в
     прогоне на реальном комплекте без этого — 0 из 27 подтверждено вместо
-    27 из 27, при том что сами коды физически присутствуют в файле)."""
+    27 из 27, при том что сами коды физически присутствуют в файле).
+    Г.86 — каждая страница несёт `document` (имя файла) и `section` (код
+    раздела): без них на комплекте из нескольких томов номер страницы
+    бессмысленен, потому что нумерация в каждом файле начинается заново, а
+    требование нельзя привязать к разделу — прямое требование пользователя
+    («требования должны быть уже привязаны к разделам... инспектор просто
+    видит, на какой странице требование»). Классификация делается один раз
+    на файл, не на страницу: `classify_document` сам читает имя файла,
+    титульный лист и штамп (Г.13/79/80).
+    """
     out: list[dict] = []
     for path in paths:
         p = Path(path)
@@ -216,10 +226,16 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
             print(f"пропущен ({exc}): {path}", file=sys.stderr)
             continue
         try:
+            section = classify_document(str(p), p.name).discipline_code
+        except Exception as exc:  # noqa: BLE001 — не определили раздел, но текст всё равно нужен
+            print(f"раздел не определён ({exc}): {path}", file=sys.stderr)
+            section = None
+        try:
             for i in range(doc.page_count):
                 text = doc[i].get_text("text").strip()
                 if text:
-                    out.append({"page": i + 1, "text": text})
+                    out.append({"page": i + 1, "text": text,
+                                "document": p.name, "section": section})
         finally:
             doc.close()
     return out
@@ -238,18 +254,7 @@ def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: Llm
         failed_pages.append(first_page)
         _emit(f"  [сбой пачки требований, стр.{first_page}+]: {exc!r}")
 
-    def _on_skipped(count: int) -> None:
-        _emit(f"ВНИМАНИЕ: форма 1/2 отбросила {count} требований(я), НАЙДЕННЫХ моделью, "
-              f"потому что рядом не было номера помещения (Г.83). Это НЕ значит, что их нет "
-              f"в документе: форма 1/2 по контракту собирает только требования с привязкой к "
-              f"конкретному помещению (вход в автоматическую сверку по номеру, Г.33/46). "
-              f"Требования без привязки к помещению ищи в каталоге формы 3 ниже — для разделов "
-              f"вроде ООС/ПОС/ПБ это НОРМА, там требования по своей природе относятся к объекту "
-              f"целиком, а не к помещению N.")
-
-    result = extract_requirements_llm(
-        pd_text_facts, llm_config, on_chunk_error=_on_error, on_skipped_no_rooms=_on_skipped,
-    )
+    result = extract_requirements_llm(pd_text_facts, llm_config, on_chunk_error=_on_error)
     if failed_pages:
         _emit(f"ВНИМАНИЕ: извлечение требований (Г.36) — {len(failed_pages)} пачек(и) вызова ЛЛМ "
               f"упали (см. выше) — итоговый список требований по ним НЕ пополнен, "
