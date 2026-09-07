@@ -128,7 +128,10 @@ def test_plan_read_failure_returns_empty_instead_of_crashing():
     """Сбой чтения одного листа плана РД не должен ронять весь прогон."""
     original = room_entity_check.call_llm_json
     original_render = room_entity_check.render_page_to_data_url
-    room_entity_check.call_llm_json = lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("таймаут"))
+    def _timeout(*a, **kw):
+        raise TimeoutError("таймаут")
+
+    room_entity_check.call_llm_json = _timeout
     room_entity_check.render_page_to_data_url = lambda *a, **kw: "data:,"
     try:
         assert room_entity_check.extract_plan_entities("любой.pdf", 1, VENT, config=None) == []
