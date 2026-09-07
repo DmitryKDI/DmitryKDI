@@ -96,7 +96,7 @@ def _group_repeated(items: list[Requirement]) -> list[list[Requirement]]:
     groups: dict[str, list[Requirement]] = {}
     order: list[str] = []
     for req in items:
-        key = _normalize_for_dedup(req.sentence)
+        key = _normalize_for_dedup(req.summary or req.sentence)
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -148,7 +148,7 @@ def render_summary(requirements: list[Requirement]) -> str:
             mark = f" [{first.code}]" if first.code else ""
             repeat = f" (повторено {len(group)}×)" if len(group) > 1 else ""
             out.append(f"  стр.{pages}{mark}{rooms}{repeat}")
-            out.append(f"    {first.sentence}")
+            out.append(f"    {first.summary or first.sentence}")
     return "\n".join(out)
 
 

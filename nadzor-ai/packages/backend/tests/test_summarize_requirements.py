@@ -220,3 +220,46 @@ def test_preflight_says_no_key_instead_of_pretending_to_check():
     ok, message = sr.check_llm_reachable(None)
     assert ok is False
     assert "ключ" in message.lower()
+
+
+def test_summary_prints_the_short_form_not_the_whole_quote():
+    """Г.93 — сводка была не выжимкой, а копией документа: модель возвращает
+    ДВА поля (короткую суть и дословную цитату), разбор ответа выбрасывал
+    суть, а сводка печатала цитату. Инспектор получал переписанные абзацы
+    вместо выжимки — замечание пользователя по реальному прогону."""
+    long_quote = (
+        "В здании запроектирована двухтрубная, стояковая, с тупиковым и попутным движением "
+        "теплоносителя система отопления с нижней разводкой магистральных трубопроводов под "
+        "потолком подвала, с вертикальными стояками, поэтажными распределительными коллекторами."
+    )
+    req = Requirement(rooms=[], page=11, sentence=long_quote, code=None,
+                      document="том.pdf", section="ОВ",
+                      summary="Система отопления двухтрубная стояковая с нижней разводкой")
+    text = sr.render_summary([req])
+
+    assert "Система отопления двухтрубная стояковая с нижней разводкой" in text
+    assert long_quote not in text, \
+        "дословная цитата в сводку не выводится — она доказательство, не сводка"
+
+
+def test_summary_falls_back_to_quote_when_there_is_no_short_form():
+    """Regex-путь коротких формулировок не даёт вовсе. Пустая строка вместо
+    требования была бы хуже длинной: Г.10 — не прятать то, что есть."""
+    req = Requirement(rooms=[], page=5, sentence="Экраны должны быть негорючими.",
+                      code=None, document="том.pdf", section="ОВ")
+    assert "Экраны должны быть негорючими." in sr.render_summary([req])
+
+
+def test_dedup_groups_by_short_form_when_quotes_differ_slightly():
+    """Одно требование, процитированное с разной разбивкой строк на разных
+    листах, — по цитате это два разных текста, по сути одно. Инспектору
+    нужна одна строка со всеми страницами (Г.90)."""
+    reqs = [
+        Requirement(rooms=[], page=12, sentence="Экраны  должны быть\nнегорючими.", code=None,
+                    document="том.pdf", section="ОВ", summary="Экраны из негорючих материалов"),
+        Requirement(rooms=[], page=99, sentence="Экраны должны быть негорючими.", code=None,
+                    document="том.pdf", section="ОВ", summary="Экраны из негорючих материалов"),
+    ]
+    text = sr.render_summary(reqs)
+    assert text.count("Экраны из негорючих материалов") == 1
+    assert "стр.12, 99" in text

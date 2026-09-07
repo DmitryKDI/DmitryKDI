@@ -84,6 +84,9 @@ class PdRequirement(StoreBase):
     section: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     page: Mapped[int] = mapped_column(Integer, default=0)
     sentence: Mapped[str] = mapped_column(Text, default="")
+    # Г.93 — короткая суть рядом с цитатой: сводке нужна первая,
+    # датасету и пакету доказательств — вторая.
+    summary: Mapped[str] = mapped_column(Text, default="")
     code: Mapped[str | None] = mapped_column(String, nullable=True)
     rooms: Mapped[list] = mapped_column(JSON, default=list)
 
@@ -136,6 +139,7 @@ def save_run(
                 section=req.section,
                 page=req.page,
                 sentence=req.sentence,
+                summary=req.summary,
                 code=req.code,
                 rooms=list(req.rooms),
             ))
@@ -209,6 +213,7 @@ def export_dataset(path: str, limit: int | None = None) -> int:
         for req, run in rows:
             f.write(json.dumps({
                 "sentence": req.sentence,
+                "summary": req.summary,
                 "document": req.document,
                 "section": req.section,
                 "page": req.page,
@@ -229,6 +234,7 @@ def _to_requirement(row: PdRequirement) -> Requirement:
         rooms=list(row.rooms or []),
         page=row.page,
         sentence=row.sentence,
+        summary=row.summary or "",
         code=row.code,
         document=row.document,
         section=row.section,
