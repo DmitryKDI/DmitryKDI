@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useState } from 'react'
-import { getToken } from '../api'
 import { theme } from '../theme'
 import { useApp } from '../store'
 
@@ -206,7 +205,7 @@ export function AuthImage({ src, alt, className = '', onSize }: {
   useEffect(() => {
     let objectUrl = ''
     let cancelled = false
-    fetch(src, { headers: { Authorization: `Bearer ${getToken()}` } })
+    fetch(src)  // Г.85: движок packages/backend аутентификации не требует
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('Лист документа недоступен.'))))
       .then((blob) => {
         if (cancelled) return

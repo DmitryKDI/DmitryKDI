@@ -16,7 +16,7 @@ rules:
     severity: WARNING
     message: >-
       В журналы не должны попадать содержимое документов и персональные данные.
-      Используйте api.logging.mask.
+      Маскируйте секреты перед логированием.
     patterns:
       - pattern-either:
           - pattern: logging.$LEVEL(..., $FACT.value, ...)
@@ -36,6 +36,6 @@ rules:
     severity: ERROR
     message: >-
       Ответ модели используется без валидации по строгой схеме.
-      Применяйте llm_core.schemas.parse_strict.
+      Разбирайте ответ модели строго, с проверкой структуры.
     patterns:
       - pattern: json.loads($RESPONSE.raw_text)

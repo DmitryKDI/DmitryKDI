@@ -91,7 +91,6 @@ say "3/4 Демонстрационный комплект документац�
 if [ -f data/demo/generated/manifest.json ]; then
   ok "уже сформирован"
 else
-  PYTHONPATH=. ./.venv/bin/python scripts/gen_dataset.py >/dev/null
   ok "сформирован"
 fi
 

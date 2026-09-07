@@ -6,7 +6,7 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app/packages:/app
+    PYTHONPATH=/app/packages/backend:/app
 
 WORKDIR /app
 
@@ -17,18 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY packages ./packages
+COPY packages/backend ./packages/backend
 COPY scripts ./scripts
-COPY config ./config
-COPY data/norms ./data/norms
-COPY db ./db
+COPY data/known_violations.json ./data/known_violations.json
 
 # Приложение работает от непривилегированного пользователя.
 RUN useradd --create-home --uid 10001 nadzor && chown -R nadzor:nadzor /app
 USER nadzor
 
-EXPOSE 8000
+EXPOSE 8010
 HEALTHCHECK --interval=15s --timeout=5s --retries=10 \
-    CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
+    CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8010/health')"
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]

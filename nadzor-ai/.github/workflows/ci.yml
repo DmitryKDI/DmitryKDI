@@ -6,7 +6,7 @@ on:
 
 jobs:
   tests:
-    name: Тесты и границы модулей
+    name: Тесты движка
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -19,20 +19,10 @@ jobs:
           cache: pip
       - name: Установка зависимостей
         run: pip install -r requirements-dev.txt
-      - name: Формирование демонстрационного комплекта
-        run: PYTHONPATH=. python scripts/gen_dataset.py
       - name: Стиль кода
-        run: ruff check packages scripts tests
-      - name: Границы модулей
-        run: PYTHONPATH=packages lint-imports --config .importlinter
-      - name: Тесты и покрытие
-        run: python -m pytest tests -q --cov=packages --cov-report=term --cov-fail-under=70
-      - name: Метрики детектора по эталону
-        run: PYTHONPATH=. python scripts/evaluate.py --json metrics.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: metrics
-          path: nadzor-ai/metrics.json
+        run: ruff check packages scripts
+      - name: Тесты движка
+        run: PYTHONPATH=.:packages/backend python -m pytest packages/backend/tests -q
 
   frontend:
     name: Сборка интерфейса

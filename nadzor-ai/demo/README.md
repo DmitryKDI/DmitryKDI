@@ -54,7 +54,6 @@ python3 demo/room-matcher-src/build.py
 
 ```bash
 make data                                   # демонстрационный комплект документации
-PYTHONPATH=. .venv/bin/python scripts/analyze_demo.py OBJ-001   # проверка анализа
 python3 demo/prototype-src/build.py         # сборка страницы
 ```
 

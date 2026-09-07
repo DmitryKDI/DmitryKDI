@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Principal } from './types'
 import { backendApi, type BackendAnalysisRun, type BackendDocument, type BackendTriangulatedRun } from './backendApi'
 
 interface Toast {
@@ -16,8 +15,6 @@ type DocsUpdater = BackendDocument[] | ((prev: BackendDocument[]) => BackendDocu
 type PendingUpdater = PendingUpload[] | ((prev: PendingUpload[]) => PendingUpload[])
 
 interface AppState {
-  principal: Principal | null
-  permissions: string[]
   menuCollapsed: boolean
   density: 'comfortable' | 'compact'
   filters: Record<string, Record<string, string>>
@@ -42,14 +39,12 @@ interface AppState {
   // два прогона не смешивают статус друг друга.
   triangulatedRunId: number | null
   triangulatedRunStatus: BackendTriangulatedRun | null
-  setSession: (principal: Principal | null, permissions: string[]) => void
   toggleMenu: () => void
   setDensity: (value: 'comfortable' | 'compact') => void
   setFilter: (screen: string, key: string, value: string) => void
   toggleChecked: (id: string) => void
   pushToast: (text: string, kind?: 'ok' | 'error', undo?: () => void) => void
   dropToast: (id: number) => void
-  can: (action: string) => boolean
   setAnalysisDocs: (side: 'before' | 'after', updater: DocsUpdater) => void
   setAnalysisPending: (side: 'before' | 'after', updater: PendingUpdater) => void
   setAnalysisRunId: (id: number | null) => void
@@ -60,8 +55,6 @@ interface AppState {
 export const useApp = create<AppState>()(
   persist(
     (set, get) => ({
-      principal: null,
-      permissions: [],
       menuCollapsed: false,
       density: 'comfortable',
       filters: {},
@@ -75,7 +68,6 @@ export const useApp = create<AppState>()(
       analysisRunStatus: null,
       triangulatedRunId: null,
       triangulatedRunStatus: null,
-      setSession: (principal, permissions) => set({ principal, permissions }),
       toggleMenu: () => set((s) => ({ menuCollapsed: !s.menuCollapsed })),
       setDensity: (density) => set({ density }),
       setFilter: (screen, key, value) =>
@@ -88,7 +80,6 @@ export const useApp = create<AppState>()(
         setTimeout(() => get().dropToast(id), 6000)
       },
       dropToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-      can: (action) => get().permissions.includes(action),
       setAnalysisDocs: (side, updater) =>
         set((s) => {
           const key = side === 'before' ? 'analysisBeforeDocs' : 'analysisAfterDocs'
@@ -119,8 +110,6 @@ export const useApp = create<AppState>()(
     {
       name: 'nadzor.app',
       partialize: (s) => ({
-        principal: s.principal,
-        permissions: s.permissions,
         menuCollapsed: s.menuCollapsed,
         density: s.density,
         filters: s.filters,
