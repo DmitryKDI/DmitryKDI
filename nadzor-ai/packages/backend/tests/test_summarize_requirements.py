@@ -13,8 +13,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import scripts.summarize_requirements as sr  # noqa: E402
 from app.requirement_registry import Requirement  # noqa: E402
+
+import scripts.summarize_requirements as sr  # noqa: E402
 
 
 def _make_pdf(path: Path, text: str = "Экраны должны быть негорючими.") -> None:
@@ -77,7 +78,8 @@ def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path
     сводка → реестры. Требования и сводка идут ДО реестров, не после."""
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
-    monkeypatch.setattr(sys, "argv", ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
+    monkeypatch.setattr(sys, "argv",
+                        ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit: [])
     sr.main()
 
@@ -93,7 +95,8 @@ def test_unconnected_steps_are_announced_not_silently_skipped(monkeypatch, capsy
     этом нельзя, иначе отсутствие раздела в выводе читается как «там пусто»."""
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
-    monkeypatch.setattr(sys, "argv", ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
+    monkeypatch.setattr(sys, "argv",
+                        ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit: [])
     sr.main()
 

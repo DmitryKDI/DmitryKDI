@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backe
 
 from app.classification import classify_document, open_pdf  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
+from app.pd_store import save_run  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     Requirement,
     extract_general_requirements,
@@ -131,7 +132,9 @@ def main() -> None:
         if api_key else None
     )
 
-    out_f = open(args.out, "a", encoding="utf-8") if args.out else None
+    # noqa: SIM115 — файл живёт весь прогон и закрывается в finally: вывод
+    # пишется по мере готовности (Г.41), а не одним куском в конце.
+    out_f = open(args.out, "a", encoding="utf-8") if args.out else None  # noqa: SIM115
 
     def _emit(text: str) -> None:
         print(text)
@@ -173,6 +176,19 @@ def main() -> None:
         # Шаг 4 — сводка: то, ради чего всё запускалось.
         _emit("=== Шаг 4. Сводка для инспектора ===")
         _emit(render_summary(requirements))
+        _emit("")
+
+        # Г.87 — результат сохраняется: отсюда его берёт стадия 2 (сверка с
+        # РД), не переизвлекая ПД заново, и здесь же копится датасет.
+        run_id = save_run(
+            requirements,
+            documents=[Path(p).name for p in args.pd],
+            extractor="llm" if llm_config is not None else "regex",
+            provider=args.provider if llm_config is not None else "",
+            model=args.model if llm_config is not None else "",
+        )
+        _emit(f"=== Сохранено: прогон №{run_id} ===")
+        _emit(f"  Сверка с РД по этому разбору: python scripts/compare_with_rd.py --run {run_id} --rd <файл РД>")
         _emit("")
 
         # Шаги 5-6 — реестры и графика. Пока не подключены к этой стадии:

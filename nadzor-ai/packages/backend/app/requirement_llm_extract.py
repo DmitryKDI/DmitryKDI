@@ -30,7 +30,7 @@
 БЕЗ ключа ЛЛМ: тогда сводка выдаётся сырой, но программа не встаёт."""
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .llm import LlmConfig, call_llm_json
 from .requirement_registry import Requirement
@@ -103,7 +103,7 @@ _REQUIREMENT_EXTRACTION_TEMPLATE = f"""\
 Если на этих страницах нет ничего, кроме шума, — верни {{{{"requirements": []}}}}."""
 
 
-def requirement_extraction_system_prompt(discipline: Optional[str] = None) -> str:
+def requirement_extraction_system_prompt(discipline: str | None = None) -> str:
     """Промпт извлечения требований плюс блок известных нарушений
     (`known_violations.json`, applies_to="text") — тот же механизм
     few-shot-примеров, что уже используют `vision_system_prompt`/
@@ -165,10 +165,10 @@ def _render_chunk(chunk: list[dict]) -> str:
 def extract_requirements_llm(
     text_facts: list[dict],
     config: LlmConfig,
-    discipline: Optional[str] = None,
+    discipline: str | None = None,
     max_chars_per_call: int = 6000,
     timeout: float = 120.0,
-    on_chunk_error: Optional[Callable[[int, Exception], None]] = None,
+    on_chunk_error: Callable[[int, Exception], None] | None = None,
 ) -> list[Requirement]:
     """Требования из ЛЮБОЙ прозы ПД — постранично пачками под потолок
     символов, каждая пачка отдельным вызовом ЛЛМ. Сбой одной пачки (сеть,
