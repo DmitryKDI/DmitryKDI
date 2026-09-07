@@ -124,3 +124,49 @@ def test_summary_groups_by_section_and_shows_page():
 def test_summary_says_so_when_nothing_extracted():
     assert "не извлечено" in sr.render_summary([])
     print("OK: пустой результат назван прямо, а не показан пустым разделом")
+
+
+def test_identical_requirement_from_many_pages_is_one_line_with_all_pages():
+    """Г.90 — регрессия, найденная прогоном на реальном томе: примечание,
+    повторённое на каждом листе многостраничной таблицы, печаталось
+    инспектору отдельной строкой на КАЖДУЮ страницу (на реальном томе 88
+    строк против 69 уникальных формулировок). Дедупликация с перечислением
+    всех страниц уже была в каталоге формы 3 (Г.67), но при перестройке
+    сводки под инспектора (Г.86) в неё не перенеслась."""
+    reqs = [
+        Requirement(rooms=[], page=p, sentence="Экраны должны быть негорючими.",
+                    code=None, document="том.pdf", section="ОВ")
+        for p in (12, 99, 100)
+    ]
+    text = sr.render_summary(reqs)
+
+    assert text.count("Экраны должны быть негорючими.") == 1, "формулировка печатается один раз"
+    assert "стр.12, 99, 100" in text, "перечислены ВСЕ страницы, ни одна не потеряна"
+    assert "повторено 3×" in text, "повтор виден явно, а не скрыт (Г.10)"
+
+
+def test_different_requirements_on_one_page_are_not_merged():
+    """Обратная сторона дедупликации: склеивать разные требования нельзя."""
+    reqs = [
+        Requirement(rooms=[], page=5, sentence="Первое требование.",
+                    code=None, document="том.pdf", section="ОВ"),
+        Requirement(rooms=[], page=5, sentence="Второе требование.",
+                    code=None, document="том.pdf", section="ОВ"),
+    ]
+    text = sr.render_summary(reqs)
+    assert "Первое требование." in text and "Второе требование." in text
+    assert "повторено" not in text
+
+
+def test_dedup_does_not_merge_across_documents():
+    """Одна и та же фраза в двух томах — два разных факта: инспектору важно,
+    что требование заявлено в обоих, и в каком именно томе искать."""
+    reqs = [
+        Requirement(rooms=[], page=1, sentence="Одинаковая фраза.",
+                    code=None, document="том-А.pdf", section="ОВ"),
+        Requirement(rooms=[], page=1, sentence="Одинаковая фраза.",
+                    code=None, document="том-Б.pdf", section="ОВ"),
+    ]
+    text = sr.render_summary(reqs)
+    assert text.count("Одинаковая фраза.") == 2
+    assert "том-А.pdf" in text and "том-Б.pdf" in text

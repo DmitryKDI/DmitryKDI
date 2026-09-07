@@ -47,6 +47,7 @@ from app.llm import LlmConfig  # noqa: E402
 from app.pd_store import save_run  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     Requirement,
+    _normalize_for_dedup,
     extract_general_requirements,
 )
 from app.set_overview import official_section_label  # noqa: E402
@@ -55,6 +56,22 @@ from registry_diff import (  # noqa: E402
     _extract_requirements_llm_visible,
     _load_text_facts,
 )
+
+
+def _group_repeated(items: list[Requirement]) -> list[list[Requirement]]:
+    """Одинаковые по тексту требования — в одну группу, порядок первого
+    появления сохраняется. Ключ тот же, что у каталога формы 3
+    (`_normalize_for_dedup`), чтобы «одинаковость» означала одно и то же в
+    обоих отчётах, а не два похожих правила в разных местах."""
+    groups: dict[str, list[Requirement]] = {}
+    order: list[str] = []
+    for req in items:
+        key = _normalize_for_dedup(req.sentence)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(req)
+    return [groups[k] for k in order]
 
 
 def render_summary(requirements: list[Requirement]) -> str:
@@ -66,6 +83,15 @@ def render_summary(requirements: list[Requirement]) -> str:
     по документу и странице), а не сплошной список: на комплекте из
     нескольких томов сплошной список нечитаем, и непонятно, к чему
     относится требование.
+
+    Г.90 — одинаковая формулировка с разных страниц печатается ОДНОЙ
+    строкой со списком всех страниц. Примечание, повторённое на каждом
+    листе многостраничной таблицы, иначе занимает столько строк, сколько
+    листов в таблице: на реальном томе это 88 строк против 69 уникальных
+    формулировок. Ни одна страница при этом не теряется и число повторов
+    показано явно — сжимается вид, а не данные (Г.10). Дедупликация НЕ
+    переходит границу документа: одна и та же фраза в двух томах — два
+    разных факта, инспектору важно, в каком томе искать.
     """
     if not requirements:
         return "Требований не извлечено."
@@ -78,13 +104,21 @@ def render_summary(requirements: list[Requirement]) -> str:
     for (section, document), items in sorted(by_section.items()):
         label = official_section_label(section) if section else "Раздел не определён"
         code = f" [{section}]" if section else ""
+        groups = _group_repeated(items)
+        unique_note = (f", уникальных формулировок: {len(groups)}"
+                       if len(groups) != len(items) else "")
         out.append(f"\n=== {label}{code} — {document or 'файл не указан'} "
-                   f"({len(items)} требований) ===")
-        for req in sorted(items, key=lambda r: r.page):
-            rooms = f" (пом. {', '.join(req.rooms)})" if req.rooms else ""
-            mark = f" [{req.code}]" if req.code else ""
-            out.append(f"  стр.{req.page}{mark}{rooms}")
-            out.append(f"    {req.sentence}")
+                   f"({len(items)} требований{unique_note}) ===")
+        for group in sorted(groups, key=lambda g: g[0].page):
+            first = group[0]
+            pages = ", ".join(str(p) for p in sorted({r.page for r in group}))
+            rooms_all = sorted({room for r in group for room in r.rooms},
+                               key=lambda x: (len(x), x))
+            rooms = f" (пом. {', '.join(rooms_all)})" if rooms_all else ""
+            mark = f" [{first.code}]" if first.code else ""
+            repeat = f" (повторено {len(group)}×)" if len(group) > 1 else ""
+            out.append(f"  стр.{pages}{mark}{rooms}{repeat}")
+            out.append(f"    {first.sentence}")
     return "\n".join(out)
 
 
