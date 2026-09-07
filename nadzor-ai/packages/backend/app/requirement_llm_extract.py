@@ -121,6 +121,7 @@ def extract_requirements_llm(
     max_chars_per_call: int = 6000,
     timeout: float = 120.0,
     on_chunk_error: Optional[Callable[[int, Exception], None]] = None,
+    on_skipped_no_rooms: Optional[Callable[[int], None]] = None,
 ) -> list[Requirement]:
     """Требования из ЛЮБОЙ прозы ПД — постранично пачками под потолок
     символов, каждая пачка отдельным вызовом ЛЛМ. Сбой одной пачки (сеть,
@@ -137,8 +138,20 @@ def extract_requirements_llm(
     # от «в документе действительно нет требований» на 38-страничном томе.
     # `render_requirements_summary` печатала бы «извлечено: 0» точно так
     # же в обоих случаях — то самое молчание, что Г.10 запрещает.
+    # Г.83 — вторая, более тихая половина той же слепоты: даже когда ВСЕ
+    # вызовы проходят успешно, требование без привязки к номеру помещения
+    # выбрасывается ниже (`if not rooms: continue`) БЕЗ СЛЕДА. На разделе,
+    # где требования по своей природе не привязаны к помещению (ООС —
+    # охрана воздуха, обращение с отходами, шумозащита; ПОС, ПБ — то же
+    # самое), это даёт «извлечено: 0» при полностью исправной связи и
+    # десятках реально найденных моделью требований. Ровно это и наблюдалось
+    # как нерешённая побочная находка Г.78. Сам отброс правилен — форма 1/2
+    # по контракту питает АВТОМАТИЧЕСКУЮ сверку по номеру помещения
+    # (Г.33/46), которой пустой `rooms` бесполезен, — неправильным было
+    # молчание о нём (Г.10: тишина никогда не означает «чисто»).
     system_prompt = requirement_extraction_system_prompt(discipline)
     out: list[Requirement] = []
+    skipped_no_rooms = 0
     for chunk in _chunk_text_facts(text_facts, max_chars_per_call):
         user_text = _render_chunk(chunk)
         try:
@@ -152,6 +165,7 @@ def extract_requirements_llm(
         for item in result.get("requirements", []):
             rooms = item.get("rooms") or []
             if not isinstance(rooms, list) or not rooms:
+                skipped_no_rooms += 1
                 continue
             page = item.get("page")
             if not isinstance(page, int):
@@ -162,4 +176,6 @@ def extract_requirements_llm(
                 sentence=str(item.get("sentence") or item.get("requirement") or ""),
                 code=str(item["code"]) if item.get("code") else None,
             ))
+    if skipped_no_rooms and on_skipped_no_rooms:
+        on_skipped_no_rooms(skipped_no_rooms)
     return out

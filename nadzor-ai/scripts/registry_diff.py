@@ -238,7 +238,18 @@ def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: Llm
         failed_pages.append(first_page)
         _emit(f"  [сбой пачки требований, стр.{first_page}+]: {exc!r}")
 
-    result = extract_requirements_llm(pd_text_facts, llm_config, on_chunk_error=_on_error)
+    def _on_skipped(count: int) -> None:
+        _emit(f"ВНИМАНИЕ: форма 1/2 отбросила {count} требований(я), НАЙДЕННЫХ моделью, "
+              f"потому что рядом не было номера помещения (Г.83). Это НЕ значит, что их нет "
+              f"в документе: форма 1/2 по контракту собирает только требования с привязкой к "
+              f"конкретному помещению (вход в автоматическую сверку по номеру, Г.33/46). "
+              f"Требования без привязки к помещению ищи в каталоге формы 3 ниже — для разделов "
+              f"вроде ООС/ПОС/ПБ это НОРМА, там требования по своей природе относятся к объекту "
+              f"целиком, а не к помещению N.")
+
+    result = extract_requirements_llm(
+        pd_text_facts, llm_config, on_chunk_error=_on_error, on_skipped_no_rooms=_on_skipped,
+    )
     if failed_pages:
         _emit(f"ВНИМАНИЕ: извлечение требований (Г.36) — {len(failed_pages)} пачек(и) вызова ЛЛМ "
               f"упали (см. выше) — итоговый список требований по ним НЕ пополнен, "

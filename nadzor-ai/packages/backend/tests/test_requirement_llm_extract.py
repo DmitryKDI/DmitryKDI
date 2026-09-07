@@ -216,6 +216,57 @@ def test_on_chunk_error_callback_fires_with_page_and_exception():
     print("OK: сбой каждой пачки виден вызывающему коду через колбэк, а не только пустым списком")
 
 
+def test_on_skipped_no_rooms_reports_requirements_dropped_for_lacking_a_room():
+    """Г.83 — вторая, тихая половина слепоты Г.77: даже при полностью
+    исправной связи требование без номера помещения выбрасывалось БЕЗ
+    СЛЕДА, и «извлечено: 0» читалось как «в документе нет требований».
+    На разделах, где требования по природе относятся к объекту целиком
+    (ООС — воздух/отходы/шум, ПОС, ПБ), так выглядел ЛЮБОЙ прогон — это и
+    была нерешённая побочная находка Г.78. Отброс правилен (форма 1/2
+    питает сверку по номеру помещения), молчание о нём — нет (Г.10)."""
+    facts = [tf(3, "текст страницы")]
+
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+        return {"requirements": [
+            {"rooms": [], "requirement": "Отходы вывозить по договору",
+             "sentence": "Вывоз отходов осуществляется по договору со спецорганизацией.", "page": 3},
+            {"rooms": [], "requirement": "Шумозащита", "sentence": "Предусмотрены шумозащитные экраны.", "page": 3},
+            {"rooms": ["12"], "requirement": "Вентиляция", "sentence": "В пом. 12 предусмотреть вытяжку.", "page": 3},
+        ]}
+
+    skipped: list[int] = []
+    original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
+    try:
+        reqs = extract_requirements_llm(
+            facts, config=None, on_skipped_no_rooms=skipped.append,
+        )
+    finally:
+        requirement_llm_extract.call_llm_json = original
+
+    assert len(reqs) == 1, "требование с помещением остаётся, как и раньше"
+    assert skipped == [2], "два отброшенных требования должны быть явно сосчитаны, не пропасть молча"
+    print("OK: требования, отброшенные из-за отсутствия помещения, видны вызывающему коду, а не пропадают молча")
+
+
+def test_on_skipped_no_rooms_silent_when_nothing_dropped():
+    """Колбэк не должен срабатывать вхолостую — иначе честное «ничего не
+    отброшено» превратится в шум, который перестанут читать."""
+    facts = [tf(1, "текст")]
+
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+        return {"requirements": [{"rooms": ["7"], "sentence": "В пом. 7 предусмотреть X.", "page": 1}]}
+
+    skipped: list[int] = []
+    original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
+    try:
+        extract_requirements_llm(facts, config=None, on_skipped_no_rooms=skipped.append)
+    finally:
+        requirement_llm_extract.call_llm_json = original
+
+    assert skipped == []
+    print("OK: колбэк молчит, когда отбрасывать нечего")
+
+
 if __name__ == "__main__":
     test_system_prompt_carries_known_violations_block()
     test_system_prompt_valid_json_schema_after_substitution()
