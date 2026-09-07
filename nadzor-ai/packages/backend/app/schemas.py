@@ -111,3 +111,30 @@ class SettingsUpdate(BaseModel):
     base_url: str = ""
     model: str = ""
     api_key: str = ""
+
+
+class PdRunCreate(BaseModel):
+    """Запрос инспектора: «разобрать вот эти документы». Больше ничего —
+    ни промпта, ни модели, ни ключа: всё это Г.94 держит на сервере."""
+    document_ids: list[int]
+
+
+class PdRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: dt.datetime
+    status: str
+    provider: str
+    extractor: str
+    error: str | None
+    summary: str
+    requirements_total: int
+    store_run_id: int | None
+
+
+class LlmCheckOut(BaseModel):
+    """Ответ предполётной проверки связи (Г.91) для кнопки в интерфейсе."""
+    reachable: bool
+    provider: str
+    message: str

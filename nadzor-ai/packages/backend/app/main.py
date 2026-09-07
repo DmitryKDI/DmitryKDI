@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -20,8 +21,11 @@ from . import models, schemas
 from .classification import classify_document
 from .db import get_session, init_db
 from .documents import extract_document_facts
-from .llm import LlmConfig
+from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
+from .pd_stage import load_text_facts, render_summary
+from .pd_store import save_run
+from .requirement_llm_extract import extract_requirements_llm
 from .triangulated_pipeline import run_triangulated_analysis
 from .vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier, render_page_to_png_bytes
 
@@ -47,7 +51,10 @@ def _ensure_schema_and_defaults() -> None:
     db = next(get_session())
     try:
         if db.query(models.Settings).count() == 0:
-            db.add(models.Settings(id=1, provider="anthropic", base_url="", model="", api_key=""))
+            # Г.94 — по умолчанию GigaChat: инструмент делается под него, и
+            # инспектор ничего не выбирает. Ключ подхватывается из
+            # GIGACHAT_CREDENTIALS, если не задан в настройках (см. _llm_config).
+            db.add(models.Settings(id=1, provider="gigachat", base_url="", model="", api_key=""))
             db.commit()
     finally:
         db.close()
@@ -101,11 +108,27 @@ def _normalize_severity(value: object) -> str:
     return ""
 
 
+_PROVIDER_ENV_KEY = {"gigachat": "GIGACHAT_CREDENTIALS", "anthropic": "ANTHROPIC_API_KEY"}
+
+
 def _llm_config(db: Session) -> LlmConfig:
+    """Конфигурация провайдера для прогона, запущенного из интерфейса.
+
+    Г.94 — ключ берётся из настроек, а если там пусто, из переменной
+    окружения по провайдеру. Так администратор может задать ключ один раз
+    при развёртывании, и инспектор не вводит вообще ничего: загрузил
+    документы и нажал кнопку. Тот же приём, что уже сделан в CLI (Г.82),
+    где отсутствие env-фолбэка приводило к молчаливому прогону без ключа.
+    """
     s = db.query(models.Settings).first()
-    if s is None:
-        return LlmConfig(provider="anthropic")
-    return LlmConfig(provider=s.provider, api_key=s.api_key, base_url=s.base_url, model=s.model)
+    provider = s.provider if s is not None else "gigachat"
+    api_key = (s.api_key if s is not None else "") or os.environ.get(
+        _PROVIDER_ENV_KEY.get(provider, ""), "")
+    return LlmConfig(
+        provider=provider, api_key=api_key,
+        base_url=s.base_url if s is not None else "",
+        model=s.model if s is not None else "",
+    )
 
 
 # ---------- Документы ----------
@@ -442,6 +465,115 @@ def update_finding(finding_id: int, body: schemas.FindingUpdate, db: Session = D
 
 
 # ---------- Настройки ----------
+
+
+def _run_pd(run_id: int) -> None:
+    """Фоновая задача: стадия 1 (разбор ПД, Г.86) на загруженных документах.
+
+    Г.94 — сценарий инспектора: загрузил документацию, нажал кнопку.
+    Промпт, модель, разбивка на пачки и правила выжимки зашиты в код и
+    сюда не передаются: их не надо знать, вводить и присылать.
+
+    Связь с провайдером проверяется ДО разбора (Г.91): разбор тома — это
+    десятки вызовов и минуты, а при оборванной связи каждый молча вернул
+    бы пустой результат, и прогон закончился бы правдоподобной пустой
+    сводкой. Это ловушка Г.77, уже стоившая проекту трёх раундов правок
+    промпта против бага, которого в промпте не было.
+    """
+    db = next(get_session())
+    try:
+        run = db.get(models.PdRun, run_id)
+        if run is None:
+            return
+        docs = [(i, db.get(models.Document, i)) for i in run.document_ids]
+        missing = [str(i) for i, d in docs if d is None]
+        if missing:
+            run.status = "error"
+            run.error = ("документы не найдены: " + ", ".join(missing)
+                         + " (удалены после создания прогона?)")
+            db.commit()
+            return
+
+        config = _llm_config(db)
+        run.provider = config.provider
+        db.commit()
+
+        reachable, why = check_llm_reachable(config if config.api_key else None)
+        if not reachable:
+            run.status = "error"
+            run.error = (f"связь с провайдером {config.provider} не прошла — {why}. "
+                         "Разбор НЕ выполнен: это не «в документах нет требований».")
+            db.commit()
+            return
+
+        sources = [(d.file_path, d.name) for _, d in docs]
+        requirements = extract_requirements_llm(load_text_facts(sources), config=config)
+        run.summary = render_summary(requirements)
+        run.requirements_total = len(requirements)
+        run.extractor = "llm"
+        # Г.87 — тот же склад, что у CLI: отсюда его берёт стадия сверки с РД
+        # и здесь же копится датасет с полным контекстом получения строки.
+        run.store_run_id = save_run(
+            requirements, documents=[d.name for _, d in docs], extractor="llm",
+            provider=config.provider, model=config.model,
+        )
+        run.status = "done"
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — сбой прогона виден инспектору, сервер жив
+        run = db.get(models.PdRun, run_id)
+        if run is not None:
+            run.status = "error"
+            run.error = f"{type(exc).__name__}: {exc}"
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/pd-runs", response_model=schemas.PdRunOut)
+def create_pd_run(
+    body: schemas.PdRunCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+):
+    """Кнопка «Разобрать документацию». Единственный вход стадии 1 из
+    интерфейса: на входе — какие документы, больше ничего."""
+    if not body.document_ids:
+        raise HTTPException(400, "не выбран ни один документ")
+    run = models.PdRun(document_ids=body.document_ids, status="running")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    background_tasks.add_task(_run_pd, run.id)
+    return run
+
+
+@app.get("/pd-runs/{run_id}", response_model=schemas.PdRunOut)
+def get_pd_run(run_id: int, db: Session = Depends(get_session)):
+    run = db.get(models.PdRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    return run
+
+
+@app.get("/pd-runs", response_model=list[schemas.PdRunOut])
+def list_pd_runs(db: Session = Depends(get_session)):
+    return db.query(models.PdRun).order_by(models.PdRun.id.desc()).limit(50).all()
+
+
+@app.get("/llm-check", response_model=schemas.LlmCheckOut)
+def llm_check(db: Session = Depends(get_session)):
+    """Проверка связи одним коротким вызовом (Г.91) — чтобы инспектор узнал
+    о проблеме до запуска разбора на сотни страниц, а не по его пустому
+    результату."""
+    config = _llm_config(db)
+    if not config.api_key:
+        return schemas.LlmCheckOut(
+            reachable=False, provider=config.provider,
+            message="ключ провайдера не задан — ни в настройках, ни в переменной окружения "
+                    f"{_PROVIDER_ENV_KEY.get(config.provider, '')}",
+        )
+    ok, message = check_llm_reachable(config)
+    return schemas.LlmCheckOut(reachable=ok, provider=config.provider, message=message)
 
 
 @app.get("/settings", response_model=schemas.SettingsOut)

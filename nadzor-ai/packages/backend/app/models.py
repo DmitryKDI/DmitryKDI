@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -158,11 +158,46 @@ class TriangulatedRun(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class PdRun(Base):
+    """Прогон СТАДИИ 1 — самостоятельного разбора проектной документации
+    (Г.86), запущенный из интерфейса, а не из командной строки.
+
+    Г.94: до этого стадия 1 жила только в CLI, и инспектор через интерфейс
+    получить сводку не мог вообще — сервер умел лишь сравнение ПД↔РД, то
+    есть форму, которая по Г.86 больше не является главной и требует РД,
+    которой на половине объектов нет.
+
+    Отдельная таблица от `TriangulatedRun` по той же причине, по которой та
+    отделена от `AnalysisRun`: это другой движок с другим контрактом, и
+    смешивать их прогоны в одной записи значит потом гадать, каким путём
+    посчитана строка.
+
+    `store_run_id` — ссылка на запись в ХРАНИЛИЩЕ РАЗБОРОВ (`pd_store.py`,
+    отдельная база, Г.87). Здесь хранится состояние прогона для интерфейса,
+    там — сами требования: для передачи во вторую стадию и как датасет.
+    Дублировать требования в этой базе значило бы завести второй источник
+    истины о том же."""
+    __tablename__ = "pd_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    status: Mapped[str] = mapped_column(String, default="running")  # running|done|error
+    document_ids: Mapped[list] = mapped_column(JSON, default=list)
+    provider: Mapped[str] = mapped_column(String, default="")
+    extractor: Mapped[str] = mapped_column(String, default="")  # llm|regex
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    requirements_total: Mapped[int] = mapped_column(Integer, default=0)
+    store_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class Settings(Base):
     __tablename__ = "settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    provider: Mapped[str] = mapped_column(String, default="anthropic")
+    # Г.94 — инструмент делается под GigaChat: провайдер по умолчанию он,
+    # а не тот, что оставался от разработки. Инспектор ничего не выбирает.
+    provider: Mapped[str] = mapped_column(String, default="gigachat")
     base_url: Mapped[str] = mapped_column(String, default="")
     model: Mapped[str] = mapped_column(String, default="")
     api_key: Mapped[str] = mapped_column(String, default="")

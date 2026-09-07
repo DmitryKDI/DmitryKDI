@@ -301,6 +301,22 @@ export default function NewAnalysis() {
   // самом деле систематическая проблема одного типа, повторённая на многих
   // листах, а не сто разных нарушений — группировка по label (краткий код
   // из промпта, см. vision.py) сворачивает повторы в одну строку со счётчиком.
+  // Г.94 — стадия 1: разбор ПД одной кнопкой. Отдельно от сравнения с РД и
+  // ПЕРЕД ним: разбор ПД самодостаточен, рабочей документации на половине
+  // объектов нет вовсе, и её отсутствие не должно мешать получить сводку.
+  const [pdRunId, setPdRunId] = useState<number | null>(null)
+  const pdRun = useQuery({
+    queryKey: ['pd-run', pdRunId],
+    queryFn: () => backendApi.getPdRun(pdRunId as number),
+    enabled: pdRunId !== null,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 1500 : false),
+  })
+  const llmCheck = useQuery({ queryKey: ['llm-check'], queryFn: backendApi.checkLlm })
+  const startPdRun = useMutation({
+    mutationFn: () => backendApi.createPdRun(beforeDocs.map((d) => d.id)),
+    onSuccess: (run) => setPdRunId(run.id),
+  })
+
   const [groupByLabel, setGroupByLabel] = useState(false)
   const groups = (() => {
     const map = new Map<string, BackendFinding[]>()
@@ -321,6 +337,58 @@ export default function NewAnalysis() {
         <UploadZone title="2. Рабочая / исполнительная документация (РД/ИД)" subtitle="Комплект «после» — что проверяем на соответствие"
           docs={afterDocs} onFiles={(f) => uploadTo('after', f)} onRemove={(id) => removeFrom('after', id)}
           pending={pendingAfter} />
+
+        <SectionCard
+          title="Разбор проектной документации"
+          subtitle="Требования и способы производства работ из ПД — сводка для инспектора. Рабочая документация не нужна: её отсутствие не ошибка">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={beforeDocs.length === 0 || pdRun.data?.status === 'running' || startPdRun.isPending}
+              onClick={() => startPdRun.mutate()}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
+              {pdRun.data?.status === 'running' || startPdRun.isPending ? 'Разбираем…' : 'Разобрать документацию'}
+            </button>
+            {beforeDocs.length === 0 && (
+              <span className="text-xs text-ink-muted">Сначала загрузите проектную документацию выше.</span>
+            )}
+            {/* Г.91 — состояние связи видно ДО запуска: разбор тома это
+                десятки вызовов и минуты, а при оборванной связи каждый молча
+                вернул бы пустой результат. */}
+            {llmCheck.data && (
+              <span className={`text-xs ${llmCheck.data.reachable ? 'text-ink-muted' : 'text-danger'}`}>
+                {llmCheck.data.reachable
+                  ? `ИИ (${llmCheck.data.provider}): связь есть`
+                  : `ИИ (${llmCheck.data.provider}): ${llmCheck.data.message}`}
+              </span>
+            )}
+          </div>
+
+          {pdRunId === null && (
+            <p className="text-sm text-ink-muted">
+              Загрузите тома ПД и нажмите кнопку. Настраивать ничего не нужно: правила извлечения
+              и модель заданы в системе.
+            </p>
+          )}
+          {pdRun.data?.status === 'running' && <Skeleton rows={3} />}
+          {pdRun.data?.status === 'error' && (
+            <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">
+              {pdRun.data.error}
+            </div>
+          )}
+          {pdRun.data?.status === 'done' && (
+            <div className="space-y-2">
+              <p className="text-xs text-ink-muted">
+                Извлечено требований: <span className="font-medium text-ink">{pdRun.data.requirements_total}</span>
+                {' · '}ИИ: {pdRun.data.provider}
+                {pdRun.data.store_run_id !== null && <> · разбор №{pdRun.data.store_run_id} сохранён для сверки с РД</>}
+              </p>
+              <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-md border border-surface-line bg-surface-muted/60 p-3 text-xs leading-relaxed text-ink">
+                {pdRun.data.summary}
+              </pre>
+            </div>
+          )}
+        </SectionCard>
 
         <SectionCard title="Оценка расхождений" subtitle="Автоматический подбор пар листов по разделу (шифру), затем сравнение — без разбивки по помещениям">
           {runId === null && <p className="text-sm text-ink-muted">Запустите анализ, чтобы увидеть расхождения.</p>}

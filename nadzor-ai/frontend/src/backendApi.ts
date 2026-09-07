@@ -167,6 +167,32 @@ export interface BackendTriangulatedRun {
   result: TriangulatedResult | null
 }
 
+/**
+ * Прогон СТАДИИ 1 — разбора проектной документации (Г.86/Г.94).
+ * Инспектор загружает документы и нажимает одну кнопку: ни промпта, ни
+ * модели, ни ключа он не передаёт — всё это держит сервер.
+ */
+export interface BackendPdRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error'
+  provider: string
+  extractor: string
+  error: string | null
+  /** Готовая сводка для инспектора: раздел, документ, страница, суть. */
+  summary: string
+  requirements_total: number
+  /** Ссылка на запись в хранилище разборов — по ней идёт сверка с РД. */
+  store_run_id: number | null
+}
+
+/** Предполётная проверка связи (Г.91): узнать о проблеме ДО разбора. */
+export interface LlmCheck {
+  reachable: boolean
+  provider: string
+  message: string
+}
+
 export interface BackendSettings {
   provider: 'anthropic' | 'gigachat'
   base_url: string
@@ -207,6 +233,17 @@ export const backendApi = {
       body: JSON.stringify({ before_document_ids: beforeIds, after_document_ids: afterIds, room_keys: roomKeys }),
     }),
   getTriangulatedRun: (id: number) => request<BackendTriangulatedRun>(`/triangulated-runs/${id}`),
+
+  /** Кнопка «Разобрать документацию»: на входе только список документов. */
+  createPdRun: (documentIds: number[]) =>
+    request<BackendPdRun>('/pd-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_ids: documentIds }),
+    }),
+  getPdRun: (id: number) => request<BackendPdRun>(`/pd-runs/${id}`),
+  listPdRuns: () => request<BackendPdRun[]>('/pd-runs'),
+  checkLlm: () => request<LlmCheck>('/llm-check'),
 
   getSettings: () => request<BackendSettings>('/settings'),
   updateSettings: (settings: BackendSettings) =>

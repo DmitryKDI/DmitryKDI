@@ -64,7 +64,18 @@ def upload(side: str, path: Path):
     return resp.json()
 
 
+def _use_mocked_provider() -> None:
+    """Тест мокает транспорт на уровне httpx, поэтому провайдер и ключ
+    должны быть заданы явно. Раньше тест опирался на то, что провайдером по
+    умолчанию был anthropic; после Г.94 умолчание — gigachat, и неявное
+    допущение стало видно отказом. Задавать явно правильнее в любом случае:
+    тест не должен молча зависеть от того, какое умолчание сегодня."""
+    client.put("/settings", json={"provider": "anthropic", "base_url": "",
+                                  "model": "test-model", "api_key": "тестовый-ключ"})
+
+
 def test_full_pipeline_upload_analyze_findings():
+    _use_mocked_provider()
     with patch("app.llm.httpx.post", side_effect=fake_llm_post):
         before_doc = upload("before", SAMPLE_DIR / "pd_tom542_real_name_ОВ.pdf")
         after_doc1 = upload("after", SAMPLE_DIR / "rd_floor1.pdf")
@@ -136,6 +147,7 @@ def test_llm_failure_is_visible_not_silent():
     def broken_llm_post(*a, **kw):
         raise ConnectionError("провайдер недоступен (симуляция для теста)")
 
+    _use_mocked_provider()
     with patch("app.llm.httpx.post", side_effect=broken_llm_post):
         before_doc = upload("before", SAMPLE_DIR / "rd_floor1.pdf")
         after_doc = upload("after", SAMPLE_DIR / "rd_floor2_heating.pdf")

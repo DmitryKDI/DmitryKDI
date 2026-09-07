@@ -43,113 +43,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
 from app.classification import classify_document, open_pdf  # noqa: E402
-from app.llm import LlmConfig, call_llm_json  # noqa: E402
+
+# Г.94 — рендер сводки и предполётная проверка живут в пакете приложения:
+# их же вызывает HTTP-эндпоинт разбора ПД. Здесь только обвязка CLI.
+from app.llm import LlmConfig, check_llm_reachable  # noqa: E402
+from app.pd_stage import render_summary  # noqa: E402
 from app.pd_store import save_run  # noqa: E402
-from app.requirement_registry import (  # noqa: E402
-    Requirement,
-    _normalize_for_dedup,
-    extract_general_requirements,
-)
+from app.requirement_registry import extract_general_requirements  # noqa: E402
 from app.set_overview import official_section_label  # noqa: E402
 from registry_diff import (  # noqa: E402
     _PROVIDER_ENV_KEY,
     _extract_requirements_llm_visible,
     _load_text_facts,
 )
-
-
-def check_llm_reachable(llm_config) -> tuple[bool, str]:
-    """Предполётная проверка связи с провайдером — один короткий вызов.
-
-    Г.91. Разбор тома — это десятки вызовов и минуты работы. Если связи
-    нет, каждый вызов молча возвращает пустой результат, и прогон
-    заканчивается правдоподобным отчётом, в котором ничего не найдено, —
-    ровно ловушка Г.77: 100%-ный отказ связи был неотличим от «модель со
-    всем согласна» и стоил трёх раундов правок промпта против бага,
-    которого в промпте не было. Один вызов до начала работы отделяет
-    «связи нет» от «модель так ответила».
-
-    Три состояния различаются явно, а не сводятся к «не получилось»:
-    ключа нет (проверять нечего), связь есть, связь не прошла — с точной
-    причиной, потому что «сеть не пускает» и «ключ протух» требуют от
-    пользователя разных действий (Г.10).
-    """
-    if llm_config is None:
-        return False, "ключ ЛЛМ не задан — проверять нечего"
-    try:
-        call_llm_json(
-            llm_config,
-            "Ты отвечаешь строго JSON. Проверка связи.",
-            'Ответь ровно: {"ok": true}',
-            timeout=30.0,
-        )
-    except Exception as exc:  # noqa: BLE001 — причина нужна целиком, любая
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, "связь с провайдером есть"
-
-
-def _group_repeated(items: list[Requirement]) -> list[list[Requirement]]:
-    """Одинаковые по тексту требования — в одну группу, порядок первого
-    появления сохраняется. Ключ тот же, что у каталога формы 3
-    (`_normalize_for_dedup`), чтобы «одинаковость» означала одно и то же в
-    обоих отчётах, а не два похожих правила в разных местах."""
-    groups: dict[str, list[Requirement]] = {}
-    order: list[str] = []
-    for req in items:
-        key = _normalize_for_dedup(req.summary or req.sentence)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(req)
-    return [groups[k] for k in order]
-
-
-def render_summary(requirements: list[Requirement]) -> str:
-    """Сводка для инспектора: раздел, страница, текст требования.
-
-    Г.86 — прямое требование пользователя: «требования должны быть уже
-    привязаны к разделам... чтобы инспектор просто увидел результат, на
-    какой странице требование». Поэтому группировка по разделу (а внутри —
-    по документу и странице), а не сплошной список: на комплекте из
-    нескольких томов сплошной список нечитаем, и непонятно, к чему
-    относится требование.
-
-    Г.90 — одинаковая формулировка с разных страниц печатается ОДНОЙ
-    строкой со списком всех страниц. Примечание, повторённое на каждом
-    листе многостраничной таблицы, иначе занимает столько строк, сколько
-    листов в таблице: на реальном томе это 88 строк против 69 уникальных
-    формулировок. Ни одна страница при этом не теряется и число повторов
-    показано явно — сжимается вид, а не данные (Г.10). Дедупликация НЕ
-    переходит границу документа: одна и та же фраза в двух томах — два
-    разных факта, инспектору важно, в каком томе искать.
-    """
-    if not requirements:
-        return "Требований не извлечено."
-
-    by_section: dict[tuple[str, str], list[Requirement]] = {}
-    for req in requirements:
-        by_section.setdefault((req.section or "", req.document or ""), []).append(req)
-
-    out: list[str] = []
-    for (section, document), items in sorted(by_section.items()):
-        label = official_section_label(section) if section else "Раздел не определён"
-        code = f" [{section}]" if section else ""
-        groups = _group_repeated(items)
-        unique_note = (f", уникальных формулировок: {len(groups)}"
-                       if len(groups) != len(items) else "")
-        out.append(f"\n=== {label}{code} — {document or 'файл не указан'} "
-                   f"({len(items)} требований{unique_note}) ===")
-        for group in sorted(groups, key=lambda g: g[0].page):
-            first = group[0]
-            pages = ", ".join(str(p) for p in sorted({r.page for r in group}))
-            rooms_all = sorted({room for r in group for room in r.rooms},
-                               key=lambda x: (len(x), x))
-            rooms = f" (пом. {', '.join(rooms_all)})" if rooms_all else ""
-            mark = f" [{first.code}]" if first.code else ""
-            repeat = f" (повторено {len(group)}×)" if len(group) > 1 else ""
-            out.append(f"  стр.{pages}{mark}{rooms}{repeat}")
-            out.append(f"    {first.summary or first.sentence}")
-    return "\n".join(out)
 
 
 def _identity_line(path: str) -> str:

@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from app import llm as app_llm  # noqa: E402
 from app.requirement_registry import Requirement  # noqa: E402
 
 import scripts.summarize_requirements as sr  # noqa: E402
@@ -185,12 +186,14 @@ def test_preflight_reports_reachable_provider():
         calls.append(user_text)
         return {"ok": True}
 
-    original = sr.call_llm_json
-    sr.call_llm_json = fake_call
+    # Г.94 — предполётная проверка переехала в пакет приложения (её же
+    # вызывает HTTP-эндпоинт), поэтому патчим там, где она теперь живёт.
+    original = app_llm.call_llm_json
+    app_llm.call_llm_json = fake_call
     try:
         ok, message = sr.check_llm_reachable(object())
     finally:
-        sr.call_llm_json = original
+        app_llm.call_llm_json = original
 
     assert ok is True
     assert len(calls) == 1, "проверка стоит один короткий вызов, не прогон тома"
@@ -203,12 +206,12 @@ def test_preflight_names_the_reason_when_provider_unreachable():
     def boom(*a, **kw):
         raise ConnectionError("Connection reset by peer")
 
-    original = sr.call_llm_json
-    sr.call_llm_json = boom
+    original = app_llm.call_llm_json
+    app_llm.call_llm_json = boom
     try:
         ok, message = sr.check_llm_reachable(object())
     finally:
-        sr.call_llm_json = original
+        app_llm.call_llm_json = original
 
     assert ok is False
     assert "Connection reset by peer" in message, "точная причина, а не «что-то пошло не так»"
