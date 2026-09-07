@@ -65,6 +65,7 @@ def test_api_key_from_env_var_reaches_llm_config(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["summarize_requirements.py", "--pd", str(pdf_path)])
 
     seen: list[str] = []
+    monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible",
                         lambda facts, cfg, emit: seen.append(cfg.api_key) or [])
     sr.main()
@@ -80,6 +81,7 @@ def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path
     _make_pdf(pdf_path)
     monkeypatch.setattr(sys, "argv",
                         ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
+    monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit: [])
     sr.main()
 
@@ -97,6 +99,7 @@ def test_unconnected_steps_are_announced_not_silently_skipped(monkeypatch, capsy
     _make_pdf(pdf_path)
     monkeypatch.setattr(sys, "argv",
                         ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
+    monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit: [])
     sr.main()
 
@@ -170,3 +173,50 @@ def test_dedup_does_not_merge_across_documents():
     text = sr.render_summary(reqs)
     assert text.count("Одинаковая фраза.") == 2
     assert "том-А.pdf" in text and "том-Б.pdf" in text
+
+
+def test_preflight_reports_reachable_provider():
+    """Г.91 — предполётная проверка связи. Без неё длинный прогон уходит
+    в сеть вслепую: сбой вызова неотличим от «модель со всем согласна»
+    (ровно ловушка Г.77, стоившая трёх раундов правок промпта)."""
+    calls = []
+
+    def fake_call(config, system_prompt, user_text, images=None, timeout=120.0):
+        calls.append(user_text)
+        return {"ok": True}
+
+    original = sr.call_llm_json
+    sr.call_llm_json = fake_call
+    try:
+        ok, message = sr.check_llm_reachable(object())
+    finally:
+        sr.call_llm_json = original
+
+    assert ok is True
+    assert len(calls) == 1, "проверка стоит один короткий вызов, не прогон тома"
+    assert "связь" in message.lower() or "ok" in message.lower()
+
+
+def test_preflight_names_the_reason_when_provider_unreachable():
+    """Причина обязана быть в тексте: «сеть не пускает» и «ключ протух» —
+    разные проблемы с разными действиями пользователя (Г.10)."""
+    def boom(*a, **kw):
+        raise ConnectionError("Connection reset by peer")
+
+    original = sr.call_llm_json
+    sr.call_llm_json = boom
+    try:
+        ok, message = sr.check_llm_reachable(object())
+    finally:
+        sr.call_llm_json = original
+
+    assert ok is False
+    assert "Connection reset by peer" in message, "точная причина, а не «что-то пошло не так»"
+
+
+def test_preflight_says_no_key_instead_of_pretending_to_check():
+    """Без ключа проверять нечего — и это не «связи нет»: смешивать эти два
+    состояния значит повторять подмену, которую запрещает Г.10."""
+    ok, message = sr.check_llm_reachable(None)
+    assert ok is False
+    assert "ключ" in message.lower()

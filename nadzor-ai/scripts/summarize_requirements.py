@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
 from app.classification import classify_document, open_pdf  # noqa: E402
-from app.llm import LlmConfig  # noqa: E402
+from app.llm import LlmConfig, call_llm_json  # noqa: E402
 from app.pd_store import save_run  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     Requirement,
@@ -56,6 +56,36 @@ from registry_diff import (  # noqa: E402
     _extract_requirements_llm_visible,
     _load_text_facts,
 )
+
+
+def check_llm_reachable(llm_config) -> tuple[bool, str]:
+    """Предполётная проверка связи с провайдером — один короткий вызов.
+
+    Г.91. Разбор тома — это десятки вызовов и минуты работы. Если связи
+    нет, каждый вызов молча возвращает пустой результат, и прогон
+    заканчивается правдоподобным отчётом, в котором ничего не найдено, —
+    ровно ловушка Г.77: 100%-ный отказ связи был неотличим от «модель со
+    всем согласна» и стоил трёх раундов правок промпта против бага,
+    которого в промпте не было. Один вызов до начала работы отделяет
+    «связи нет» от «модель так ответила».
+
+    Три состояния различаются явно, а не сводятся к «не получилось»:
+    ключа нет (проверять нечего), связь есть, связь не прошла — с точной
+    причиной, потому что «сеть не пускает» и «ключ протух» требуют от
+    пользователя разных действий (Г.10).
+    """
+    if llm_config is None:
+        return False, "ключ ЛЛМ не задан — проверять нечего"
+    try:
+        call_llm_json(
+            llm_config,
+            "Ты отвечаешь строго JSON. Проверка связи.",
+            'Ответь ровно: {"ok": true}',
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001 — причина нужна целиком, любая
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, "связь с провайдером есть"
 
 
 def _group_repeated(items: list[Requirement]) -> list[list[Requirement]]:
@@ -151,6 +181,11 @@ def main() -> None:
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41)")
+    parser.add_argument(
+        "--check-llm", action="store_true",
+        help="Только проверить связь с провайдером и выйти. Г.91: разбор тома — десятки "
+             "вызовов, а при обрыве связи каждый молча даёт пустой результат.",
+    )
     args = parser.parse_args()
 
     # Г.82 — несуществующий путь раньше давал чистый отчёт из нулей с
@@ -165,6 +200,11 @@ def main() -> None:
         LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
         if api_key else None
     )
+
+    if args.check_llm:
+        ok, message = check_llm_reachable(llm_config)
+        print(f"Проверка связи [{args.provider}]: {message}")
+        sys.exit(0 if ok else 2)
 
     # noqa: SIM115 — файл живёт весь прогон и закрывается в finally: вывод
     # пишется по мере готовности (Г.41), а не одним куском в конце.
@@ -192,6 +232,12 @@ def main() -> None:
         # Шаг 3 — требования. Главный шаг.
         _emit("=== Шаг 3. Требования и способы производства работ ===")
         if llm_config is not None:
+            # Г.91 — связь проверяется ДО десятков вызовов, а не по их итогу.
+            reachable, why = check_llm_reachable(llm_config)
+            if not reachable:
+                sys.exit(f"ОШИБКА: связь с провайдером {args.provider} не прошла — {why}\n"
+                         "  Разбор НЕ выполнен. Это не «в документе нет требований» (Г.10/Г.77).\n"
+                         "  Без ключа осознанно: запустите без --api-key — будет regex-путь.")
             requirements = _extract_requirements_llm_visible(pd_text_facts, llm_config, _emit)
         else:
             _emit("  Ключ ЛЛМ не задан — regex-путь: сводка будет СЫРОЙ, с шумом.")
