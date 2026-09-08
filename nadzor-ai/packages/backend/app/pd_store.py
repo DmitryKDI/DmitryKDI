@@ -89,10 +89,40 @@ class PdRequirement(StoreBase):
     summary: Mapped[str] = mapped_column(Text, default="")
     code: Mapped[str | None] = mapped_column(String, nullable=True)
     rooms: Mapped[list] = mapped_column(JSON, default=list)
+    # Г.101 — норматив из перечня тома и способ привязки. В датасете нужны
+    # оба: строка «сопоставлено по смыслу» — гипотеза модели, и учиться на
+    # ней как на факте нельзя.
+    norm: Mapped[str] = mapped_column(String, default="")
+    norm_source: Mapped[str] = mapped_column(String, default="")
 
 
 _engine = None
 _SessionLocal = None
+
+
+def _add_missing_columns(engine) -> None:
+    """Дописать новые колонки в СУЩЕСТВУЮЩУЮ базу, не пересоздавая её.
+
+    `create_all` добавляет таблицы, но не колонки: база, заведённая прежней
+    версией, после обновления падала бы на первом же SELECT. Основную базу
+    инструмента в такой ситуации разрешено пересоздать (`db.init_db`), а эту
+    — нельзя: здесь копится датасет разборов, он append-only и восстановлению
+    из документов не подлежит. Поэтому добавление, а не пересборка.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    for table in StoreBase.metadata.sorted_tables:
+        if table.name not in inspector.get_table_names():
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing:
+                continue
+            ddl = f"ALTER TABLE {table.name} ADD COLUMN {column.name} " \
+                  f"{column.type.compile(engine.dialect)}"
+            with engine.begin() as conn:
+                conn.execute(text(ddl))
 
 
 def _session() -> Session:
@@ -105,6 +135,7 @@ def _session() -> Session:
         _engine = create_engine(f"sqlite:///{STORE_PATH}",
                                 connect_args={"check_same_thread": False})
         StoreBase.metadata.create_all(bind=_engine)
+        _add_missing_columns(_engine)
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
     return _SessionLocal()
 
@@ -142,6 +173,8 @@ def save_run(
                 summary=req.summary,
                 code=req.code,
                 rooms=list(req.rooms),
+                norm=req.norm,
+                norm_source=req.norm_source,
             ))
         session.commit()
         return run.id
@@ -238,4 +271,6 @@ def _to_requirement(row: PdRequirement) -> Requirement:
         code=row.code,
         document=row.document,
         section=row.section,
+        norm=row.norm or "",
+        norm_source=row.norm_source or "",
     )

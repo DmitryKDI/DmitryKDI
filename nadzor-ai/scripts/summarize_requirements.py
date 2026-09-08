@@ -52,7 +52,7 @@ from app.document_composition import (  # noqa: E402
 # Г.94 — рендер сводки и предполётная проверка живут в пакете приложения:
 # их же вызывает HTTP-эндпоинт разбора ПД. Здесь только обвязка CLI.
 from app.llm import LlmConfig, check_llm_reachable  # noqa: E402
-from app.pd_stage import render_summary  # noqa: E402
+from app.pd_stage import attach_norms, render_summary  # noqa: E402
 from app.pd_store import save_run  # noqa: E402
 from app.requirement_registry import extract_general_requirements  # noqa: E402
 from app.set_overview import official_section_label  # noqa: E402
@@ -192,8 +192,16 @@ def main() -> None:
         _emit(f"  извлечено: {len(requirements)}")
         _emit("")
 
-        # Шаг 4 — сводка: то, ради чего всё запускалось.
-        _emit("=== Шаг 4. Сводка для инспектора ===")
+        # Шаг 4 — нормативная база: к какому документу перечня относится
+        # параметр (Г.101). Считается ДО сводки, потому что сводка печатает
+        # привязку рядом с требованием.
+        _emit("=== Шаг 4. Нормативная база ===")
+        _, norms_section = attach_norms(requirements, pd_text_facts, llm_config)
+        _emit(norms_section)
+        _emit("")
+
+        # Шаг 5 — сводка: то, ради чего всё запускалось.
+        _emit("=== Шаг 5. Сводка для инспектора ===")
         _emit(render_summary(requirements))
         _emit("")
 
@@ -210,9 +218,9 @@ def main() -> None:
         _emit(f"  Сверка с РД по этому разбору: python scripts/compare_with_rd.py --run {run_id} --rd <файл РД>")
         _emit("")
 
-        # Шаги 5-6 — реестры и графика. Пока не подключены к этой стадии:
+        # Шаги 6-7 — реестры и графика. Пока не подключены к этой стадии:
         # Г.10 требует сказать об этом явно, а не молчать.
-        _emit("=== Шаги 5-6. Реестры и графика — пока не подключены к этой стадии ===")
+        _emit("=== Шаги 6-7. Реестры и графика — пока не подключены к этой стадии ===")
         _emit("  Реестры помещений/оборудования, спецификации, таблицы и разбор чертежей")
         _emit("  в движке есть и работают, но к стадии разбора ПД ещё не подключены —")
         _emit("  они писались для сверки с РД. Подключение — отдельный шаг.")

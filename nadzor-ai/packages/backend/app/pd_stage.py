@@ -16,6 +16,8 @@ from pathlib import Path
 import pymupdf
 
 from .classification import classify_document
+from .llm import LlmConfig
+from .norms_registry import find_norms, link_by_meaning, link_cited, render_norms_section
 from .requirement_registry import Requirement, _normalize_for_dedup
 from .set_overview import official_section_label
 
@@ -67,6 +69,35 @@ def load_text_facts(sources: list[tuple]) -> list[dict]:
         finally:
             doc.close()
     return out
+
+
+def attach_norms(requirements: list[Requirement], text_facts: list[dict],
+                 config: LlmConfig | None = None) -> tuple[list, str]:
+    """Привязать требования к нормативам ПЕРЕЧНЯ ЭТОГО ТОМА (Г.101).
+
+    Один код на CLI и сервер, как и всё остальное в этом модуле (Г.94).
+    Порядок ступеней тот же, что везде в проекте: сначала детерминированная
+    и бесплатная, потом платная, и вторая работает только над тем, что не
+    решила первая.
+
+    1. `link_cited` — обозначение стоит прямо в тексте требования. Проверка
+       подстрокой, вызова модели не требует, ошибиться не может.
+    2. `link_by_meaning` — параметр норматива не называет. Модель выбирает из
+       ЗАКРЫТОГО перечня этого тома либо честно отвечает «не могу». Без
+       ключа шаг не выполняется, и требование остаётся без привязки — это
+       «не сопоставляли», а не «норматива нет».
+
+    Возвращает `(нормативы, текст раздела отчёта)`. Пустой перечень — не
+    ошибка и не повод угадывать нормативы по разделу: раздел отчёта прямо
+    говорит, что перечня в томе не найдено (Г.10).
+    """
+    norms = find_norms(text_facts)
+    if not norms:
+        return [], render_norms_section([], requirements)
+    pending = link_cited(requirements, norms)
+    if config is not None and pending:
+        link_by_meaning(pending, norms, config)
+    return norms, render_norms_section(norms, requirements)
 
 
 def _group_repeated(items: list[Requirement]) -> list[list[Requirement]]:
@@ -130,4 +161,10 @@ def render_summary(requirements: list[Requirement]) -> str:
             repeat = f" (повторено {len(group)}×)" if len(group) > 1 else ""
             out.append(f"  стр.{pages}{mark}{rooms}{repeat}")
             out.append(f"    {first.summary or first.sentence}")
+            # Г.101 — норматив ИЗ ПЕРЕЧНЯ ЭТОГО ТОМА. Способ привязки назван
+            # рядом: «названа в требовании» проверено подстрокой и ошибиться
+            # не может, «сопоставлено по смыслу» — гипотеза модели, и
+            # показывать их одинаково значило бы выдать второе за первое.
+            if first.norm:
+                out.append(f"    ← {first.norm} ({first.norm_source})")
     return "\n".join(out)

@@ -203,6 +203,34 @@ export interface BackendComplianceRun {
   requirements_total: number
 }
 
+/**
+ * Реплика в разборе результата сверки (Г.100).
+ *
+ * `kind` пуст у обычного вопроса и содержит род ошибки у замечания. Это не
+ * оформительское различие: примером в промпте может стать только замечание,
+ * и только после отдельного решения человека (`approved`).
+ */
+export interface ReviewMessage {
+  id: number
+  created_at: string
+  role: 'inspector' | 'assistant'
+  text: string
+  kind: string
+  target: string
+  approved: boolean
+  /** Почему ответа модели нет. Пусто, если ответ есть (Г.10). */
+  no_answer_reason: string
+}
+
+/** Роды ошибки, на которые указывает инспектор. Список закрытый: свободная
+ *  формулировка не даёт группировать замечания, а группировка и превращает
+ *  их в датасет, а не в переписку. */
+export const CORRECTION_KINDS = [
+  'ложное срабатывание',
+  'пропущено',
+  'неверная деталь',
+] as const
+
 /** Предполётная проверка связи (Г.91): узнать о проблеме ДО разбора. */
 export interface LlmCheck {
   reachable: boolean
@@ -277,6 +305,23 @@ export const backendApi = {
       body: JSON.stringify({ pd_run_id: pdRunId, rd_document_ids: rdDocumentIds }),
     }),
   getComplianceRun: (id: number) => request<BackendComplianceRun>(`/compliance-runs/${id}`),
+
+  getReviewMessages: (runId: number) =>
+    request<ReviewMessage[]>(`/compliance-runs/${runId}/messages`),
+  /** Возвращает пару «реплика инспектора, ответ модели»: реплика сохраняется
+   *  ДО обращения к модели, поэтому приходит и тогда, когда ответа нет. */
+  addReviewMessage: (runId: number, text: string, kind = '', target = '') =>
+    request<ReviewMessage[]>(`/compliance-runs/${runId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, kind, target }),
+    }),
+  approveReviewMessage: (id: number, approved: boolean) =>
+    request<ReviewMessage>(`/review-messages/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    }),
 
   getSettings: () => request<BackendSettings>('/settings'),
   updateSettings: (settings: BackendSettings) =>

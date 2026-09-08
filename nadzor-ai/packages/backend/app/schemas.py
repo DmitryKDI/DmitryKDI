@@ -172,3 +172,39 @@ class DocumentUpdate(BaseModel):
     ошибочный ввод не должен становиться необратимым.
     """
     discipline_code: str | None = None
+
+
+class ReviewMessageCreate(BaseModel):
+    """Реплика инспектора в разборе результата сверки (Г.100).
+
+    `kind` пуст у обычного вопроса и содержит род ошибки у замечания.
+    Разделение задаётся ЗДЕСЬ, на входе, а не разбором переписки задним
+    числом: в датасет идут только замечания, и отличить их от реплики после
+    того, как они смешались в один поток, нельзя.
+    """
+    text: str
+    kind: str = ""
+    target: str = ""
+
+
+class ReviewMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: dt.datetime
+    role: str
+    text: str
+    kind: str
+    target: str
+    approved: bool
+    no_answer_reason: str
+
+
+class ReviewMessageUpdate(BaseModel):
+    """Разрешить или отозвать использование замечания примером в промпте.
+
+    Отдельным действием, а не флагом при создании: Г.11 требует, чтобы
+    правило заводилось осознанным решением человека, а не по факту того, что
+    замечание вообще было написано.
+    """
+    approved: bool

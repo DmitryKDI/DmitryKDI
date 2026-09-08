@@ -18,7 +18,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, 
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import models, schemas
+from . import models, review_dialog, schemas
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
@@ -28,7 +28,7 @@ from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
-from .pd_stage import load_text_facts, render_summary
+from .pd_stage import attach_norms, load_text_facts, render_summary
 from .pd_store import load_run, save_run
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_text_verify import verify_general_requirements_llm
@@ -611,8 +611,13 @@ def _run_pd(run_id: int) -> None:
             run.composition = render_composition(volumes)
             db.commit()
 
-        requirements = extract_requirements_llm(load_text_facts(sources), config=config)
-        run.summary = render_summary(requirements)
+        text_facts = load_text_facts(sources)
+        requirements = extract_requirements_llm(text_facts, config=config)
+        # Г.101 — норматив ИЗ ПЕРЕЧНЯ ЭТОГО ТОМА проставляется до сохранения:
+        # иначе привязка не попадёт ни в сводку, ни в датасет, ни в стадию
+        # сверки, и её пришлось бы считать заново на каждом шаге.
+        _, norms_section = attach_norms(requirements, text_facts, config)
+        run.summary = render_summary(requirements) + "\n" + norms_section
         run.requirements_total = len(requirements)
         run.extractor = "llm"
         if run.side == "before":
@@ -818,6 +823,128 @@ def get_compliance_run(run_id: int, db: Session = Depends(get_session)):
     if run is None:
         raise HTTPException(404, "not found")
     return run
+
+
+def _run_documents(db: Session, run: models.ComplianceRun) -> list[str]:
+    """Имена документов прогона — обеих сторон.
+
+    Нужны не для справки, а для гейта Г.12: замечание, полученное на этих
+    документах, не подставляется примером в промпт по ним же.
+    """
+    names = []
+    for doc_id in run.rd_document_ids or []:
+        doc = db.get(models.Document, doc_id)
+        if doc is not None:
+            names.append(doc.name)
+    try:
+        names += sorted({r.document for r in load_run(run.pd_run_id) if r.document})
+    except Exception as exc:  # noqa: BLE001 — недоступное хранилище не ломает диалог
+        # Г.10 — пропуск виден. Последствие конкретное: без имён томов ПД
+        # гейт Г.12 сработает только по стороне РД, то есть строже, чем
+        # нужно, но не слабее — замечание скорее не подставится, чем
+        # подставится не туда.
+        print(f"имена томов ПД для гейта не получены: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+    return names
+
+
+def _stored_messages(db: Session, run_id: int) -> list[models.ReviewMessage]:
+    return (db.query(models.ReviewMessage)
+            .filter(models.ReviewMessage.compliance_run_id == run_id)
+            .order_by(models.ReviewMessage.id).all())
+
+
+def _as_dialog(rows: list[models.ReviewMessage]) -> list[review_dialog.Message]:
+    return [review_dialog.Message(role=r.role, text=r.text, kind=r.kind,
+                                  target=r.target, approved=r.approved,
+                                  documents=list(r.documents or []))
+            for r in rows]
+
+
+@app.get("/compliance-runs/{run_id}/messages",
+         response_model=list[schemas.ReviewMessageOut])
+def list_review_messages(run_id: int, db: Session = Depends(get_session)):
+    if db.get(models.ComplianceRun, run_id) is None:
+        raise HTTPException(404, "not found")
+    return _stored_messages(db, run_id)
+
+
+@app.post("/compliance-runs/{run_id}/messages",
+          response_model=list[schemas.ReviewMessageOut])
+def add_review_message(run_id: int, body: schemas.ReviewMessageCreate,
+                       db: Session = Depends(get_session)):
+    """Реплика инспектора и ответ модели на неё (Г.100).
+
+    Порядок операций здесь — не деталь реализации, а само правило:
+    **реплика сохраняется ДО обращения к модели**. Инспектор, разобравший
+    том без ключа или при оборванной связи, не должен терять свою работу —
+    тот же принцип, по которому состав тома считается до проверки связи
+    (Г.98). Поэтому ответ возвращается парой сообщений, и отсутствие второго
+    объяснено словами, а не пустотой (Г.10).
+    """
+    run = db.get(models.ComplianceRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "пустая реплика")
+    if body.kind and body.kind not in review_dialog.CORRECTION_KINDS:
+        raise HTTPException(
+            400, "неизвестный род замечания; допустимо: "
+                 + ", ".join(review_dialog.CORRECTION_KINDS))
+
+    documents = _run_documents(db, run)
+    history = _as_dialog(_stored_messages(db, run_id))
+
+    question = models.ReviewMessage(
+        compliance_run_id=run_id, role=review_dialog.ROLE_INSPECTOR, text=text,
+        kind=body.kind or "", target=(body.target or "").strip(), documents=documents)
+    db.add(question)
+    db.commit()
+    db.refresh(question)
+
+    # Г.11/Г.12 — в промпт идут только ОДОБРЕННЫЕ замечания и только с ДРУГИХ
+    # объектов: пример с текущего превращает обобщение практики в подсказку
+    # ответа самому себе.
+    approved = _as_dialog(
+        db.query(models.ReviewMessage)
+        .filter(models.ReviewMessage.approved.is_(True)).all())
+    examples = review_dialog.corrections_examples_block(approved, exclude_documents=documents)
+
+    config = _llm_config(db)
+    answer, why = review_dialog.answer_inspector(
+        config if config.api_key else None, run.report, text,
+        history=history, examples_block=examples)
+
+    reply = models.ReviewMessage(
+        compliance_run_id=run_id, role=review_dialog.ROLE_ASSISTANT,
+        text=answer or "", no_answer_reason=why, documents=documents)
+    db.add(reply)
+    db.commit()
+    db.refresh(reply)
+    return [question, reply]
+
+
+@app.patch("/review-messages/{message_id}", response_model=schemas.ReviewMessageOut)
+def update_review_message(message_id: int, body: schemas.ReviewMessageUpdate,
+                          db: Session = Depends(get_session)):
+    """Разрешить или отозвать использование замечания примером в промпте.
+
+    Отдельным действием и только для ЗАМЕЧАНИЯ (у которого назван род
+    ошибки): свободная реплика диалога содержит догадки и ход рассуждения, и
+    подставлять её в промпт значит насыщать его чужими предположениями.
+    """
+    msg = db.get(models.ReviewMessage, message_id)
+    if msg is None:
+        raise HTTPException(404, "not found")
+    if not msg.kind:
+        raise HTTPException(
+            400, "примером в промпте может стать только замечание с указанным родом "
+                 "ошибки, а не реплика диалога")
+    msg.approved = body.approved
+    db.commit()
+    db.refresh(msg)
+    return msg
 
 
 @app.get("/llm-check", response_model=schemas.LlmCheckOut)

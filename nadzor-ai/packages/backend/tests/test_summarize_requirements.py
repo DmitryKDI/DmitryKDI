@@ -77,7 +77,11 @@ def test_api_key_from_env_var_reaches_llm_config(monkeypatch, tmp_path):
 
 def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path):
     """Г.86 — порядок задан пользователем: комплект → факты → требования →
-    сводка → реестры. Требования и сводка идут ДО реестров, не после."""
+    сводка → реестры. Требования и сводка идут ДО реестров, не после.
+
+    Г.101 — между требованиями и сводкой встал шаг привязки к нормативам
+    перечня: сводка печатает норматив рядом с требованием, значит привязка
+    обязана быть посчитана раньше неё, а не после."""
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
     monkeypatch.setattr(sys, "argv",
@@ -88,7 +92,8 @@ def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path
 
     out = capsys.readouterr().out
     order = [out.index(s) for s in ("Шаг 1. Комплект", "Шаг 2. Текст",
-                                    "Шаг 3. Требования", "Шаг 4. Сводка", "Шаги 5-6")]
+                                    "Шаг 3. Требования", "Шаг 4. Нормативная база",
+                                    "Шаг 5. Сводка", "Шаги 6-7")]
     assert order == sorted(order), f"шаги идут не по порядку: {order}"
     print("OK: порядок шагов совпадает с заданным")
 

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  backendApi, pageImageUrl, type BackendDocument, type BackendFinding, type BackendPdRun,
-  type BackendSettings, type LlmCheck,
+  backendApi, CORRECTION_KINDS, pageImageUrl, type BackendDocument, type BackendFinding,
+  type BackendPdRun, type BackendSettings, type LlmCheck, type ReviewMessage,
 } from '../backendApi'
 import { useApp, type PendingUpload } from '../store'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
@@ -456,7 +456,103 @@ export default function NewAnalysis() {
     onSuccess: (run) => setRdRunId(run.id),
   })
 
-  // Г.96 — третья кнопка: сверка по СОХРАНЁННОМУ разбору ПД.
+  /**
+ * Окно разбора результата сверки с моделью (Г.100).
+ *
+ * Предложение пользователя: инспектор указывает модели на недочёты прямо в
+ * разделе проверки. Здесь важно, чего окно НЕ обещает: дообучения весов у нас
+ * нет (Г.75), и подпись это говорит прямо. Замечание становится примером в
+ * промпте только после отдельного решения человека и только на ДРУГИХ
+ * объектах (Г.11/Г.12) — гейт стоит на сервере, но пользователю о нём сказано
+ * здесь, иначе кнопка «в примеры» читается как «применить сейчас».
+ */
+function ReviewDialog({ runId }: { runId: number }) {
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const [kind, setKind] = useState('')
+  const messages = useQuery({
+    queryKey: ['review-messages', runId],
+    queryFn: () => backendApi.getReviewMessages(runId),
+  })
+  const send = useMutation({
+    mutationFn: () => backendApi.addReviewMessage(runId, text, kind),
+    onSuccess: () => {
+      setText('')
+      setKind('')
+      qc.invalidateQueries({ queryKey: ['review-messages', runId] })
+    },
+  })
+  const approve = useMutation({
+    mutationFn: ({ id, approved }: { id: number; approved: boolean }) =>
+      backendApi.approveReviewMessage(id, approved),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['review-messages', runId] }),
+  })
+
+  return (
+    <div className="mt-4 border-t border-surface-line pt-3">
+      <h4 className="text-sm font-medium text-ink">Разбор результата с ИИ</h4>
+      <p className="mt-1 text-xs text-ink-muted">
+        Спросите, почему пункт помечен так, или укажите на ошибку. Замечание сохраняется всегда,
+        даже когда модель недоступна. Отмеченное как замечание попадает в журнал наблюдений и,
+        по вашему отдельному решению, — в подсказки модели на <span className="font-medium">других</span> объектах.
+        Веса модели при этом не меняются: это подстановка примера в запрос, а не обучение.
+      </p>
+
+      <div className="mt-3 space-y-2">
+        {messages.data?.length === 0 && (
+          <p className="text-xs text-ink-muted">Разговор пока не начат.</p>
+        )}
+        {messages.data?.map((m: ReviewMessage) => (
+          <div key={m.id}
+            className={m.role === 'inspector'
+              ? 'rounded-md border border-surface-line bg-surface px-3 py-2'
+              : 'rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2'}>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+              <span className="font-medium text-ink">
+                {m.role === 'inspector' ? 'Инспектор' : 'ИИ'}
+              </span>
+              {m.kind && <Chip>{m.kind}</Chip>}
+              {m.kind && (
+                <button type="button"
+                  onClick={() => approve.mutate({ id: m.id, approved: !m.approved })}
+                  className="rounded border border-surface-line px-1.5 py-0.5 hover:bg-surface-muted">
+                  {m.approved ? '✓ в подсказках модели — отозвать' : 'Взять в подсказки модели'}
+                </button>
+              )}
+            </div>
+            {m.text && <p className="mt-1 whitespace-pre-wrap text-sm text-ink">{m.text}</p>}
+            {/* Г.10 — «ответа нет» и «связи не было» требуют от инспектора
+                разного, поэтому причина названа словами, а не пустотой. */}
+            {!m.text && m.no_answer_reason && (
+              <p className="mt-1 text-xs italic text-ink-muted">{m.no_answer_reason}</p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 space-y-2">
+        <textarea
+          value={text} onChange={(e) => setText(e.target.value)} rows={3}
+          placeholder="Например: «это не нарушение — клапан есть в спецификации на листе 14»"
+          className="w-full rounded-md border border-surface-line bg-surface px-3 py-2 text-sm text-ink" />
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={kind} onChange={(e) => setKind(e.target.value)}
+            className="rounded-md border border-surface-line bg-surface px-2 py-1 text-xs text-ink">
+            <option value="">вопрос (в журнал наблюдений не идёт)</option>
+            {CORRECTION_KINDS.map((k) => <option key={k} value={k}>замечание: {k}</option>)}
+          </select>
+          <button type="button" disabled={!text.trim() || send.isPending}
+            onClick={() => send.mutate()}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
+            {send.isPending ? 'Отправляем…' : 'Отправить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Г.96 — третья кнопка: сверка по СОХРАНЁННОМУ разбору ПД.
   const [complianceRunId, setComplianceRunId] = useState<number | null>(null)
   const complianceRun = useQuery({
     queryKey: ['compliance-run', complianceRunId],
@@ -549,6 +645,9 @@ export default function NewAnalysis() {
                 {complianceRun.data.report}
               </pre>
             </div>
+          )}
+          {complianceRunId !== null && complianceRun.data?.status === 'done' && (
+            <ReviewDialog runId={complianceRunId} />
           )}
         </SectionCard>
 

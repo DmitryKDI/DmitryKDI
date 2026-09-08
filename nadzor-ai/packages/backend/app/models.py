@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String,
+                        Text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -226,6 +227,40 @@ class ComplianceRun(Base):
     report: Mapped[str] = mapped_column(Text, default="")
     counts: Mapped[dict] = mapped_column(JSON, default=dict)
     requirements_total: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ReviewMessage(Base):
+    """Реплика инспектора в разборе результата сверки и ответ модели (Г.100).
+
+    Замечание и обычный вопрос лежат в одной таблице, но различаются полем
+    `kind`: пусто у вопроса, род ошибки у замечания. Слить их в одно было бы
+    удобнее в коде и неверно по существу — в датасет идут только замечания,
+    а отделить их от переписки задним числом нельзя (см. докстринг
+    `review_dialog`).
+
+    `approved` — разрешение человека использовать замечание примером в
+    промпте. По умолчанию False и автоматически не выставляется никогда:
+    Г.11 требует, чтобы правило заводилось по осознанному решению, а не по
+    факту накопления.
+
+    `documents` — имена документов, на которых замечание получено. Нужны не
+    для справки, а для гейта Г.12: на этих же документах пример в промпт не
+    подставляется, иначе получается подсказка ответа самому себе.
+    """
+    __tablename__ = "review_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    compliance_run_id: Mapped[int] = mapped_column(Integer, default=0)
+    role: Mapped[str] = mapped_column(String, default="inspector")  # inspector|assistant
+    text: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String, default="")  # род ошибки, пусто у вопроса
+    target: Mapped[str] = mapped_column(Text, default="")  # к какому требованию
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    documents: Mapped[list] = mapped_column(JSON, default=list)
+    # Почему ответа модели нет: «связи не было» и «ответила пусто» требуют от
+    # инспектора разного, а сведённые в «ответа нет» неотличимы (Г.10).
+    no_answer_reason: Mapped[str] = mapped_column(String, default="")
 
 
 class Settings(Base):
