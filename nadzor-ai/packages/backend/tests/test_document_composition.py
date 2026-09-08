@@ -13,7 +13,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pymupdf  # noqa: E402
-from app.document_composition import describe_volume, render_composition  # noqa: E402
+from app.document_composition import (  # noqa: E402
+    describe_volume,
+    name_unread_sheets,
+    render_composition,
+)
+from app.stamp import is_sheet_title  # noqa: E402
 
 # Кириллица требует шрифта с её поддержкой: встроенный helv её не кодирует
 # и `get_text` возвращает точки вместо букв — синтетика молча получалась бы
@@ -28,6 +33,11 @@ def _pdf(path: Path, pages: list[tuple[str, tuple[float, float]]],
     `stamp` кладётся в ПРАВЫЙ НИЖНИЙ угол — туда, где штамп ищет `read_stamp`
     (ГОСТ Р 21.1101). Текст в теле листа туда не попадает, и фикстура со
     штампом вверху молча проверяла бы не то, что написано в названии теста.
+
+    К переданному наименованию дописываются служебные графы «Стадия/Лист/
+    Листов»: по ним чтение отличает настоящий штамп от текста чертежа,
+    попавшего в ту же зону (Г.99). Без них фикстура изображала бы лист, у
+    которого штамп в кривых, а проверяла бы чтение штампа.
     """
     doc = pymupdf.open()
     font = pymupdf.Font(fontfile=CYRILLIC_TTF)
@@ -37,7 +47,8 @@ def _pdf(path: Path, pages: list[tuple[str, tuple[float, float]]],
         if stamp:
             page.insert_textbox(
                 pymupdf.Rect(size[0] * 0.57, size[1] * 0.62, size[0] - 10, size[1] - 10),
-                stamp, fontname="F0", fontsize=9)
+                "Изм. Кол. Лист №док. Подпись Дата\nСтадия Лист Листов\n" + stamp,
+                fontname="F0", fontsize=9)
         if text:
             # insert_textbox переносит строки внутри рамки. Через insert_text
             # длинный текст молча уезжал за край листа и не извлекался — тест
@@ -184,13 +195,116 @@ def test_plan_content_caught_in_the_stamp_zone_is_not_taken_for_a_sheet_name():
     обрывки «икация помещений 1 этажа Наименование» и «188 Холодный 186
     Овощной» — причём второе на листе, где шифр и номер прочитаны верно.
     Выдуманное название хуже честного «не прочитано» (Г.11/Г.10)."""
-    from app.document_composition import _clean_sheet_name
+    assert is_sheet_title("икация помещений 1 этажа Наименование") is None
+    assert is_sheet_title("188 Холодный 186 Овощной") is None
+    assert is_sheet_title("") is None and is_sheet_title(None) is None
 
-    assert _clean_sheet_name("икация помещений 1 этажа Наименование") is None
-    assert _clean_sheet_name("188 Холодный 186 Овощной") is None
-    assert _clean_sheet_name("") is None and _clean_sheet_name(None) is None
+    assert is_sheet_title("План 1 этажа (вентиляция)") == "План 1 этажа (вентиляция)"
+    assert is_sheet_title("Принципиальная схема системы отопления") is not None
+    assert is_sheet_title("Ведомость объемов работ") is not None
+    assert is_sheet_title("Спецификация оборудования") is not None
 
-    assert _clean_sheet_name("План 1 этажа (вентиляция)") == "План 1 этажа (вентиляция)"
-    assert _clean_sheet_name("Принципиальная схема системы отопления") is not None
-    assert _clean_sheet_name("Ведомость объемов работ") is not None
-    assert _clean_sheet_name("Спецификация оборудования") is not None
+
+def test_sheet_name_is_read_on_a_rotated_sheet(tmp_path):
+    """Г.99 — лист А1 часто хранится повёрнутым (/Rotate 270): в файле он
+    лежит «в портрет», печатается «в альбом». Зона штампа, посчитанная от
+    визуального листа, при этом попадала мимо содержимого, `get_text`
+    возвращал пусто, и лист выглядел как «штамп в кривых», хотя штамп
+    текстовый. Замер на трёх реальных томах: 12 повёрнутых чертежей,
+    наименование прочитано у 0."""
+    doc = pymupdf.open()
+    font = pymupdf.Font(fontfile=CYRILLIC_TTF)
+    # Лист хранится «в портрет», а печатается «в альбом» — как в реальном
+    # CAD-экспорте, из-за которого правило и появилось.
+    page = doc.new_page(width=A1_LANDSCAPE[1], height=A1_LANDSCAPE[0])
+    page.set_rotation(270)
+    page.insert_font(fontname="F0", fontbuffer=font.buffer)
+    rect = page.rect
+    page.insert_textbox(
+        pymupdf.Rect(rect.width * 0.57, rect.height * 0.62, rect.width - 10, rect.height - 10),
+        "Изм. Кол. Лист №док. Подпись Дата\nСтадия Лист Листов\n"
+        "План 2 этажа (отопление)", fontname="F0", fontsize=9)
+    path = str(tmp_path / "rot.pdf")
+    doc.save(path)
+    doc.close()
+
+    c = describe_volume(path, "rot.pdf")
+    named = [s.name for s in c.sheets if s.name]
+    assert named and "План 2 этажа" in named[0], c.sheets
+
+
+def test_sheet_name_wrapped_onto_two_lines_is_joined(tmp_path):
+    """Г.99 — наименование в графе штампа переносится на вторую строку
+    («Спецификация оборудования,» / «изделий и материалов»). Обрывок на
+    первой строке — не наименование, а его половина."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE)],
+                stamp="Спецификация оборудования,\nизделий и материалов")
+    c = describe_volume(path, "gr.pdf")
+    named = [s.name for s in c.sheets if s.name]
+    assert named, c.sheets
+    assert "изделий и материалов" in named[0], named
+
+
+def test_title_looking_text_without_a_real_stamp_is_not_a_sheet_name(tmp_path):
+    """Г.99 — на реальном томе РД в зоне штампа нашёлся заголовок таблицы,
+    НАРИСОВАННОЙ на листе («Таблица противопожарных клапанов»), а следом
+    приклеилась подпись плана. Признака «похоже на название листа» мало:
+    нужен признак, что штамп вообще текстовый — служебные графы ГОСТ."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE)])
+    doc = pymupdf.open(path)
+    page = doc[0]
+    font = pymupdf.Font(fontfile=CYRILLIC_TTF)
+    page.insert_font(fontname="F0", fontbuffer=font.buffer)
+    page.insert_textbox(
+        pymupdf.Rect(A1_LANDSCAPE[0] * 0.6, A1_LANDSCAPE[1] * 0.7,
+                     A1_LANDSCAPE[0] - 10, A1_LANDSCAPE[1] - 10),
+        "Таблица противопожарных клапанов", fontname="F0", fontsize=9)
+    doc.save(str(tmp_path / "gr2.pdf"))
+    doc.close()
+
+    c = describe_volume(str(tmp_path / "gr2.pdf"), "gr2.pdf")
+    assert all(s.name is None for s in c.sheets), c.sheets
+
+
+def test_vision_naming_respects_its_budget_and_is_off_by_default(tmp_path):
+    """Г.99 — чтение наименований по изображению стоит вызов на ЛИСТ. Оно не
+    включается само, а включённое не выходит за отведённый потолок: иначе том
+    рабочей документации молча съедал бы сотню обращений."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE)] * 5)
+    c = describe_volume(path, "gr.pdf")
+    assert all(s.name is None for s in c.sheets)
+
+    calls: list[int] = []
+
+    def fake_vision(page):
+        calls.append(1)
+        return "План этажа"
+
+    name_unread_sheets(c, path, fake_vision, budget=0)
+    assert not calls, "нулевой бюджет не тратит ни одного вызова"
+
+    name_unread_sheets(c, path, fake_vision, budget=2)
+    assert len(calls) == 2
+    assert c.vision_calls == 2 and c.sheets_named_by_vision == 2
+    assert sum(1 for s in c.sheets if s.name is None) == 3
+
+    text = render_composition([c])
+    assert "распознано по изображению штампа: 2 за 2 вызова" in text, text
+
+
+def test_vision_failure_leaves_the_sheet_unread_not_wrongly_named(tmp_path):
+    """Сбой вызова на одном листе не роняет разбор тома и не превращается в
+    наименование (Г.73/Г.84), а выдуманное моделью название отсекается тем же
+    фильтром, что и текстовое (Г.11)."""
+    path = _pdf(tmp_path / "gr.pdf", [("", A1_LANDSCAPE)] * 2)
+    c = describe_volume(path, "gr.pdf")
+
+    def flaky_vision(page):
+        if c.vision_calls == 1:
+            raise RuntimeError("связь оборвалась")
+        return "188 Холодный 186 Овощной"
+
+    name_unread_sheets(c, path, flaky_vision, budget=2)
+    assert c.vision_calls == 2
+    assert c.sheets_named_by_vision == 0
+    assert all(s.name is None for s in c.sheets), c.sheets

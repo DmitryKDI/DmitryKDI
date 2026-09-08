@@ -43,6 +43,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
 from app.classification import classify_document, open_pdf  # noqa: E402
+from app.document_composition import (  # noqa: E402
+    describe_volume,
+    name_unread_sheets,
+    render_composition,
+)
 
 # Г.94 — рендер сводки и предполётная проверка живут в пакете приложения:
 # их же вызывает HTTP-эндпоинт разбора ПД. Здесь только обвязка CLI.
@@ -51,6 +56,7 @@ from app.pd_stage import render_summary  # noqa: E402
 from app.pd_store import save_run  # noqa: E402
 from app.requirement_registry import extract_general_requirements  # noqa: E402
 from app.set_overview import official_section_label  # noqa: E402
+from app.stamp_vision import read_stamp_ocr  # noqa: E402
 from registry_diff import (  # noqa: E402
     _PROVIDER_ENV_KEY,
     _extract_requirements_llm_visible,
@@ -87,6 +93,13 @@ def main() -> None:
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41)")
+    parser.add_argument(
+        "--sheet-name-vision", type=int, default=0, metavar="N",
+        help="Дочитать наименования листов по изображению штампа, не более N "
+             "вызовов на весь прогон (Г.99). "
+             "Один вызов модели на ЛИСТ, поэтому по умолчанию выключено: у "
+             "рабочей документации это порядка сотни вызовов на том.",
+    )
     parser.add_argument(
         "--check-llm", action="store_true",
         help="Только проверить связь с провайдером и выйти. Г.91: разбор тома — десятки "
@@ -127,6 +140,11 @@ def main() -> None:
         _emit("=== Шаг 1. Комплект ===")
         for path in args.pd:
             _emit(_identity_line(path))
+        # Г.95/Г.98 — состав считается ВСЕГДА и без модели: сводка обязана
+        # покрывать весь документ, а не только его текстовую часть, и должна
+        # получаться даже когда ключа нет. Тот же код, что у сервера (Г.94).
+        volumes = [describe_volume(path, Path(path).name) for path in args.pd]
+        _emit(render_composition(volumes))
         _emit("")
 
         # Шаг 2 — факты (текст страниц с разделом и именем файла, Г.86).
@@ -144,6 +162,21 @@ def main() -> None:
                 sys.exit(f"ОШИБКА: связь с провайдером {args.provider} не прошла — {why}\n"
                          "  Разбор НЕ выполнен. Это не «в документе нет требований» (Г.10/Г.77).\n"
                          "  Без ключа осознанно: запустите без --api-key — будет regex-путь.")
+            # Г.99 — наименования листов, не давшиеся текстом, дочитываются
+            # по изображению штампа. Только после проверки связи и только по
+            # явному бюджету: шаг стоит вызов на лист.
+            if args.sheet_name_vision > 0:
+                remaining = args.sheet_name_vision
+                for volume, path in zip(volumes, args.pd, strict=True):
+                    if remaining <= 0:
+                        break  # бюджет один на прогон, а не на каждый том
+                    name_unread_sheets(
+                        volume, path,
+                        lambda page: read_stamp_ocr(page, llm_config).sheet_name,
+                        remaining)
+                    remaining -= volume.vision_calls
+                _emit("  наименования листов дочитаны по изображению:")
+                _emit(render_composition(volumes))
             requirements = _extract_requirements_llm_visible(pd_text_facts, llm_config, _emit)
         else:
             _emit("  Ключ ЛЛМ не задан — regex-путь: сводка будет СЫРОЙ, с шумом.")

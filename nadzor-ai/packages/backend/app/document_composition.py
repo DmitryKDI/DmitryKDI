@@ -27,45 +27,24 @@ CAD-экспорт переводит подписи в кривые, и `get_te
 """
 from __future__ import annotations
 
-import re
+import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pymupdf
 
 from .classification import PAGE_KIND_DRAWING, classify_document, classify_page_kind
 from .set_overview import official_section_label
-from .stamp import read_stamp
+from .stamp import is_sheet_title, read_sheet_name
 from .table_registry import classify_table_page
 
-# Г.98 — наименование чертежа принимается, только если начинается как
-# НАЗВАНИЕ ЛИСТА по ГОСТ Р 21.1101. Замер на реальных томах показал, почему
-# фильтр обязателен: зона штампа на листе формата А0/А1 — это четверть
-# площади, и в неё попадает содержимое самого чертежа. `read_stamp` честно
-# возвращал оттуда первые длинные строки, и в перечень шли обрывки вроде
-# «икация помещений 1 этажа Наименование» (кусок таблицы экспликации) и
-# «188 Холодный 186 Овощной» (подписи помещений на плане) — причём второе
-# на листе, где шифр и номер листа прочитаны верно, то есть признак
-# «штамп настоящий» здесь не спасает. Показать инспектору выдуманное
-# название хуже, чем честно сказать «не прочитано» (Г.11/Г.10).
-#
-# Список открывающих слов общий по ГОСТ и к разделу не привязан: план,
-# схема, разрез, узел, фасад, ведомость, спецификация, таблица и т.п.
-_SHEET_TITLE_RE = re.compile(
-    r"^(план|схема|принципиальная|разрез|узел|фасад|деталь|ведомость|"
-    r"спецификация|таблица|характеристика|экспликация|аксонометри\w*|"
-    r"общие\s+данные|условные\s+обозначения|генеральный\s+план)\b",
-    re.IGNORECASE)
-
-
-def _clean_sheet_name(name: str | None) -> str | None:
-    """Наименование листа или None, если прочитанное на название не похоже."""
-    if not name:
-        return None
-    cleaned = " ".join(name.split())
-    return cleaned if _SHEET_TITLE_RE.match(cleaned) else None
-
-
+# Г.98/Г.99 — наименование листа читается штампом (`stamp.read_sheet_name`),
+# а не выискивается в тексте страницы: там, где зона штампа на листе А0/А1
+# захватывает содержимое чертежа, любая эвристика по тексту начинает
+# выдумывать названия из подписей помещений. Правило «на название листа по
+# ГОСТ похоже / не похоже» и сборка переносов живут в модуле основной
+# надписи — здесь только перечень.
 # Порог «текстовый слой практически пуст»: штамп листа даёт порядка
 # 300-500 символов даже там, где вся остальная графика в кривых (замер
 # Г.59). Всё, что ниже, содержательного текста не несёт.
@@ -105,6 +84,12 @@ class VolumeComposition:
     # Г.98 — перечень листов графической части с наименованиями: сводка
     # обязана покрывать ВЕСЬ документ, а не только его текстовую часть.
     sheets: list[SheetEntry] = field(default_factory=list)
+    # Г.99 — сколько наименований прочитано зрением и сколько осталось
+    # непрочитанными. Различать обязательно: «не читали, потому что бюджет
+    # вызовов равен нулю» и «смотрели, но не разобрали» — разные состояния,
+    # и второе означает, что помочь может только человек (Г.10).
+    sheets_named_by_vision: int = 0
+    vision_calls: int = 0
     error: str | None = None
 
 
@@ -115,6 +100,11 @@ def describe_volume(pdf_path: str, name: str,
 
     `manual_section` — раздел, заданный инспектором вручную (Г.97): он
     побеждает автоматическое определение и отменяет его.
+
+    Считается детерминированно и без единого вызова модели: это тот
+    результат, который инспектор обязан получить даже когда связи нет
+    (Г.98). Дочитывание наименований по изображению — отдельный платный шаг
+    `name_unread_sheets`, вызываемый ПОСЛЕ проверки связи.
     """
     try:
         doc = pymupdf.open(pdf_path)
@@ -139,10 +129,10 @@ def describe_volume(pdf_path: str, name: str,
             if classify_page_kind(page) == PAGE_KIND_DRAWING:
                 out.drawing_pages += 1
                 try:
-                    name = _clean_sheet_name(read_stamp(page).sheet_name)
+                    sheet_name = read_sheet_name(page)
                 except Exception:  # noqa: BLE001 — нечитаемый штамп не роняет разбор
-                    name = None
-                out.sheets.append(SheetEntry(page=i + 1, name=name))
+                    sheet_name = None
+                out.sheets.append(SheetEntry(page=i + 1, name=sheet_name))
             else:
                 out.text_pages += 1
             if len(text) < POOR_TEXT_LAYER_CHARS:
@@ -165,6 +155,54 @@ def describe_volume(pdf_path: str, name: str,
             if len(f["text"]) >= POOR_TEXT_LAYER_CHARS and f["page"] not in table_pages
         )
         return out
+    finally:
+        doc.close()
+
+
+def name_unread_sheets(volume: VolumeComposition, pdf_path: str,
+                       name_vision: Callable[[pymupdf.Page], str | None],
+                       budget: int) -> None:
+    """Дочитать наименования листов, не давшихся текстом, по изображению (Г.99).
+
+    Зачем это отдельный шаг. Замер на реальных томах рабочей документации:
+    наименование не читается текстом НИ НА ОДНОМ листе — ни в штампе, ни в
+    ведомости рабочих чертежей, она тоже переведена в кривые. То есть без
+    распознавания перечень графической части у РД состоит из одной строки
+    «не прочитано», и это не дефект кода, а физическое свойство файла.
+
+    Почему не внутри `describe_volume`. Состав обязан считаться и без связи
+    с моделью (Г.98), а этот шаг без неё невозможен — значит он выполняется
+    ПОСЛЕ проверки связи, отдельным вызовом, и его отсутствие не отменяет
+    состав.
+
+    Шаг платный: один вызов на ЛИСТ, порядка сотни вызовов на том. Поэтому
+    сам не включается: `budget` — жёсткий потолок числа вызовов, при нуле не
+    тратится ничего. Порядок листов сохраняется — бюджет кончается на
+    дальних листах, а не на случайных, и по отчёту видно, где перечень
+    оборвался. Сбой одного вызова не роняет том: лист остаётся «не прочитан»
+    (Г.73/Г.84), а неудачное распознавание отличается в отчёте от
+    невыполненного (Г.10).
+    """
+    if budget <= 0 or not any(s.name is None for s in volume.sheets):
+        return
+    try:
+        doc = pymupdf.open(pdf_path)
+    except Exception as exc:  # noqa: BLE001 — состав уже посчитан, он не теряется
+        print(f"наименования листов не распознаны ({exc}): {volume.name}", file=sys.stderr)
+        return
+    try:
+        for sheet in volume.sheets:
+            if sheet.name or volume.vision_calls >= budget:
+                continue
+            volume.vision_calls += 1
+            try:
+                sheet.name = is_sheet_title(name_vision(doc[sheet.page - 1]))
+            except Exception as exc:  # noqa: BLE001 — сбой одного листа не роняет том
+                print(f"наименование листа {sheet.page} не прочитано зрением: {exc}",
+                      file=sys.stderr)
+                continue
+            if sheet.name:
+                volume.sheets_named_by_vision += 1
     finally:
         doc.close()
 
@@ -196,8 +234,23 @@ def render_composition(volumes: list[VolumeComposition]) -> str:
             lines.append("  связного текста нет — сводка требований из этого тома НЕ строится. "
                          "Это не сбой: подписи чертежей переведены в кривые, "
                          "проверять их нужно по изображению листа.")
-        lines.extend(_render_sheets(v.sheets))
+        lines.extend(_render_sheets(v))
     return "\n".join(lines)
+
+
+def _calls(n: int) -> str:
+    """«1 вызов / 2 вызова / 5 вызовов» — число в отчёте инспектору читается
+    как текст, а не как отладочный вывод."""
+    tail = n % 100
+    if 11 <= tail <= 14:
+        word = "вызовов"
+    elif n % 10 == 1:
+        word = "вызов"
+    elif 2 <= n % 10 <= 4:
+        word = "вызова"
+    else:
+        word = "вызовов"
+    return f"{n} {word}"
 
 
 def _pages_range(pages: list[int]) -> str:
@@ -214,13 +267,14 @@ def _pages_range(pages: list[int]) -> str:
     return ", ".join(out)
 
 
-def _render_sheets(sheets: list[SheetEntry]) -> list[str]:
+def _render_sheets(volume: VolumeComposition) -> list[str]:
     """Перечень графической части: наименование → листы.
 
     Г.98/Г.90 — одинаковые наименования сворачиваются в одну строку со
     списком листов: у тома в 700 листов перечень по строке на лист
     нечитаем, а сжимается ВИД, не данные — ни один лист не теряется.
     """
+    sheets = volume.sheets
     if not sheets:
         return []
     by_name: dict[str, list[int]] = {}
@@ -237,6 +291,14 @@ def _render_sheets(sheets: list[SheetEntry]) -> list[str]:
     if unnamed:
         lines.append(f"    листы {_pages_range(sorted(unnamed))} — наименование не прочитано "
                      f"(штамп тоже в кривых), нужен просмотр изображения")
+    # Г.99 — «не читали» и «читали, не разобрали» обязаны отличаться, иначе
+    # инспектор не знает, поможет ли ему включённое распознавание.
+    if volume.vision_calls:
+        lines.append(f"    из них распознано по изображению штампа: "
+                     f"{volume.sheets_named_by_vision} за {_calls(volume.vision_calls)}")
+    elif unnamed:
+        lines.append(f"    распознавание наименований по изображению не запускалось; "
+                     f"на эти листы потребовалось бы {_calls(len(unnamed))} модели")
     return lines
 
 

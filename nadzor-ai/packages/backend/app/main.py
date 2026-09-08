@@ -22,7 +22,8 @@ from . import models, schemas
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
-from .document_composition import describe_volume, render_composition
+from .document_composition import (describe_volume, name_unread_sheets,
+                                   render_composition)
 from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
 from .llm import LlmConfig, check_llm_reachable
@@ -31,6 +32,7 @@ from .pd_stage import load_text_facts, render_summary
 from .pd_store import load_run, save_run
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_text_verify import verify_general_requirements_llm
+from .stamp_vision import read_stamp_ocr
 from .triangulated_pipeline import run_triangulated_analysis
 from .vision import (
     compare_page_pair,
@@ -120,6 +122,25 @@ def _normalize_severity(value: object) -> str:
 
 
 _PROVIDER_ENV_KEY = {"gigachat": "GIGACHAT_CREDENTIALS", "anthropic": "ANTHROPIC_API_KEY"}
+
+
+# Г.99 — сколько вызовов модели разрешено потратить на чтение наименований
+# листов по изображению штампа ЗА ОДИН ПРОГОН (не на каждый том: инспектор
+# нажимает кнопку на комплект, и потолок должен относиться к тому, что он
+# нажал). Ноль (умолчание) — шаг не выполняется вовсе.
+# Задаётся администратором при развёртывании, как и ключ (Г.94): у рабочей
+# документации это порядка сотни вызовов на том, и такое решение принимает не
+# инспектор нажатием кнопки, а тот, кто отвечает за бюджет обращений.
+SHEET_NAME_VISION_BUDGET_ENV = "SHEET_NAME_VISION_BUDGET"
+
+
+def _sheet_vision_budget() -> int:
+    try:
+        return max(0, int(os.environ.get(SHEET_NAME_VISION_BUDGET_ENV, "0")))
+    except ValueError:
+        # Опечатка в переменной окружения не должна ронять прогон и не должна
+        # молча включать платный шаг: считаем, что он выключен.
+        return 0
 
 
 def _llm_config(db: Session) -> LlmConfig:
@@ -559,8 +580,8 @@ def _run_pd(run_id: int) -> None:
         # инспектору ноль — хотя перечень листов, таблиц и графики можно
         # было отдать. Найдено прогоном «как инспектор» на реальном
         # комплекте: обе кнопки вернули только ошибку.
-        run.composition = render_composition(
-            [describe_volume(path, name, manual) for path, name, manual in sources])
+        volumes = [describe_volume(path, name, manual) for path, name, manual in sources]
+        run.composition = render_composition(volumes)
         db.commit()
 
         reachable, why = check_llm_reachable(config if config.api_key else None)
@@ -573,6 +594,22 @@ def _run_pd(run_id: int) -> None:
                          "Это не «в документах нет требований».")
             db.commit()
             return
+
+        # Г.99 — наименования листов, не давшиеся текстом, дочитываются по
+        # изображению штампа. Только здесь: шаг требует связи, а состав выше
+        # обязан считаться и без неё. Бюджет нулевой по умолчанию, поэтому
+        # без явного решения администратора не тратится ни одного вызова.
+        remaining = _sheet_vision_budget()
+        if remaining:
+            for volume, (path, _, _) in zip(volumes, sources, strict=True):
+                if remaining <= 0:
+                    break  # бюджет один на весь прогон, а не на каждый том
+                name_unread_sheets(volume, path,
+                                   lambda page: read_stamp_ocr(page, config).sheet_name,
+                                   remaining)
+                remaining -= volume.vision_calls
+            run.composition = render_composition(volumes)
+            db.commit()
 
         requirements = extract_requirements_llm(load_text_facts(sources), config=config)
         run.summary = render_summary(requirements)
