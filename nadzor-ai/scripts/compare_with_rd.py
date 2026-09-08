@@ -20,7 +20,7 @@
         --provider gigachat --api-key ВАШ_КЛЮЧ
 
     # взять последний разбор конкретного тома
-    python scripts/compare_with_rd.py --for-document "Том ООС8.1.pdf" --rd РД.pdf
+    python scripts/compare_with_rd.py --for-document "имя файла тома.pdf" --rd РД.pdf
 """
 from __future__ import annotations
 

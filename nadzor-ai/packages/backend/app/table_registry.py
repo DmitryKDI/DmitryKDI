@@ -58,13 +58,18 @@ class TableKind:
     title_re: re.Pattern
     description_ru: str
     status: str  # "n=1 реальный" (проверено на реальном комплекте) | "n=0 заготовка (термин обоснован нормативно, не проверено)"
-    # Переопределение общего порога (Г.67) — реальная проверка на комплекте
-    # «Школа-600» нашла 2 настоящих листа water_balance по 876 символов,
+    # Переопределение общего порога (Г.67) — проверка на реальном комплекте
+    # нашла 2 настоящих листа water_balance по 876 символов,
     # что ЧУТЬ выше общего дефолта 800 (подобранного на одном типе таблицы, не
     # универсального замера, см. докстринг модуля) — оба ложно отсекались.
     # None означает «использовать DEFAULT_MAX_TABLE_PAGE_TEXT_LEN», как и
     # раньше для всех остальных записей.
     max_text_len: Optional[int] = None
+    # Короткая подпись для отчёта инспектору («спецификации оборудования»).
+    # Г.107: живёт здесь, вместе с остальными данными о типе таблицы, а не
+    # словарём в модуле состава — там это была лексика разделов в механике.
+    # Пусто — отчёт напечатает машинный ключ, а не выдумает название.
+    label_ru: str = ""
     # Г.88 — описание того, ЧТО эта таблица назначает помещению. Заполнено —
     # значит по этой таблице работает общая сверка «назначено в ПД ↔
     # нарисовано в РД» (`room_entity_check.py`). Пусто — таблица пока только
@@ -85,6 +90,7 @@ class TableKind:
 _REGISTRY: list[TableKind] = [
     TableKind(
         kind="ventilation_balance",
+        label_ru="таблицы воздухообменов",
         discipline_hint="ОВ",
         title_re=re.compile(r"воздухообмен\w*", re.IGNORECASE),
         description_ru="Таблица воздухообменов помещений — система приточной/"
@@ -97,8 +103,9 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="water_balance",
+        label_ru="балансы водопотребления",
         discipline_hint="ВК",
-        # Г.67 — сужено после реальной проверки на «Школа-600»: старый
+        # Г.67 — сужено после проверки на реальном комплекте: старый
         # regex (просто «водопотреблен\w*|водоотведен\w*») ловил 16 листов,
         # из которых 0 были самой таблицей — термин упоминался как название
         # подраздела на странице содержания/оглавления тома. Теперь требуется
@@ -120,6 +127,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="electrical_loads",
+        label_ru="таблицы электрических нагрузок",
         discipline_hint="ЭОМ",
         # Корень «нагруз» (не «нагрузк») — «нагрузок» (родительный падеж
         # множественного числа «нагрузка») вставляет беглую гласную и не
@@ -132,6 +140,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="cable_log",
+        label_ru="кабельные журналы",
         discipline_hint="ЭОМ",
         title_re=re.compile(r"кабельн\w*\s+журнал\w*", re.IGNORECASE),
         description_ru="Кабельный журнал — трассы, марки и сечения кабелей.",
@@ -139,6 +148,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="steel_consumption",
+        label_ru="ведомости расхода стали",
         discipline_hint="КЖ",
         title_re=re.compile(r"расход\w*\s+стал\w*|ведомост\w*\s+расхода\s+стал\w*", re.IGNORECASE),
         description_ru="Ведомость расхода стали (арматуры) для железобетонных конструкций.",
@@ -146,6 +156,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="shipping_marks",
+        label_ru="ведомости отправочных марок",
         discipline_hint="КМ",
         title_re=re.compile(r"отправочн\w*\s+марок|ведомост\w*\s+отправочных", re.IGNORECASE),
         description_ru="Ведомость отправочных марок металлоконструкций.",
@@ -153,6 +164,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="finishing_schedule",
+        label_ru="ведомости отделки",
         discipline_hint="АР",
         title_re=re.compile(r"ведомост\w*\s+отделк\w*\s+помещен\w*", re.IGNORECASE),
         description_ru="Ведомость отделки помещений — материалы полов/стен/"
@@ -161,6 +173,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="openings_schedule",
+        label_ru="ведомости проёмов",
         discipline_hint="АР",
         title_re=re.compile(r"заполнени\w*\s+проём\w*|спецификаци\w*\s+заполнени\w*\s+"
                              r"(?:окон|двер)", re.IGNORECASE),
@@ -169,6 +182,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="equipment_specification",
+        label_ru="спецификации оборудования",
         discipline_hint=None,  # встречается в любой марке РД (п.3 общего состава, не привязана к одному разделу)
         title_re=re.compile(r"спецификаци\w*\s+оборудован\w*", re.IGNORECASE),
         description_ru="Спецификация оборудования, изделий и материалов — "
@@ -187,6 +201,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="work_volumes",
+        label_ru="ведомости объёмов работ",
         discipline_hint="ПОС",
         title_re=re.compile(r"ведомост\w*\s+объ[её]мов\s+работ", re.IGNORECASE),
         description_ru="Ведомость объёмов работ (ВОР).",
@@ -194,6 +209,7 @@ _REGISTRY: list[TableKind] = [
     ),
     TableKind(
         kind="site_balance",
+        label_ru="балансы территории",
         discipline_hint="ГП",
         title_re=re.compile(r"баланс\w*\s+территори\w*", re.IGNORECASE),
         description_ru="Баланс территории — площади застройки, дорог, озеленения.",

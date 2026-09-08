@@ -126,7 +126,7 @@ def _section_number_code(text: str) -> Optional[str]:
     """Номер раздела ПП№87 — второе число в маркировке вида
     «NN-NN-NN-NN-NN_Том...» (проект-версия/раздел/подраздел/том/лист или
     похожая схема — статус n=1 по Г.21: наблюдалась по 4 реальным файлам
-    ОДНОГО комплекта «Школа-600» с одной формой маркировки, не домыслена, но
+    ОДНОГО комплекта с одной формой маркировки, не домыслена, но
     и не подтверждена на других объектах/схемах именования — независимый
     аудит подтвердил риск ложных срабатываний на другой числовой маркировке
     без слова «Том» рядом, отсюда требование «Том» в регулярке выше).
@@ -345,3 +345,121 @@ def classify_page_kind(page: "pymupdf.Page") -> str:
     if len(page.get_drawings()) >= DRAWING_MIN_VECTOR_PATHS:
         return PAGE_KIND_DRAWING
     return PAGE_KIND_TEXT
+
+
+# ---------------------------------------------------------------------------
+# Стадия документации (Г.107)
+# ---------------------------------------------------------------------------
+#
+# Указание пользователя: «принцип един для всех, и не должно в коде и порядке
+# работы быть акцента на определённые тома». Порядок работы нарушал это не
+# меньше кода: какой файл считать проектной документацией, а какой рабочей,
+# до сих пор решал человек, перечисляя файлы руками — и ровно так из прогона
+# молча выпал самый толстый том комплекта.
+#
+# Стадия — не догадка по имени файла, а графа основной надписи по
+# ГОСТ Р 21.101: её обозначение стоит в шифре перед маркой комплекта.
+# Обозначения ниже — не лексика раздела, а сами designations стандарта,
+# применимые к любой документации (тот же класс исключения, что ГОСТ формы
+# документа в проверке `test_code_is_generic`).
+STAGE_DESIGN = "ПД"       # проектная документация
+STAGE_WORKING = "РД"      # рабочая документация
+STAGE_AS_BUILT = "ИД"     # исполнительная документация
+
+_STAGE_TOKENS = {
+    "П": STAGE_DESIGN, "ПД": STAGE_DESIGN,
+    "Р": STAGE_WORKING, "РД": STAGE_WORKING, "РП": STAGE_WORKING,
+    "И": STAGE_AS_BUILT, "ИД": STAGE_AS_BUILT, "ИС": STAGE_AS_BUILT,
+}
+
+# Штамп читается не подряд с начала: внутрь тома подшивают материал без
+# основной надписи (замер на реальном томе: 427 текстовых страниц из 576 —
+# подборка поставщика), и первые страницы могут не дать ничего. Поэтому
+# выборка идёт по всему документу с шагом, а не по первым N страницам.
+STAGE_SCAN_PAGES = 24
+
+
+@dataclass
+class StageResult:
+    stage: str | None
+    source: str  # 'stamp' | 'sibling' | 'manual' | 'none'
+    reason: str = ""
+
+
+def _stage_from_shifr(shifr: str) -> str | None:
+    head = re.split(r"[.\-\s]", shifr.strip(), maxsplit=1)[0].upper()
+    return _STAGE_TOKENS.get(head)
+
+
+def document_stage(pdf_path: str, display_name: str = "",
+                   scan_pages: int = STAGE_SCAN_PAGES) -> StageResult:
+    """Стадия документации по графе шифра основной надписи.
+
+    Ни имя файла, ни папка не участвуют: имя даёт поднадзорное лицо, а
+    графа — сам документ. Не прочиталась — так и говорим (Г.10), а не
+    подставляем правдоподобное.
+    """
+    from .stamp import read_stamp  # локально: stamp импортирует classification
+
+    try:
+        doc = open_pdf(pdf_path)
+    except Exception as exc:  # noqa: BLE001 — битый файл не роняет разбор
+        return StageResult(None, "none", f"файл не открылся: {exc}")
+    total = doc.page_count
+    if not total:
+        return StageResult(None, "none", "в документе нет страниц")
+    # Сначала подряд первые страницы: у комплекта с основной надписью она
+    # стоит на каждом листе, и первый же лист даёт ответ. Замер показал,
+    # почему одной выборки с шагом мало: шаг перепрыгнул через страницы 10-12,
+    # где штамп как раз читался, и файл остался без стадии. Если подряд не
+    # нашлось — редкая выборка по всему документу: материал без основной
+    # надписи бывает подшит в начало.
+    dense = min(scan_pages, total)
+    step = max(1, total // max(1, scan_pages))
+    order = list(range(dense)) + list(range(dense, total, step))
+    for index in order:
+        try:
+            stamp = read_stamp(doc[index])
+        except Exception as exc:  # noqa: BLE001 — один лист не роняет поиск
+            print(f"штамп не прочитан на стр.{index + 1} ({exc}): {display_name}",
+                  file=sys.stderr)
+            continue
+        if stamp and stamp.shifr:
+            stage = _stage_from_shifr(stamp.shifr)
+            if stage:
+                return StageResult(stage, "stamp", f"шифр со стр.{index + 1}")
+    return StageResult(None, "none",
+                       f"обозначение стадии не прочитано ни на одной из "
+                       f"{len(order)} просмотренных страниц")
+
+
+def stages_for_set(sources: list[tuple], scan_pages: int = STAGE_SCAN_PAGES) -> dict:
+    """Стадия по каждому документу комплекта, с наследованием внутри тома.
+
+    Том часто разбит на несколько файлов, и штамп читается не во всех: в
+    части, целиком занятой подшитым материалом, основной надписи нет вовсе.
+    Файлы одного тома узнаются по общей шифровой части имени — той же, что
+    выделяет `composition_registry` (Г.107). Наследование помечается
+    источником `sibling`: «прочитано в этом файле» и «взято у соседнего»
+    инспектор обязан различать.
+    """
+    from .composition_registry import _filename_prefix
+
+    result: dict[str, StageResult] = {}
+    for source in sources:
+        path, name = source[0], source[1]
+        result[name] = document_stage(path, name, scan_pages)
+
+    known: dict[str, str] = {}
+    for name, res in result.items():
+        if res.stage:
+            known.setdefault(_filename_prefix(name), res.stage)
+    for name, res in result.items():
+        if res.stage:
+            continue
+        inherited = known.get(_filename_prefix(name))
+        if inherited:
+            result[name] = StageResult(
+                inherited, "sibling",
+                "штамп не прочитан; стадия взята у другого файла того же шифра")
+    return result

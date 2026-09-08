@@ -124,6 +124,12 @@ def check_compliance(
 
     # --- Ступень 2: смысловая сверка текста РД моделью ---
     verdicts: dict[str, dict] = {}
+    if llm_verify is None:
+        # Г.107 — ключ есть, а смысловая сверка не подключена: шаг просто не
+        # выполнялся. Без этой строки прогон выглядел бы так, будто модель
+        # текст РД прочитала и ничего не подтвердила (Г.10/Г.77).
+        result.not_run.append(
+            "смысловая сверка текста РД — шаг не подключён в этом прогоне")
     if llm_verify is not None:
         try:
             for v in llm_verify(pending, rd_text_facts, config):

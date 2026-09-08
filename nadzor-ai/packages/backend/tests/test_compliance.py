@@ -198,3 +198,18 @@ def test_vision_is_not_told_the_guessed_rooms():
     assert asked == [[]], f"догадка ушла в вопрос к модели: {asked}"
     assert result.items[0].pages_to_check == [(FAKE_RD_PATH, 19)], "лист подобран по подсказке"
     print("OK: подсказка выбирает лист, но модели как факт не передаётся")
+
+
+def test_absent_semantic_step_is_reported_as_not_run():
+    """Г.107 — ключ задан, а смысловая сверка не подключена: это НЕ «модель
+    прочитала и не подтвердила», а невыполненный шаг. Молчание здесь — то
+    же самое, что три раунда правок промпта против сорванной связи (Г.77).
+    """
+    req = Requirement(rooms=[], page=7, sentence="Требование без обозначения.")
+    result = check_compliance(
+        requirements=[req], rd_text_facts=[{"text": "текста РД мало"}],
+        rd_sources=[(FAKE_RD_PATH, "рд.pdf")], config=object(),
+        llm_verify=None, vision_check=None, candidate_pages=None,
+    )
+    assert any("смысловая сверка" in x for x in result.not_run), result.not_run
+    print("OK: неподключённая смысловая сверка названа невыполненным шагом")

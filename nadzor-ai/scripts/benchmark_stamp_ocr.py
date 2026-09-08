@@ -10,10 +10,13 @@
 Эталон читается вручную с тех же самых листов и передаётся файлом: это не
 выдумка и не разметка «на глаз по смыслу», а буквальное содержимое граф.
 
-Запуск (локальная Ollama):
-    python scripts/benchmark_stamp_ocr.py \
-        --ov1 "путь/АНО-150321-1-РД-ОВ1 изм. 4_в1 (1)-1-100.pdf" \
-        --ov21 "путь/АНО-150321-1-РД-ОВ2.1_изм. 3_в1.pdf"
+Запуск:
+    python scripts/benchmark_stamp_ocr.py --truth эталон.json \
+        --doc метка=путь/том.pdf [--doc метка2=путь/том2.pdf ...]
+
+Метка — ключ, под которым этот файл назван в эталоне. Сколько файлов и как
+они называются, скрипт не знает: и то и другое приходит аргументами
+(Г.107 — никакой привязки к конкретному комплекту).
 
 Другой провайдер для сравнения:  --provider anthropic --api-key …
 """
@@ -65,8 +68,9 @@ def _words(text: str) -> set:
 
 
 def name_score(got: str, want: str) -> float:
-    """Доля слов эталона, попавших в ответ. Точное совпадение строки требовать
-    нельзя: «(вентиляция)» и «(Вентиляция)» — один и тот же лист."""
+    """Доля слов эталона, попавших в ответ. Точное совпадение строки
+    требовать нельзя: регистр и скобки у одного и того же названия листа
+    в разных прочтениях расходятся."""
     want_words = _words(want)
     return len(_words(got) & want_words) / len(want_words) if want_words else 0.0
 
@@ -75,8 +79,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--truth", required=True,
                     help="JSON с эталоном; в репозиторий не входит (Г.102)")
-    ap.add_argument("--ov1", required=True)
-    ap.add_argument("--ov21", required=True)
+    ap.add_argument("--doc", action="append", required=True, metavar="МЕТКА=ПУТЬ",
+                    help="документ комплекта: метка из эталона и путь к файлу; "
+                         "можно указывать многократно")
     ap.add_argument("--provider", default="local")
     ap.add_argument("--model", default="")
     ap.add_argument("--base-url", default="")
@@ -85,7 +90,12 @@ def main() -> None:
 
     config = LlmConfig(provider=args.provider, api_key=args.api_key,
                        model=args.model, base_url=args.base_url)
-    docs = {"ov1": pymupdf.open(args.ov1), "ov21": pymupdf.open(args.ov21)}
+    docs = {}
+    for item in args.doc:
+        if "=" not in item:
+            ap.error(f"--doc ожидает МЕТКА=ПУТЬ, получено: {item}")
+        tag, path = item.split("=", 1)
+        docs[tag.strip()] = pymupdf.open(path.strip())
 
     no_ok = name_ok = shifr_ok = failed = 0
     scores, elapsed = [], []

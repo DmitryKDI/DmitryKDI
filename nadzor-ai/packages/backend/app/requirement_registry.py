@@ -64,9 +64,13 @@ equipment.py — Ведомость оборудования; обе — таб�
 """
 from __future__ import annotations
 
+import json
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 
 _CODE_ITEM_RE = re.compile(
     r"(?:\n|^)[ \t]*[-–—]\s*"
@@ -283,14 +287,31 @@ def extract_general_requirements(
 _ROOM_KEYWORD_MIN_WORD_LEN = 5
 _ROOM_KEYWORD_MIN_PREFIX = 4
 
-# Реальный шум первого прогона на настоящем ПД: «кабинет» — родовое слово
-# («Кабинет врача», «Учебный кабинет», ...) встречается почти в трети всех
-# названий помещений школы, поэтому «кабинетах физики и химии» из
-# требования цеплялось за 18 из 26 совпадений только по этому слову, а не
-# по теме требования. Стоп-лист по 4-буквенному префиксу — тот же уровень
-# сравнения, что и основное правило, чтобы не заводить отдельный вид
-# нормализации ради одного исключения.
-_GENERIC_ROOM_PREFIXES = {"каби"}  # "кабинет"/"кабинета"/"кабинетах"/...
+# Г.107 — родовые слова в названиях помещений живут в ДАННЫХ, а не здесь.
+# Слово, которое в названиях работает родовым типом и уточняется соседним
+# словом, цепляет все помещения этого типа разом. Вычислить такие слова из
+# самого прогона не удалось, и это измерено: ни доля названий, ни число
+# разных слов-соседей не дают границы между родовым и осмысленным —
+# подгонять порог под один пример нельзя (Г.11). Поэтому наблюдение лежит в
+# реестре `data/generic_room_words.json` со своим статусом n=1 и пополняется
+# в ходе эксплуатации, а механика остаётся без единого слова словаря.
+# Отсутствие или порча файла ничего не ломает — список просто пуст.
+_GENERIC_ROOM_WORDS_FILE = "generic_room_words.json"
+
+
+@lru_cache(maxsize=1)
+def _generic_room_prefixes() -> frozenset[str]:
+    path = Path(__file__).resolve().parents[3] / "data" / _GENERIC_ROOM_WORDS_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        items = data.get("prefixes") or []
+        return frozenset(
+            str(item["prefix"])[:_ROOM_KEYWORD_MIN_PREFIX].lower()
+            for item in items if isinstance(item, dict) and item.get("prefix")
+        )
+    except Exception as exc:  # noqa: BLE001 — реестр наблюдений не обязателен
+        print(f"реестр родовых слов не прочитан ({exc}): {path}", file=sys.stderr)
+        return frozenset()
 
 
 def _significant_words(text: str) -> set[str]:
@@ -298,7 +319,7 @@ def _significant_words(text: str) -> set[str]:
     return {
         w for w in words
         if len(w) >= _ROOM_KEYWORD_MIN_WORD_LEN
-        and w[:_ROOM_KEYWORD_MIN_PREFIX] not in _GENERIC_ROOM_PREFIXES
+        and w[:_ROOM_KEYWORD_MIN_PREFIX] not in _generic_room_prefixes()
     }
 
 

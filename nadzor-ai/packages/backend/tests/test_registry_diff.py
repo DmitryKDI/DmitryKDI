@@ -260,7 +260,7 @@ def test_run_triangulated_auto_wires_mo_signals_when_routing_rooms_selected(tmp_
                                     requirements_llm_config=fake_config)
 
     out = capsys.readouterr().out
-    assert "Сверка местных отсосов ПД↔РД (Г.58/Г.65" in out
+    assert "Сверка «назначено в ПД ↔ нарисовано в РД»" in out
     assert "mo_table" in out
     print("OK: mo-сверка подключена к run_triangulated на том же списке помещений, что routing")
 

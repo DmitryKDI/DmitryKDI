@@ -37,7 +37,7 @@ import pymupdf
 from .classification import PAGE_KIND_DRAWING, classify_document, classify_page_kind
 from .set_overview import official_section_label
 from .stamp import is_sheet_title, read_sheet_name
-from .table_registry import classify_table_page
+from .table_registry import all_known_kinds, classify_table_page
 
 # Г.98/Г.99 — наименование листа читается штампом (`stamp.read_sheet_name`),
 # а не выискивается в тексте страницы: там, где зона штампа на листе А0/А1
@@ -225,7 +225,7 @@ def render_composition(volumes: list[VolumeComposition]) -> str:
         if v.pages_without_text:
             lines.append(f"  без текстового слоя (подписи в кривых): {v.pages_without_text}")
         if v.tables_by_kind:
-            parts = ", ".join(f"{_TABLE_LABELS.get(k, k)}: {n}" for k, n in v.tables_by_kind)
+            parts = ", ".join(f"{_table_label(k)}: {n}" for k, n in v.tables_by_kind)
             lines.append(f"  таблиц по типам — {parts}")
         if v.prose_pages:
             lines.append(f"  листов со связным текстом: {v.prose_pages} — "
@@ -302,19 +302,8 @@ def _render_sheets(volume: VolumeComposition) -> list[str]:
     return lines
 
 
-# Человеческие названия типов таблиц реестра. Сам реестр держит нормативный
-# термин и регулярку; здесь только подпись для отчёта, чтобы «work_volumes»
-# не попадало инспектору на глаза.
-_TABLE_LABELS = {
-    "equipment_specification": "спецификации оборудования",
-    "work_volumes": "ведомости объёмов работ",
-    "ventilation_balance": "таблицы воздухообменов",
-    "water_balance": "балансы водопотребления",
-    "electrical_loads": "таблицы электрических нагрузок",
-    "cable_log": "кабельные журналы",
-    "steel_consumption": "ведомости расхода стали",
-    "shipping_marks": "ведомости отправочных марок",
-    "finishing_schedule": "ведомости отделки",
-    "openings_schedule": "ведомости проёмов",
-    "site_balance": "балансы территории",
-}
+# Г.107 — подписи типов таблиц берутся из реестра (`TableKind.label_ru`), а
+# не из словаря здесь: словарь был перечнем лексики разделов в механике.
+def _table_label(kind: str) -> str:
+    entry = next((k for k in all_known_kinds() if k.kind == kind), None)
+    return (entry.label_ru if entry and entry.label_ru else kind)
