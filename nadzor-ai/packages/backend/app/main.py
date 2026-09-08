@@ -19,8 +19,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, 
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import (facts_digest, facts_store, file_store, models, review_dialog,
-               run_control, schemas)
+from . import (facts_digest, facts_store, file_store, models, requirement_kind,
+               review_dialog, run_control, schemas, spec_compare)
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
@@ -946,6 +946,30 @@ def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
     return index
 
 
+def _render_input_data(items: list) -> str:
+    """Исходные данные расчётов — показаны, но с РД не сверялись (Г.117).
+
+    Величины, на которых построен расчёт проектной документации: рабочая
+    документация их не подтверждает и не опровергает, проверять их следует в
+    самом расчёте. Прежде каждая такая строка уходила в «требует проверки»,
+    и на реальном томе они составляли большинство отчёта.
+    """
+    by_document: dict[str, list] = {}
+    for item in items:
+        by_document.setdefault(getattr(item, "document", "") or "", []).append(item)
+    lines = ["=== Исходные данные расчётов (с рабочей документацией не сверялись) ===",
+             "Значения, на которых построены расчёты проектной документации. Их",
+             "подтверждение в рабочей документации не предусмотрено по существу:",
+             "проверять их следует в самом расчёте, а не в чертежах.",
+             ""]
+    for document, group in sorted(by_document.items()):
+        lines.append(f"  {document or 'файл не указан'} — {len(group)}")
+        for item in sorted(group, key=lambda i: getattr(i, "page", 0)):
+            text = getattr(item, "summary", "") or getattr(item, "sentence", "")
+            lines.append(f"    стр.{getattr(item, 'page', 0)}: {text}")
+    return "\n".join(lines)
+
+
 def _run_compliance(run_id: int) -> None:
     """Фоновая задача: сверка требований ПД с рабочей документацией (Г.96).
 
@@ -1028,10 +1052,24 @@ def _run_compliance(run_id: int) -> None:
                 print(f"сверка #{run_id}: {note} ({done} из {total})", file=sys.stderr)
             run_control.check(run_control.KIND_COMPLIANCE, run_id)
 
+        # Г.117 — разбор ПД выписывает всё, что описывает объект, но сверке
+        # с РД поддаётся не всё. Исходные данные расчёта подтверждать в
+        # рабочей документации нечем, а позиции ведомости сверяются со
+        # спецификацией РД целиком, а не поштучно через просмотр чертежей.
+        by_kind = requirement_kind.split_by_kind(requirements)
+        checkable = by_kind[requirement_kind.KIND_REQUIREMENT]
+        spec_entries = spec_compare.collect(by_kind[requirement_kind.KIND_SPEC_ITEM])
+        rd_text_facts = load_text_facts(sources)
+        rd_text = "\n".join(str(f.get("text") or "") for f in rd_text_facts)
+        spec_result = spec_compare.compare(spec_entries, rd_text)
+        run.units_total = len(checkable)
+        db.commit()
+
         result = check_compliance(
-            requirements,
+            checkable,
             on_progress=_compliance_progress,
-            rd_text_facts=load_text_facts(sources),
+            display_names={d.file_path: d.name for _, d in rd_docs},
+            rd_text_facts=rd_text_facts,
             rd_sources=sources,
             config=config if has_key else None,
             llm_verify=(lambda reqs, facts, cfg: verify_general_requirements_llm(reqs, facts, cfg))
@@ -1039,8 +1077,22 @@ def _run_compliance(run_id: int) -> None:
             vision_check=check_requirement_on_page if has_key else None,
             candidate_pages=_candidates if has_key else None,
         )
-        run.report = render_compliance_report(result)
-        run.counts = result.counts
+        # Отчёт склеивается из трёх частей в порядке пользы инспектору:
+        # сверка требований, отдельная сверка ведомостей и — последним —
+        # перечень исходных данных расчёта, которые не сверялись вовсе.
+        # Последнее показано, а не выброшено: молчание значило бы, что этих
+        # строк в проекте нет (Г.10).
+        parts = [render_compliance_report(result)]
+        spec_text = spec_compare.render(spec_result)
+        if spec_text:
+            parts.append(spec_text)
+        input_data = by_kind[requirement_kind.KIND_INPUT_DATA]
+        if input_data:
+            parts.append(_render_input_data(input_data))
+        run.report = "\n\n".join(parts)
+        run.counts = {**result.counts, **{f"ведомость: {k}": v
+                                          for k, v in spec_result.counts.items()},
+                      "исходные данные (не сверялись)": len(input_data)}
         run.status = "done"
         db.commit()
     except run_control.RunCancelled:

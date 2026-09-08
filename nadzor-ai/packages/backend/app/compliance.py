@@ -43,10 +43,12 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .llm import LlmConfig
 from .requirement_cross_check import _extract_token, _token_present_in
 from .requirement_registry import Requirement
+from . import spec_compare
 
 STATUS_CONFIRMED = "подтверждено"
 STATUS_NEEDS_CHECK = "требует проверки"
@@ -74,6 +76,9 @@ class ComplianceResult:
     counts: dict[str, int] = field(default_factory=dict)
     # Что в этом прогоне не выполнялось и почему — видимое состояние (Г.10).
     not_run: list[str] = field(default_factory=list)
+    # Путь файла -> имя тома. В отчёте инспектору нужно имя: путь вида
+    # `uploads/632379a0e5….pdf` не открыть и не найти (Г.117).
+    display_names: dict[str, str] = field(default_factory=dict)
 
 
 def check_compliance(
@@ -86,6 +91,7 @@ def check_compliance(
     candidate_pages: Callable | None = None,
     max_visual_pages: int = DEFAULT_MAX_VISUAL_PAGES,
     on_progress: Callable[[int, int, str], None] | None = None,
+    display_names: dict[str, str] | None = None,
 ) -> ComplianceResult:
     """Прогоняет список требований ПД по лестнице проверок против РД.
 
@@ -94,7 +100,7 @@ def check_compliance(
     без реальных PDF, и так же видно, что модуль ничего не вызывает сам,
     когда ключа нет.
     """
-    result = ComplianceResult()
+    result = ComplianceResult(display_names=dict(display_names or {}))
     rd_text = "\n".join(f.get("text", "") for f in rd_text_facts)
 
     # Ход работы наружу: сколько требований уже получили ответ из скольких.
@@ -117,7 +123,25 @@ def check_compliance(
 
     # --- Ступень 1: токен в тексте РД (без модели) ---
     pending: list[Requirement] = []
+    rd_marks = spec_compare.normalize(rd_text)
     for req in requirements:
+        # Если в требовании названа МАРКА изделия, подтвердить его может
+        # только она сама. Иначе засчитывается имя завода из кавычек:
+        # наблюдалось на реальном прогоне — «KDV DU 400-80A-3х10» считалась
+        # подтверждённой, потому что где-то в РД встречалось слово «KORF»
+        # (Г.117). Присутствие бренда не доказывает присутствие изделия.
+        marks = spec_compare.designations(req.sentence)
+        if marks:
+            found = next((m for m in marks if m in rd_marks), None)
+            if found:
+                result.items.append(ComplianceItem(
+                    requirement=req, status=STATUS_CONFIRMED,
+                    detail=f"обозначение «{found}» найдено в тексте рабочей документации",
+                    evidence=found,
+                ))
+            else:
+                pending.append(req)
+            continue
         token = _extract_token(req.sentence)
         if token and _token_present_in(token, rd_text):
             result.items.append(ComplianceItem(
@@ -256,12 +280,18 @@ def _finish(result: ComplianceResult) -> ComplianceResult:
 
 
 def render_compliance_report(result: ComplianceResult) -> str:
-    """Отчёт для инспектора.
+    """Отчёт для инспектора — в том же виде, что сводка разбора (Г.117).
 
     Обязан начинаться с оговорки о статусе выводов: это гипотезы для
     проверки на объекте, а не заключение о нарушении (Б.6). Без неё
     «требует проверки» на 60 позициях читается как 60 нарушений, чего в
     данных нет и быть не может — в РД мало текста по природе.
+
+    Порядок разделов — по тому, что инспектору делать. Сначала то, где
+    названы листы: их можно открыть и посмотреть. Затем то, где смотреть
+    не по чему, — это вопрос к полноте данных, а не к объекту. Внутри —
+    группировка по разделу и тому, как в сводке разбора: сплошной список
+    на комплекте из нескольких томов нечитаем.
     """
     lines = [
         "=== Соответствие рабочей документации требованиям проектной ===",
@@ -278,18 +308,44 @@ def render_compliance_report(result: ComplianceResult) -> str:
         lines.append("Не выполнялось в этом прогоне:")
         lines.extend(f"  - {x}" for x in result.not_run)
 
-    for status in (STATUS_NEEDS_CHECK, STATUS_NOT_CHECKED, STATUS_CONFIRMED):
-        group = [i for i in result.items if i.status == status]
+    with_pages = [i for i in result.items
+                  if i.status == STATUS_NEEDS_CHECK and i.pages_to_check]
+    without_pages = [i for i in result.items
+                     if i.status == STATUS_NEEDS_CHECK and not i.pages_to_check]
+    for title, group in (
+        (f"смотреть листы ({len(with_pages)})", with_pages),
+        (f"листы выбрать не по чему ({len(without_pages)})", without_pages),
+        (f"{STATUS_NOT_CHECKED} ({len([i for i in result.items if i.status == STATUS_NOT_CHECKED])})",
+         [i for i in result.items if i.status == STATUS_NOT_CHECKED]),
+        (f"{STATUS_CONFIRMED} ({len([i for i in result.items if i.status == STATUS_CONFIRMED])})",
+         [i for i in result.items if i.status == STATUS_CONFIRMED]),
+    ):
         if not group:
             continue
         lines.append("")
-        lines.append(f"--- {status} ({len(group)}) ---")
-        for item in group:
-            req = item.requirement
-            head = f"  [{req.section or '?'} стр.{req.page}] {req.summary or req.sentence}"
-            lines.append(head)
-            lines.append(f"      {item.detail}")
-            if item.pages_to_check:
-                where = ", ".join(f"{name}: лист {p}" for name, p in item.pages_to_check)
-                lines.append(f"      смотреть: {where}")
+        lines.append(f"--- {title} ---")
+        lines.extend(_render_group(group, result.display_names))
     return "\n".join(lines)
+
+
+def _render_group(items: list[ComplianceItem], names: dict[str, str]) -> list[str]:
+    """Группировка по разделу и тому — как в сводке разбора."""
+    by_section: dict[tuple[str, str], list[ComplianceItem]] = {}
+    for item in items:
+        key = (item.requirement.section or "", item.requirement.document or "")
+        by_section.setdefault(key, []).append(item)
+
+    out: list[str] = []
+    for (section, document), group in sorted(by_section.items()):
+        head = f"[{section}]" if section else "[раздел не определён]"
+        out.append(f"  {head} {document or 'файл не указан'} — {len(group)}")
+        for item in sorted(group, key=lambda i: i.requirement.page):
+            req = item.requirement
+            out.append(f"    стр.{req.page}: {req.summary or req.sentence}")
+            out.append(f"        {item.detail}")
+            if item.pages_to_check:
+                where = ", ".join(
+                    f"{names.get(path, Path(path).name)}, лист {page}"
+                    for path, page in item.pages_to_check)
+                out.append(f"        смотреть: {where}")
+    return out
