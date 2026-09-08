@@ -12,6 +12,7 @@ from app.requirement_registry import (
     match_requirement_rooms_by_name,
     render_general_requirements_summary,
     render_requirements_summary,
+    topic_prefixes,
 )
 
 SAMPLE_DIR = Path("/home/user/nadzor_sample")
@@ -297,6 +298,63 @@ def test_match_requirement_rooms_by_name_ignores_short_words():
     print("OK: слова короче 5 букв не считаются ключевыми и не дают совпадения")
 
 
+def test_topic_prefixes_finds_words_of_the_document_itself():
+    """Г.106 — слово, которым назван предмет тома, стоит почти в каждом его
+    требовании и потому ничего не различает. Список таких слов не зашит: он
+    считается из самих требований прогона, поэтому у каждого раздела свой."""
+    texts = [
+        "Кровельное покрытие выполняется по несущим плитам",
+        "Кровельные воронки с электрообогревом",
+        "Уклон кровельного ковра не менее 1,5 процента",
+        "Кровельное ограждение высотой 0,6 м",
+        "Лаборантская оборудуется вытяжным шкафом",
+    ]
+    topics = topic_prefixes(texts, min_share=0.5)
+    assert "кров" in topics, topics
+    assert "лабо" not in topics, topics
+    print("OK: предмет тома распознан как неразличающее слово, редкое слово сохранено")
+
+
+def test_topic_prefixes_of_two_documents_do_not_coincide():
+    """Механизм не знает терминов ни одной дисциплины: на двух наборах
+    требований разной темы он выдаёт разные слова, ничего не зная о них."""
+    one = ["Ограждение лестничных маршей", "Ограждение кровли", "Ограждение приямка"]
+    two = ["Освещение рабочей зоны", "Освещение эвакуационное", "Освещение аварийное"]
+    assert topic_prefixes(one, min_share=0.9) == {"огра"}
+    assert topic_prefixes(two, min_share=0.9) == {"осве"}
+    print("OK: слова предмета вычисляются по документу, а не берутся из списка")
+
+
+def test_match_requirement_rooms_by_name_drops_topic_word_of_the_volume():
+    """Реальный шум, найденный замером (Г.106): слово предмета тома стоит и
+    в требовании, и в названии помещения — и привязывает это помещение к
+    трети всех требований. Замер на реальном томе: 27 требований к одному
+    помещению, после правила 10, причём отсеялись именно те, где совпадало
+    ТОЛЬКО слово предмета."""
+    sentence = "Тепловые нагрузки на вентиляцию приведены в таблице"
+    room_facts = [
+        {"key": "012", "name": "Венткамера"},
+        {"key": "147", "name": "Лаборантская тип АВ"},
+    ]
+    assert match_requirement_rooms_by_name(sentence, room_facts) == ["012"]
+    matched = match_requirement_rooms_by_name(
+        sentence, room_facts, ignore_prefixes={"вент"})
+    assert matched == [], matched
+    print("OK: совпадение только по слову предмета тома подсказкой не считается")
+
+
+def test_match_requirement_rooms_by_name_keeps_room_when_other_word_matches():
+    """Отсев слова предмета не должен рубить требование, которое называет
+    помещение по существу: если совпало ещё и тематическое слово, подсказка
+    остаётся."""
+    sentence = "Вентиляционное оборудование размещено в отдельных венткамерах"
+    room_facts = [{"key": "012", "name": "Венткамера приточная"}]
+    matched = match_requirement_rooms_by_name(
+        sentence, room_facts, ignore_prefixes={"обор"})
+    assert matched == ["012"], matched
+    print("OK: помещение сохраняется, когда совпало не только слово предмета")
+
+
 def test_general_requirements_ignore_short_and_long_fragments():
     text_facts = [{"page": 3, "text": (
         "Необходимо. "
@@ -407,6 +465,10 @@ if __name__ == "__main__":
     test_match_requirement_rooms_by_name_excludes_generic_kabinet_word()
     test_match_requirement_rooms_by_name_no_match_for_unrelated_rooms()
     test_match_requirement_rooms_by_name_ignores_short_words()
+    test_topic_prefixes_finds_words_of_the_document_itself()
+    test_topic_prefixes_of_two_documents_do_not_coincide()
+    test_match_requirement_rooms_by_name_drops_topic_word_of_the_volume()
+    test_match_requirement_rooms_by_name_keeps_room_when_other_word_matches()
     test_general_requirements_keep_room_numbers_when_present()
     test_general_requirements_ignore_short_and_long_fragments()
     test_general_requirements_do_not_leak_into_cross_check_pipeline()

@@ -152,17 +152,41 @@ def check_compliance(
     # --- Ступень 3: зрение по листам РД ---
     for req in still_pending:
         pages: list[tuple[str, int]] = []
-        if req.rooms and vision_check is not None and candidate_pages is not None:
-            pages = list(candidate_pages(req.rooms, rd_sources))[:max_visual_pages]
+        # Г.106 — якорем может быть и подсказка по названию помещения, если
+        # номер в тексте требования не назван. Она честно помечается: номер в
+        # скобках это факт документа, совпадение по названию — догадка, и
+        # инспектор должен видеть, по чему ему подобрали лист.
+        anchor_rooms = req.rooms or req.rooms_by_name
+        by_name = not req.rooms and bool(req.rooms_by_name)
+        anchor_note = (" (помещения подсказаны по названию, номер в требовании не назван)"
+                       if by_name else "")
+        if anchor_rooms and candidate_pages is not None:
+            pages = list(candidate_pages(anchor_rooms, rd_sources))[:max_visual_pages]
+
+        if pages and vision_check is None:
+            # Г.106 — листы подобраны, но смотреть их нечем. Раньше этого
+            # состояния не существовало: подбор был завязан на наличие
+            # зрения, и прогон без него докладывал «подходящих листов РД не
+            # найдено» — то есть выдавал НЕВЫПОЛНЕННЫЙ шаг за отрицательный
+            # результат поиска. Ровно та подмена, которую запрещает Г.10, и
+            # заодно потеря главного, что нужно инспектору: куда смотреть.
+            result.items.append(ComplianceItem(
+                requirement=req, status=STATUS_NEEDS_CHECK,
+                detail="в тексте РД не подтверждено; листы для просмотра подобраны, "
+                       "но просмотр изображения не выполнялся" + anchor_note,
+                pages_to_check=pages))
+            continue
 
         if not pages:
             # Требование к объекту целиком: лист выбирать не по чему. Гонять
             # зрение вслепую по всему тому дороже и бесполезнее, чем сказать
             # инспектору прямо, что здесь нужен его глаз.
             reason = ("в тексте РД не подтверждено; требование не привязано к номерам "
-                      "помещений, поэтому лист для просмотра выбрать не по чему"
-                      if not req.rooms else
-                      "в тексте РД не подтверждено; подходящих листов РД не найдено")
+                      "помещений и по названию их подобрать не удалось, поэтому лист "
+                      "для просмотра выбрать не по чему"
+                      if not anchor_rooms else
+                      "в тексте РД не подтверждено; подходящих листов РД не найдено"
+                      + anchor_note)
             result.items.append(ComplianceItem(
                 requirement=req, status=STATUS_NEEDS_CHECK, detail=reason))
             continue

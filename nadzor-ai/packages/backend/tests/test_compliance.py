@@ -140,3 +140,32 @@ def test_llm_failure_does_not_become_a_missing_requirement():
     item = result.items[0]
     assert item.status == STATUS_NOT_CHECKED
     assert "сеть недоступна" in item.detail
+
+
+def test_candidate_sheets_are_reported_even_when_vision_is_not_available():
+    """Г.106 — «листы подобраны, но смотреть их нечем» и «подходящих листов не
+    найдено» это разные состояния.
+
+    Найдено прогоном на реальном комплекте: подбор листов был завязан на
+    наличие зрения, и прогон без него докладывал «подходящих листов РД не
+    найдено». Это выдавало НЕВЫПОЛНЕННЫЙ шаг за отрицательный результат
+    поиска (Г.10) и заодно теряло главное, что нужно инспектору, — куда
+    смотреть.
+    """
+    req = Requirement(rooms=["001"], page=5, sentence="Требование к помещению 001.")
+    result = check_compliance(
+        requirements=[req],
+        rd_text_facts=[{"page": 1, "text": "текст без подтверждения"}],
+        rd_sources=[("/tmp/rd.pdf", "rd.pdf")],  # noqa: S108 — путь в тест не открывается
+        # Ключ есть и смысловая сверка отработала — не подтвердила; зрения
+        # при этом нет. Именно эта комбинация и терялась.
+        config=object(),
+        llm_verify=lambda reqs, facts, cfg: [],
+        vision_check=None,
+        candidate_pages=lambda rooms, sources: [("/tmp/rd.pdf", 12)],  # noqa: S108
+    )
+    item = result.items[0]
+    assert item.status == STATUS_NEEDS_CHECK
+    assert item.pages_to_check == [("/tmp/rd.pdf", 12)], "лист назван"  # noqa: S108
+    assert "просмотр изображения не выполнялся" in item.detail
+    assert "не найдено" not in item.detail, "невыполненный шаг не выдаётся за пустой поиск"

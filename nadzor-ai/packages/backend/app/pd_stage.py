@@ -16,6 +16,7 @@ from pathlib import Path
 import pymupdf
 
 from .classification import classify_document
+from .documents import extract_document_facts
 from .llm import LlmConfig
 from .norms_registry import (
     find_norms,
@@ -24,7 +25,12 @@ from .norms_registry import (
     norms_from_llm,
     render_norms_section,
 )
-from .requirement_registry import Requirement, _normalize_for_dedup
+from .requirement_registry import (
+    Requirement,
+    _normalize_for_dedup,
+    match_requirement_rooms_by_name,
+    topic_prefixes,
+)
 from .section_profile import (
     KIND_NORM,
     KIND_TABLE,
@@ -121,6 +127,61 @@ def attach_norms(requirements: list[Requirement], text_facts: list[dict],
     if config is not None and pending:
         link_by_meaning(pending, norms, config)
     return norms, render_norms_section(norms, requirements)
+
+
+def attach_rooms_by_name(requirements: list[Requirement],
+                         sources: list[tuple]) -> int:
+    """Подсказать помещения для требований, где номер не назван (Г.106).
+
+    Найдено сравнением слепого прогона с реальным перечнем нарушений: два
+    нарушения из трёх относились к требованиям, которые ПД адресует ТИПОМ
+    помещения («в таких-то по назначению помещениях»), а номера этих
+    помещений стоят не в предложении, а в экспликации того же тома. У таких
+    требований `rooms` пуст, листов для просмотра подобрать не по чему, и в
+    отчёте они тонули среди сотен «требование к объекту целиком».
+
+    Механизм существовал (`match_requirement_rooms_by_name`, Г.57), но его
+    не вызывал никто — ровно тот класс, что нашёл аудит Г.62. Здесь он
+    подключён к конвейеру.
+
+    Результат кладётся в ОТДЕЛЬНОЕ поле: номер в скобках — факт документа,
+    совпадение по названию — догадка, и смешивать их нельзя. К разделу
+    механизм не привязан: сравниваются слова требования со словами в
+    названиях помещений того же документа, каких бы то ни было списков
+    терминов здесь нет.
+
+    Возвращает число требований, получивших подсказку.
+    """
+    room_facts: dict[str, list[dict]] = {}
+    for source in sources:
+        path, name = source[0], source[1]
+        try:
+            room_facts[name] = extract_document_facts(path, name).room_facts
+        except Exception as exc:  # noqa: BLE001 — один файл не роняет разбор
+            print(f"реестр помещений не построен ({exc}): {name}", file=sys.stderr)
+
+    # Слова, которыми назван предмет самого тома, стоят почти в каждом его
+    # требовании и потому ничего не различают (Г.106). Считаются по этому
+    # же прогону и отдельно для каждого документа: у разных разделов слова
+    # разные, а знать их заранее механизм не должен.
+    topics: dict[str, set[str]] = {}
+    for name in room_facts:
+        texts = [r.summary or r.sentence for r in requirements if r.document == name]
+        topics[name] = topic_prefixes(texts)
+
+    hinted = 0
+    for req in requirements:
+        if req.rooms:
+            continue  # номер назван явно — догадка не нужна и вредна
+        facts = room_facts.get(req.document) or []
+        if not facts:
+            continue
+        rooms = match_requirement_rooms_by_name(
+            req.summary or req.sentence, facts, ignore_prefixes=topics.get(req.document))
+        if rooms:
+            req.rooms_by_name = rooms
+            hinted += 1
+    return hinted
 
 
 def record_profile(requirements: list[Requirement], volumes=(), norms=()) -> None:

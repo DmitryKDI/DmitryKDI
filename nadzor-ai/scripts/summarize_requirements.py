@@ -54,6 +54,7 @@ from app.document_composition import (  # noqa: E402
 from app.llm import LlmConfig, check_llm_reachable  # noqa: E402
 from app.pd_stage import (  # noqa: E402
     attach_norms,
+    attach_rooms_by_name,
     record_profile,
     render_section_knowledge,
     render_summary,
@@ -204,6 +205,7 @@ def main() -> None:
         # параметр (Г.101). Считается ДО сводки, потому что сводка печатает
         # привязку рядом с требованием.
         _emit("=== Шаг 4. Нормативная база ===")
+        attach_rooms_by_name(requirements, [(p, Path(p).name) for p in args.pd])
         norms, norms_section = attach_norms(requirements, pd_text_facts, llm_config, llm_norms)
         _emit(norms_section)
         _emit("")

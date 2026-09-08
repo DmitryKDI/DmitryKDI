@@ -94,6 +94,9 @@ class PdRequirement(StoreBase):
     # ней как на факте нельзя.
     norm: Mapped[str] = mapped_column(String, default="")
     norm_source: Mapped[str] = mapped_column(String, default="")
+    # Г.106 — помещения, подсказанные по названию; хранятся отдельно от
+    # `rooms`, где номер назван документом явно.
+    rooms_by_name: Mapped[list] = mapped_column(JSON, default=list)
 
 
 _engine = None
@@ -175,6 +178,7 @@ def save_run(
                 rooms=list(req.rooms),
                 norm=req.norm,
                 norm_source=req.norm_source,
+                rooms_by_name=list(req.rooms_by_name),
             ))
         session.commit()
         return run.id
@@ -273,4 +277,5 @@ def _to_requirement(row: PdRequirement) -> Requirement:
         section=row.section,
         norm=row.norm or "",
         norm_source=row.norm_source or "",
+        rooms_by_name=list(row.rooms_by_name or []),
     )

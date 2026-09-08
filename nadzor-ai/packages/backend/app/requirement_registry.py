@@ -65,6 +65,7 @@ equipment.py — Ведомость оборудования; обе — таб�
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 _CODE_ITEM_RE = re.compile(
@@ -152,6 +153,11 @@ class Requirement:
     # ошибиться не может) или «сопоставлено по смыслу» (гипотеза модели).
     # Слить их в одну пометку значило бы выдать предположение за факт.
     norm_source: str = ""
+    # Г.106 — помещения, угаданные по НАЗВАНИЮ (экспликация того же тома), а
+    # не названные номером в тексте. Отдельное поле, а не дописывание в
+    # `rooms`: номер в скобках — факт, совпадение по названию — подсказка, и
+    # смешать их значило бы выдать догадку за данные документа.
+    rooms_by_name: list[str] = field(default_factory=list)
 
 
 def extract_coded_requirements(text_facts: list[dict]) -> list[Requirement]:
@@ -296,7 +302,36 @@ def _significant_words(text: str) -> set[str]:
     }
 
 
-def match_requirement_rooms_by_name(sentence: str, room_facts: list[dict]) -> list[str]:
+# Г.106 — второй источник шума той же подсказки, найденный замером на
+# реальном томе (первый — родовое слово в названии помещения, стоп-лист
+# выше). Слово, которым назван ПРЕДМЕТ тома, стоит почти в каждом его
+# требовании: совпав с названием помещения, оно привязывает к этому
+# помещению треть тома и подсказка перестаёт что-либо подсказывать.
+# Замер на реальном томе: два таких слова стояли в 7,1% требований каждое
+# и цепляли одно помещение к 22 требованиям; слова, по которым подсказка
+# и нужна (тип помещения, название процесса), стояли в 0,3-0,6%. Порядок
+# разный, поэтому граница берётся между ними, а не подгоняется.
+#
+# Список таких слов НЕ зашивается: он вычисляется из самих требований
+# этого документа (`topic_prefixes`) и потому в каждом разделе свой —
+# механизм не знает ни одного термина ни одной дисциплины.
+TOPIC_PREFIX_MIN_SHARE = 0.05
+
+
+def topic_prefixes(texts: list[str], min_share: float = TOPIC_PREFIX_MIN_SHARE) -> set[str]:
+    """Префиксы слов, встречающихся не реже `min_share` доли текстов — это
+    предмет документа, а не признак конкретного помещения."""
+    if not texts:
+        return set()
+    counts: Counter[str] = Counter()
+    for text in texts:
+        counts.update({w[:_ROOM_KEYWORD_MIN_PREFIX] for w in _significant_words(text)})
+    threshold = min_share * len(texts)
+    return {prefix for prefix, n in counts.items() if n >= threshold}
+
+
+def match_requirement_rooms_by_name(sentence: str, room_facts: list[dict],
+                                    ignore_prefixes: set[str] | None = None) -> list[str]:
     """Помещения, чьё НАЗВАНИЕ пересекается по ключевому слову с текстом
     требования формы 3 — не строгая привязка (в отличие от `rooms` формы
     1/2, где номер стоит явно в скобках), а информационная подсказка «это
@@ -304,6 +339,8 @@ def match_requirement_rooms_by_name(sentence: str, room_facts: list[dict]) -> li
     вместе со сводкой (Г.47). Возвращает номера без дублей, в порядке
     первого совпадения по `room_facts`."""
     req_words = _significant_words(sentence)
+    if ignore_prefixes:
+        req_words = {w for w in req_words if w[:_ROOM_KEYWORD_MIN_PREFIX] not in ignore_prefixes}
     if not req_words:
         return []
     seen: set[str] = set()

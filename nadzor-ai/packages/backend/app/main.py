@@ -28,8 +28,8 @@ from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
-from .pd_stage import (attach_norms, load_text_facts, record_profile,
-                       render_section_knowledge, render_summary)
+from .pd_stage import (attach_norms, attach_rooms_by_name, load_text_facts,
+                       record_profile, render_section_knowledge, render_summary)
 from .pd_store import load_run, save_run
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_text_verify import verify_general_requirements_llm
@@ -626,6 +626,11 @@ def _run_pd(run_id: int) -> None:
         # Г.101 — норматив ИЗ ПЕРЕЧНЯ ЭТОГО ТОМА проставляется до сохранения:
         # иначе привязка не попадёт ни в сводку, ни в датасет, ни в стадию
         # сверки, и её пришлось бы считать заново на каждом шаге.
+        # Г.106 — требованию, где номер помещения не назван, помещения
+        # подсказываются по названию из экспликации того же тома: без этого
+        # оно тонет среди «требований к объекту целиком», и листа для
+        # просмотра под него не подобрать.
+        attach_rooms_by_name(requirements, sources)
         norms, norms_section = attach_norms(requirements, text_facts, config, llm_norms)
         # Г.105 — профиль пополняется ПОСЛЕ разбора и до сборки отчёта: в
         # отчёт должно попасть уже накопленное, включая этот том.
