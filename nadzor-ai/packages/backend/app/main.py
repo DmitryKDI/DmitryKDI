@@ -1514,7 +1514,9 @@ def storage_cleanup(drop_cache: bool = False, db: Session = Depends(get_session)
     освобождается сразу, файлы восстановятся из базы при обращении.
     """
     keep = _referenced_digests(db)
-    removed, freed = file_store.purge_unused(_limits(db).retention_days, keep=keep)
+    days = _limits(db).retention_days
+    orphans = [row for row in file_store.listing() if row.digest not in keep]
+    removed, freed = file_store.purge_unused(days, keep=keep)
     cache_removed = cache_freed = 0
     if drop_cache:
         cache_removed, cache_freed = file_store.drop_cache(keep=set())
@@ -1522,7 +1524,51 @@ def storage_cleanup(drop_cache: bool = False, db: Session = Depends(get_session)
         removed_files=removed, freed_bytes=freed,
         cache_removed=cache_removed, cache_freed_bytes=cache_freed,
         kept_referenced=len(keep),
+        detail=_cleanup_detail(removed, orphans, days),
     )
+
+
+def _cleanup_detail(removed: int, orphans: list, days: int) -> str:
+    """Словами: почему удалилось именно столько.
+
+    Г.115 — «Удалено оригиналов: 0» выглядит как сломанная кнопка. Инспектор
+    видит в списке ничей файл, жмёт уборку и получает ноль: причина (файлу
+    ещё не вышел срок) не названа нигде. Молчаливый отказ вместо объяснения
+    — тот же класс, что Г.10.
+    """
+    if removed:
+        return f"удалено оригиналов: {removed}"
+    if not orphans:
+        return ("удалять нечего: на каждый оригинал ссылается загруженный документ, "
+                "а такие не удаляются никогда")
+    youngest = min(
+        (dt.datetime.utcnow() - row.used_at).days for row in orphans)
+    return (f"ничьих оригиналов: {len(orphans)}, но самому давнему обращению "
+            f"{youngest} дн. при сроке хранения {days} дн. — по сроку не подошёл "
+            f"ни один. Ненужный файл можно удалить прямо в списке.")
+
+
+@app.delete("/storage/files/{digest}")
+def delete_storage_file(digest: str, db: Session = Depends(get_session)):
+    """Удалить оригинал, на который никто не ссылается (Г.115).
+
+    Срок хранения — правило для автоматической уборки, а не запрет на
+    решение человека: инспектор видит ненужный файл и должен уметь убрать
+    его сейчас, а не ждать три месяца. Оригинал, на который ссылается
+    загруженный документ, не удаляется и здесь: сначала удаляют документ.
+    """
+    row = next((r for r in file_store.listing() if r.digest == digest), None)
+    if row is None:
+        raise HTTPException(404, "в хранилище нет файла с таким отпечатком")
+    if digest in _referenced_digests(db):
+        raise HTTPException(409, "на этот оригинал ссылается загруженный документ: "
+                                 "сначала удалите документ, иначе он перестанет открываться")
+    # Части здесь не ищутся намеренно: том с частями всегда чей-то — на него
+    # ссылается документ, — и до этой строки такой запрос не доходит. Части
+    # тома уходят вместе с документом (см. delete_document), а сюда попадают
+    # только осиротевшие записи, у которых владельца уже нет.
+    file_store.forget(digest)
+    return {"ok": True, "freed_bytes": row.size}
 
 
 @app.get("/version")

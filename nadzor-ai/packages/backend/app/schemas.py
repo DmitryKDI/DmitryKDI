@@ -68,6 +68,10 @@ class StorageCleanupResult(BaseModel):
     cache_removed: int
     cache_freed_bytes: int
     kept_referenced: int
+    # Почему получилось именно столько. «Удалено 0» без объяснения выглядит
+    # как сломанная кнопка: инспектор видит ничей файл на 41 МБ, жмёт уборку
+    # и получает ноль, не понимая, что файлу ещё не вышел срок (Г.115).
+    detail: str = ""
 
 
 class AnalysisRunCreate(BaseModel):

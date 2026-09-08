@@ -62,6 +62,8 @@ export interface BackendStorageFile {
 }
 
 export interface BackendStorageCleanup {
+  /** Почему получилось именно столько: «удалено 0» без причины — сломанная кнопка. */
+  detail: string
   removed_files: number
   freed_bytes: number
   cache_removed: number
@@ -414,6 +416,10 @@ export const backendApi = {
   cancelTriangulatedRun: (id: number) =>
     request<BackendRunCancel>(`/triangulated-runs/${id}/cancel`, { method: 'POST' }),
   /** Взять том из хранилища в проверку — без повторной загрузки (Г.114). */
+  /** Удалить ничей оригинал, не дожидаясь срока хранения (Г.115). */
+  deleteStorageFile: (digest: string) =>
+    request<{ ok: boolean; freed_bytes: number }>(
+      `/storage/files/${encodeURIComponent(digest)}`, { method: 'DELETE' }),
   documentFromStorage: (digest: string, side: 'before' | 'after') =>
     request<BackendDocument>(
       `/documents/from-storage?digest=${encodeURIComponent(digest)}&side=${side}`,

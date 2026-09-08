@@ -194,3 +194,42 @@ if __name__ == "__main__":
     test_cleanup_keeps_everything_that_is_still_referenced()
     test_cache_can_be_dropped_and_documents_still_open()
     print("ALL PASS")
+
+
+def test_cleanup_says_why_nothing_was_removed():
+    """«Удалено: 0» без причины выглядит как сломанная кнопка (Г.115)."""
+    data = _pdf(1)
+    doc = _upload(data, "ничей.pdf").json()
+    client.delete(f"/documents/{doc['id']}")
+    # Файл ничей, но обращались к нему только что — по сроку он не подходит.
+    file_store.put(data, pages=1)
+
+    body = client.post("/storage/cleanup").json()
+    assert body["removed_files"] == 0, body
+    assert "срок" in body["detail"], body["detail"]
+    assert str(body["kept_referenced"]) is not None
+    print("OK: уборка объясняет, почему ничего не удалила")
+
+
+def test_orphan_file_can_be_deleted_by_hand():
+    """Срок хранения — правило автоматической уборки, а не запрет человеку."""
+    data = _pdf(1, filler=7)
+    digest = file_store.put(data, pages=1)
+    before = file_store.stats().files
+
+    response = client.delete(f"/storage/files/{digest}")
+    assert response.status_code == 200, response.text
+    assert file_store.stats().files == before - 1
+    print("OK: ничей оригинал удаляется вручную, не дожидаясь срока")
+
+
+def test_file_in_use_is_not_deleted_from_storage():
+    """Оригинал под загруженным документом не удаляется и вручную: иначе
+    инспектор откроет свой же документ и получит ошибку."""
+    doc = _upload(_pdf(2, filler=9), "в-работе.pdf").json()
+    digest = next(f["digest"] for f in client.get("/storage/files").json()
+                  if doc["name"] in f["documents"])
+    response = client.delete(f"/storage/files/{digest}")
+    assert response.status_code == 409, response.text
+    assert "сначала удалите документ" in response.json()["detail"]
+    print("OK: используемый оригинал вручную не удаляется, причина названа")

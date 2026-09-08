@@ -465,7 +465,11 @@ function formatDuration(seconds: number): string {
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1073741824).toFixed(1)} ГБ`
   if (bytes >= 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} МБ`
-  return `${Math.max(1, Math.round(bytes / 1024))} КБ`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} КБ`
+  // Ноль — это ноль (Г.115). Округление вверх писало «1 КБ» там, где на
+  // диске нет ничего, и «освобождено 1 КБ», когда не освобождено ничего:
+  // мелкая, но ровно та подмена пустого на непустое, против которой Г.10.
+  return bytes > 0 ? 'менее 1 КБ' : '0'
 }
 
 /** Хранилище оригиналов: сколько занято и что можно освободить.
@@ -510,8 +514,13 @@ function StorageCard() {
   const cleanup = useMutation({
     mutationFn: (dropCache: boolean) => backendApi.cleanupStorage(dropCache),
     onSuccess: (r) => {
-      pushToast(`Удалено оригиналов: ${r.removed_files}, освобождено ${formatSize(r.freed_bytes + r.cache_freed_bytes)}`)
+      // Сообщение называет ПРИЧИНУ, а не только число: «удалено 0» без
+      // объяснения выглядит как сломанная кнопка (Г.115).
+      pushToast(r.removed_files
+        ? `Удалено оригиналов: ${r.removed_files}, освобождено ${formatSize(r.freed_bytes + r.cache_freed_bytes)}`
+        : r.detail || 'Удалять нечего')
       queryClient.invalidateQueries({ queryKey: ['backend-storage'] })
+      queryClient.invalidateQueries({ queryKey: ['backend-storage-files'] })
     },
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось выполнить уборку', 'error'),
   })
@@ -524,6 +533,15 @@ function StorageCard() {
       void queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY })
     },
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось взять файл', 'error'),
+  })
+  const drop = useMutation({
+    mutationFn: (digest: string) => backendApi.deleteStorageFile(digest),
+    onSuccess: (r) => {
+      pushToast(`Оригинал удалён, освобождено ${formatSize(r.freed_bytes)}`)
+      void queryClient.invalidateQueries({ queryKey: ['backend-storage'] })
+      void queryClient.invalidateQueries({ queryKey: ['backend-storage-files'] })
+    },
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось удалить', 'error'),
   })
   const [showFiles, setShowFiles] = useState(false)
   // Список запрашивается только когда его открыли: в хранилище бывают сотни
@@ -605,6 +623,17 @@ function StorageCard() {
                             className="rounded border border-surface-line px-2 py-0.5 hover:text-accent disabled:opacity-50">
                             в РД
                           </button>
+                          {/* Удаление предлагается только у ничьего файла:
+                              оригинал под загруженным документом не удаляется
+                              вообще, и кнопка, которая всегда отказывает, —
+                              хуже её отсутствия. */}
+                          {!f.in_use && (
+                            <button type="button" disabled={drop.isPending}
+                              onClick={() => drop.mutate(f.digest)}
+                              className="rounded border border-surface-line px-2 py-0.5 hover:text-danger disabled:opacity-50">
+                              удалить
+                            </button>
+                          )}
                         </span>
                       </div>
                     </li>
