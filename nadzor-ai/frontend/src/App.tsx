@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Shell from './layout/Shell'
 import NewAnalysis from './pages/NewAnalysis'
 import AttentionMap from './pages/AttentionMap'
+import ParsedDocs from './pages/ParsedDocs'
 
 // Г.85 — старый бэкенд (`packages/api`, порт 8000) удалён по прямому решению
 // пользователя, вместе с ним ушли 14 экранов CRM-витрины и авторизация:
@@ -18,6 +19,7 @@ export default function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<NewAnalysis />} />
+        <Route path="/parsed" element={<ParsedDocs />} />
         <Route path="/attention" element={<AttentionMap />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -59,7 +59,7 @@ from .requirement_registry import extract_general_requirements, extract_requirem
 from .room_cross_check import cross_check_rooms
 from .routing_diff import diff_room_routing
 from .stamp import read_stamp
-from .documents import extract_document_facts
+from .facts_store import facts_for
 from .triangulation import (
     Signal,
     candidates_only,
@@ -120,7 +120,7 @@ def _load_documents(paths: list[str], names: Optional[list[str]] = None) -> Docu
             skipped.append(f"{display_name}: не найден")
             continue
         try:
-            facts = extract_document_facts(str(p), display_name)
+            facts = facts_for(str(p), display_name)
         except Exception as exc:  # noqa: BLE001 — один битый файл не должен ронять весь прогон
             skipped.append(f"{display_name}: {exc}")
             continue

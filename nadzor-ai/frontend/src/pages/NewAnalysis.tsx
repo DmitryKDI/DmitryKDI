@@ -6,6 +6,7 @@ import {
   type ReviewMessage,
 } from '../backendApi'
 import { useApp, type PendingUpload } from '../store'
+import { DOCUMENTS_KEY, useDocuments } from '../useDocuments'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
 
 const PAGE_KIND_LABELS: Record<'drawing' | 'text', string> = { drawing: 'чертёж', text: 'текст' }
@@ -250,6 +251,7 @@ function FindingGroup({ label, findings, onReview }: {
  */
 function ParseCard({
   title, subtitle, docs, run, onStart, pending, llmCheck, selected, onSelect,
+  onStop, stopping,
 }: {
   title: string
   subtitle: string
@@ -260,6 +262,8 @@ function ParseCard({
   llmCheck?: LlmCheck
   selected: number[]
   onSelect: (ids: number[]) => void
+  onStop?: () => void
+  stopping?: boolean
 }) {
   const running = run?.status === 'running' || pending
   // Пустой выбор означает «все загруженные»: инспектор, которому нужен весь
@@ -324,7 +328,17 @@ function ParseCard({
           Загрузите документы и нажмите кнопку. Настраивать ничего не нужно: правила извлечения и модель заданы в системе.
         </p>
       )}
-      {run?.status === 'running' && <RunProgress run={run} />}
+      {run?.status === 'running' && (
+        <RunProgress run={run} onStop={onStop} stopping={stopping} />
+      )}
+      {run?.status === 'cancelled' && (
+        <div className="rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2 text-sm text-ink-muted">
+          Остановлено инспектором. Результат неполный — запустите заново, когда будете готовы.
+          {run.composition && (
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-xs">{run.composition}</pre>
+          )}
+        </div>
+      )}
       {run?.status === 'error' && (
         <div className="space-y-2">
           <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">{run.error}</div>
@@ -381,7 +395,11 @@ function ParseCard({
  * 3. Оценка появляется не сразу: по одной пачке скорость ещё не измерена,
  *    и любое число было бы выдумкой. До этого честно пишем «оцениваю».
  */
-function RunProgress({ run }: { run: BackendPdRun | BackendComplianceRun }) {
+function RunProgress({ run, onStop, stopping }: {
+  run: BackendPdRun | BackendComplianceRun
+  onStop?: () => void
+  stopping?: boolean
+}) {
   const total = run.units_total || 0
   const done = run.units_done || 0
   const started = run.started_at ? new Date(run.started_at + 'Z').getTime() : null
@@ -400,9 +418,20 @@ function RunProgress({ run }: { run: BackendPdRun | BackendComplianceRun }) {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between text-xs text-ink-muted">
+      <div className="flex items-center justify-between gap-2 text-xs text-ink-muted">
         <span>{run.stage || 'идёт разбор'}</span>
-        {share !== null && <span>{done} из {total}</span>}
+        <span className="flex items-center gap-2">
+          {share !== null && <span>{done} из {total}</span>}
+          {onStop && (
+            // Остановка не мгновенная: исполнитель прервётся на ближайшей
+            // безопасной точке (Г.114). Кнопка говорит это состоянием, а не
+            // делает вид, что всё прекратилось по нажатию.
+            <button type="button" onClick={onStop} disabled={stopping}
+              className="rounded border border-surface-line px-2 py-0.5 text-xs text-ink-muted hover:text-danger disabled:opacity-50">
+              {stopping ? 'останавливаю…' : 'Остановить'}
+            </button>
+          )}
+        </span>
       </div>
       {share !== null ? (
         <div className="h-2 w-full overflow-hidden rounded-full bg-surface-muted">
@@ -486,6 +515,16 @@ function StorageCard() {
     },
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось выполнить уборку', 'error'),
   })
+  // Взять том из хранилища в проверку без повторной загрузки (Г.114).
+  const reuse = useMutation({
+    mutationFn: ({ digest, side }: { digest: string; side: 'before' | 'after' }) =>
+      backendApi.documentFromStorage(digest, side),
+    onSuccess: (doc) => {
+      pushToast(`«${doc.name}» добавлен в ${doc.side === 'before' ? 'ПД' : 'РД'}`)
+      void queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY })
+    },
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось взять файл', 'error'),
+  })
   const [showFiles, setShowFiles] = useState(false)
   // Список запрашивается только когда его открыли: в хранилище бывают сотни
   // записей, и тянуть их ради двух цифр в свёрнутой карточке незачем.
@@ -534,21 +573,39 @@ function StorageCard() {
                   {files.data.map((f) => (
                     <li key={f.digest} className="px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
-                        {/* Имя файла в хранилище не хранится (оно приходит от
-                            загружающей стороны и в путь не идёт), поэтому
-                            подпись берётся из документов, которые на него
-                            ссылаются. Ничей файл — кандидат на уборку, и
-                            увидеть это можно только списком. */}
+                        {/* Строка — ТОМ, а не кусок тома (Г.114). Тяжёлый файл
+                            режется на части, и раньше каждая часть стояла
+                            отдельной безымянной строкой: один документ выглядел
+                            как десяток неизвестных файлов. Число частей — в
+                            скобках: это устройство хранения, а не документы. */}
                         <span className="min-w-0 flex-1 truncate">
                           {f.documents.length ? f.documents.join(', ') : 'ничей — уйдёт по сроку хранения'}
+                          {f.parts > 0 && ` (${f.parts} ч.)`}
                         </span>
                         <span className="whitespace-nowrap text-ink-faint">
-                          {formatSize(f.size)}{f.pages ? ` · ${f.pages} л.` : ''}
+                          {formatSize(f.total_size || f.size)}{f.pages ? ` · ${f.pages} л.` : ''}
                         </span>
                       </div>
-                      <div className="mt-0.5 text-ink-faint">
-                        {f.digest.slice(0, 12)} · обращались {new Date(f.used_at + 'Z').toLocaleDateString()}
-                        {f.cached ? ' · есть в кэше' : ' · только в базе'}
+                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-ink-faint">
+                        <span>
+                          {f.digest.slice(0, 12)} · обращались {new Date(f.used_at + 'Z').toLocaleDateString()}
+                          {f.cached ? ' · есть в кэше' : ' · только в базе'}
+                        </span>
+                        {/* Файл уже лежит здесь, а его разбор — в памяти:
+                            заставлять инспектора снова искать том на диске и
+                            снова его загружать незачем (Г.114). */}
+                        <span className="ml-auto flex gap-1">
+                          <button type="button" disabled={reuse.isPending}
+                            onClick={() => reuse.mutate({ digest: f.digest, side: 'before' })}
+                            className="rounded border border-surface-line px-2 py-0.5 hover:text-accent disabled:opacity-50">
+                            в ПД
+                          </button>
+                          <button type="button" disabled={reuse.isPending}
+                            onClick={() => reuse.mutate({ digest: f.digest, side: 'after' })}
+                            className="rounded border border-surface-line px-2 py-0.5 hover:text-accent disabled:opacity-50">
+                            в РД
+                          </button>
+                        </span>
                       </div>
                     </li>
                   ))}
@@ -568,13 +625,17 @@ export default function NewAnalysis() {
   // useState: переход на другую вкладку меню размонтирует этот компонент, и
   // локальное состояние (в том числе идущий анализ) терялось бы целиком.
   const {
-    pushToast, analysisBeforeDocs: beforeDocs, analysisAfterDocs: afterDocs,
+    pushToast,
     analysisPendingBefore: pendingBefore, analysisPendingAfter: pendingAfter,
     analysisRunId: runId, analysisRunStatus: runStatus,
-    setAnalysisDocs, setAnalysisPending, setAnalysisRunId,
+    setAnalysisPending, setAnalysisRunId,
     pdRunId, pdRunStatus, rdRunStatus, complianceRunStatus, complianceRunId,
     pdSelected, rdSelected, setPdRunId, setComplianceRunId, setSelected,
   } = useApp()
+  // Документы — с сервера (Г.114). В сторе остались только очередь загрузки
+  // и номера прогонов: прогон живёт на сервере и не должен сбрасываться от
+  // обновления страницы, а список документов не должен её переживать.
+  const { before: beforeDocs, after: afterDocs } = useDocuments()
 
   const settings = useQuery({ queryKey: ['backend-settings'], queryFn: backendApi.getSettings })
   const [form, setForm] = useState<BackendSettings>({ provider: 'gigachat', base_url: '', model: '' })
@@ -588,13 +649,11 @@ export default function NewAnalysis() {
 
   const uploadTo = async (side: 'before' | 'after', files: FileList | null) => {
     if (!files || !files.length) return
-    const setDocs = (updater: Parameters<typeof setAnalysisDocs>[1]) => setAnalysisDocs(side, updater)
     const setPending = (updater: Parameters<typeof setAnalysisPending>[1]) => setAnalysisPending(side, updater)
 
-    // Разбор PDF на бэкенде идёт синхронно в одном HTTP-запросе (см.
-    // packages/backend/app/main.py, upload_document) — сотни листов могут
-    // занять десятки секунд без единого промежуточного ответа сервера.
-    // Показываем всю партию в очереди сразу, а не молчим до первого ответа.
+    // Ответ на загрузку приходит сразу: сервер сохраняет файл и отдаёт
+    // документ со статусом «разбирается», а сам разбор идёт в фоне (Г.114).
+    // Очередь показывает то, что ещё физически передаётся на сервер.
     const fileList = Array.from(files)
     const queued: PendingUpload[] = fileList.map((f) => ({ name: f.name, startedAt: Date.now() }))
     setPending((prev) => [...prev, ...queued])
@@ -602,7 +661,7 @@ export default function NewAnalysis() {
     for (let i = 0; i < fileList.length; i++) {
       try {
         const doc = await backendApi.uploadDocument(side, fileList[i])
-        setDocs((prev) => [...prev, doc])
+        await queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY })
         if (doc.status === 'error') {
           pushToast(`«${doc.name}»: не удалось разобрать документ`, 'error')
         }
@@ -614,11 +673,15 @@ export default function NewAnalysis() {
     }
   }
 
-  const removeFrom = async (side: 'before' | 'after', id: number) => {
+  const removeFrom = async (_side: 'before' | 'after', id: number) => {
     try {
       await backendApi.deleteDocument(id)
-    } catch { /* уже удалён или недоступен — всё равно убираем из списка */ }
-    setAnalysisDocs(side, (prev) => prev.filter((d) => d.id !== id))
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : 'Не удалось удалить документ', 'error')
+    }
+    // Список перечитывается с сервера, а не правится в браузере: иначе
+    // неудавшееся удаление выглядело бы как удавшееся (Г.114).
+    await queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY })
   }
 
   const run = useMutation({
@@ -680,7 +743,8 @@ export default function NewAnalysis() {
   const setSection = useMutation({
     mutationFn: ({ id, code }: { id: number; code: string | null }) =>
       backendApi.updateDocumentSection(id, code),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['backend-documents'] }) },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY }) },
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось задать раздел', 'error'),
   })
   // Пустой выбор означает «все загруженные» — см. ParseCard.
   const idsFor = (docs: BackendDocument[], selected: number[]) =>
@@ -804,6 +868,31 @@ function ReviewDialog({ runId }: { runId: number }) {
     onSuccess: (run) => setComplianceRunId(run.id),
   })
 
+  // Остановка длинного дела (Г.114). Отдельная мутация на каждый вид: они
+  // ходят по разным адресам, а сообщение об отказе должно называть своё.
+  const stopRun = {
+    pd: useMutation({
+      mutationFn: () => backendApi.cancelPdRun(pdRunId as number),
+      onSuccess: (r) => pushToast(r.detail),
+      onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось остановить', 'error'),
+    }),
+    rd: useMutation({
+      mutationFn: () => backendApi.cancelPdRun(rdRunStatus?.id as number),
+      onSuccess: (r) => pushToast(r.detail),
+      onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось остановить', 'error'),
+    }),
+    compliance: useMutation({
+      mutationFn: () => backendApi.cancelComplianceRun(complianceRunId as number),
+      onSuccess: (r) => pushToast(r.detail),
+      onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось остановить', 'error'),
+    }),
+    analysis: useMutation({
+      mutationFn: () => backendApi.cancelAnalysisRun(runId as number),
+      onSuccess: (r) => pushToast(r.detail),
+      onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось остановить', 'error'),
+    }),
+  }
+
   const [groupByLabel, setGroupByLabel] = useState(false)
   const groups = (() => {
     const map = new Map<string, BackendFinding[]>()
@@ -832,14 +921,16 @@ function ReviewDialog({ runId }: { runId: number }) {
           subtitle="Требования и способы производства работ + состав тома. Рабочая документация не нужна: её отсутствие не ошибка"
           docs={beforeDocs} run={pdRun.data} pending={startPdRun.isPending}
           onStart={() => startPdRun.mutate()} llmCheck={llmCheck.data}
-          selected={pdSelected} onSelect={(ids) => setSelected('before', ids)} />
+          selected={pdSelected} onSelect={(ids) => setSelected('before', ids)}
+          onStop={() => stopRun.pd.mutate()} stopping={stopRun.pd.isPending} />
 
         <ParseCard
           title="2. Разбор рабочей документации"
           subtitle="Тот же механизм, другая сторона комплекта. Если связного текста нет — показывается состав тома: листы чертежей, таблицы"
           docs={afterDocs} run={rdRun.data} pending={startRdRun.isPending}
           onStart={() => startRdRun.mutate()}
-          selected={rdSelected} onSelect={(ids) => setSelected('after', ids)} />
+          selected={rdSelected} onSelect={(ids) => setSelected('after', ids)}
+          onStop={() => stopRun.rd.mutate()} stopping={stopRun.rd.isPending} />
 
         <SectionCard
           title="3. Соответствие РД требованиям ПД"
@@ -853,6 +944,13 @@ function ReviewDialog({ runId }: { runId: number }) {
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
               {complianceRun.data?.status === 'running' || startCompliance.isPending ? 'Сверяем…' : 'Сверить'}
             </button>
+            {complianceRun.data?.status === 'running' && (
+              <button type="button" onClick={() => stopRun.compliance.mutate()}
+                disabled={stopRun.compliance.isPending}
+                className="rounded-md border border-surface-line px-3 py-1.5 text-sm text-ink-muted hover:text-danger disabled:opacity-50">
+                {stopRun.compliance.isPending ? 'останавливаю…' : 'Остановить'}
+              </button>
+            )}
             {!pdRun.data?.store_run_id && (
               <span className="text-xs text-ink-muted">Сначала выполните разбор проектной документации.</span>
             )}

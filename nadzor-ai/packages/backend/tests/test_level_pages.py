@@ -48,7 +48,7 @@ def test_build_level_fallback_index_links_room_to_drawing_page_by_shared_level(m
     def fake_extract(path, name):
         return facts
 
-    original = _patch(level_pages, "extract_document_facts", fake_extract)
+    original = _patch(level_pages, "facts_for", fake_extract)
     try:
         room_levels, level_drawing_pages = build_level_fallback_index(["РД.pdf"])
     finally:
@@ -74,7 +74,7 @@ def test_augment_room_index_appends_fallback_after_existing_entries(monkeypatch)
         room_facts=[{"page": 19, "key": "270", "name": "Санузел для МГН"}],
         page_kinds={19: "text", 32: "drawing"},
     )
-    original = _patch(level_pages, "extract_document_facts", lambda path, name: facts)
+    original = _patch(level_pages, "facts_for", lambda path, name: facts)
     try:
         room_index = {"270": [{"name": "Санузел для МГН", "doc": "РД.pdf", "path": "РД.pdf", "page": 19}]}
         augmented = augment_room_index_with_level_fallback(room_index, ["РД.pdf"])

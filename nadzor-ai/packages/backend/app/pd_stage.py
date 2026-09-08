@@ -19,7 +19,7 @@ from pathlib import Path
 import pymupdf
 
 from .classification import classify_document
-from .documents import extract_document_facts
+from .facts_store import facts_for
 from .llm import LlmConfig
 from .norms_registry import (
     find_norms,
@@ -162,7 +162,7 @@ def attach_rooms_by_name(requirements: list[Requirement],
     for source in sources:
         path, name = source[0], source[1]
         try:
-            room_facts[name] = extract_document_facts(path, name).room_facts
+            room_facts[name] = facts_for(path, name).room_facts
         except Exception as exc:  # noqa: BLE001 — один файл не роняет разбор
             print(f"реестр помещений не построен ({exc}): {name}", file=sys.stderr)
 

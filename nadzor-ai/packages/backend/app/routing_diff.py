@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .classification import PAGE_KIND_DRAWING, open_pdf
-from .documents import extract_document_facts
+from .facts_store import facts_for
 from .level_pages import build_level_fallback_index, level_fallback_candidates
 from .routing_graph import RoutingEdge, build_routing_graph, diff_routing_graphs
 
@@ -43,7 +43,7 @@ def candidate_plan_pages(paths: list[str], room_keys: list[str]) -> dict[str, li
     facts_by_path: dict[str, object] = {}
     for path in paths:
         try:
-            facts_by_path[path] = extract_document_facts(path, path)
+            facts_by_path[path] = facts_for(path, path)
         except Exception:  # noqa: BLE001 — один битый файл не должен ронять поиск по остальным
             continue
     for path, facts in facts_by_path.items():

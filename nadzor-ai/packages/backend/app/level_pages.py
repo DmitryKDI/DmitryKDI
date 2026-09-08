@@ -24,7 +24,7 @@ import re
 from collections import defaultdict
 
 from .classification import PAGE_KIND_DRAWING
-from .documents import extract_document_facts
+from .facts_store import facts_for
 
 _LEVEL_RE = re.compile(r"[+-]\d{1,2}\.\d{3}")
 
@@ -48,7 +48,7 @@ def build_level_fallback_index(paths: list[str]) -> tuple[dict[str, set[str]], d
     level_drawing_pages: dict[str, list[dict]] = defaultdict(list)
     for path in paths:
         try:
-            facts = extract_document_facts(path, path)
+            facts = facts_for(path, path)
         except Exception:  # noqa: BLE001 — уже залогировано вызывающим кодом через _registry
             continue
         text_by_page = {f["page"]: f["text"] for f in facts.text_facts}

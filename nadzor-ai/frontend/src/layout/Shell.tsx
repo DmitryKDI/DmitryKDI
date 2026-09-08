@@ -10,11 +10,13 @@ import { Toasts } from '../components/ui'
 // Осталась навигация и тосты: то, что реально обслуживает живой движок.
 const MENU: { to: string; label: string }[] = [
   { to: '/', label: 'Новый анализ' },
+  { to: '/parsed', label: 'Разобранная документация' },
   { to: '/attention', label: 'Карта внимания' },
 ]
 
 const TITLES: Record<string, string> = {
   '/': 'Новый анализ',
+  '/parsed': 'Разобранная документация',
   '/attention': 'Карта внимания',
 }
 

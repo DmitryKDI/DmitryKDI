@@ -34,7 +34,13 @@ class StorageStats(BaseModel):
 
 
 class StorageFile(BaseModel):
-    """Один оригинал в хранилище — то, что инспектор видит списком.
+    """Один ТОМ в хранилище — то, что инспектор видит списком.
+
+    Именно том, а не кусок тома (Г.114). Тяжёлый файл режется на части для
+    обработки, и раньше каждая часть стояла в списке отдельной безымянной
+    строкой: один загруженный документ выглядел как десяток неизвестных
+    файлов. Части теперь сложены под именем своего тома, а их число стоит
+    рядом — устройство хранения, а не отдельные документы.
 
     `documents` — названия документов, которые на него ссылаются. Пусто
     означает «файл больше никому не нужен и уйдёт по сроку хранения», и это
@@ -47,6 +53,13 @@ class StorageFile(BaseModel):
     used_at: dt.datetime
     documents: list[str] = []
     cached: bool = False
+    # Из скольких частей состоит том. 0 — не дробился.
+    parts: int = 0
+    # Суммарный размер с частями: место, которое том занимает на самом деле.
+    total_size: int = 0
+    # Есть ли на него ссылка из загруженных документов. Пусто в `documents`
+    # и `in_use=false` — это одно и то же состояние, названное словом.
+    in_use: bool = False
 
 
 class StorageCleanupResult(BaseModel):
@@ -196,6 +209,63 @@ class PdRunOut(BaseModel):
     units_total: int = 0
     units_done: int = 0
     started_at: dt.datetime | None = None
+
+
+class RunCancelOut(BaseModel):
+    """Ответ на просьбу остановить прогон.
+
+    `detail` обязателен: остановка не мгновенная, и без объяснения кнопка
+    выглядела бы сломанной — нажал, а прогон ещё идёт (Г.114).
+    """
+    id: int
+    status: str
+    detail: str
+
+
+class DocumentDigest(BaseModel):
+    """ВЫЖИМКА разбора документа — то, что показывают вместо всего подряд."""
+    name: str
+    pages: int
+    drawings: int
+    text_pages: int
+    pages_without_text: int
+    pages_without_text_list: list[int] = []
+    excluded: int = 0
+    excluded_reasons: list[str] = []
+    rooms_total: int = 0
+    rooms: list[str] = []
+    equipment_total: int = 0
+    equipment: list[str] = []
+    sheets_total: int = 0
+    sheets: list[str] = []
+    systems: list[str] = []
+    text_chars: int = 0
+
+
+class DocumentPageRow(BaseModel):
+    """Один лист разобранного документа. Без текста листа: подробности
+    достаются по требованию, а не грузятся все сразу."""
+    page: int
+    kind: str = ""
+    sheet_no: str = ""
+    sheet_name: str = ""
+    shifr: str = ""
+    rooms: list[str] = []
+    equipment: int = 0
+    chars: int = 0
+    excluded: str = ""
+
+
+class RequirementOut(BaseModel):
+    """Требование, извлечённое из проектной документации."""
+    page: int
+    sentence: str
+    summary: str = ""
+    code: str | None = None
+    document: str = ""
+    section: str | None = None
+    rooms: list[str] = []
+    norm: str = ""
 
 
 class LlmCheckOut(BaseModel):

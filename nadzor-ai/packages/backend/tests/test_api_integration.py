@@ -58,10 +58,18 @@ def fake_llm_post(url, json=None, headers=None, timeout=None):
 
 
 def upload(side: str, path: Path):
+    """Загрузить документ и вернуть его состояние ПОСЛЕ разбора.
+
+    Ответ на загрузку приходит сразу, со статусом «разбирается»: разбор идёт
+    фоновой задачей (Г.114). Тесты, которым нужен раздел и результат
+    классификации, обязаны читать запись после её окончания, а не поле из
+    немедленного ответа.
+    """
     with path.open("rb") as f:
         resp = client.post(f"/documents?side={side}", files={"file": (path.name, f, "application/pdf")})
     assert resp.status_code == 200, resp.text
-    return resp.json()
+    document_id = resp.json()["id"]
+    return next(d for d in client.get("/documents").json() if d["id"] == document_id)
 
 
 def _use_mocked_provider() -> None:

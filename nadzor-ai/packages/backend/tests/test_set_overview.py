@@ -32,7 +32,7 @@ def test_summarize_volume_reads_discipline_and_counts(monkeypatch):
         excluded={5: "прайс поставщика"},
     )
     orig_classify = _patch(set_overview, "classify_document", lambda path, name: fake_classification)
-    orig_facts = _patch(set_overview, "extract_document_facts", lambda path, name: fake_facts)
+    orig_facts = _patch(set_overview, "facts_for", lambda path, name: fake_facts)
     try:
         summary = summarize_volume("Раздел КР.pdf", "Раздел КР.pdf")
     finally:
@@ -57,7 +57,7 @@ def test_summarize_set_survives_a_broken_file(monkeypatch):
         return DocumentFacts(name=name, pages=1, text_facts=[], room_facts=[])
 
     orig_classify = _patch(set_overview, "classify_document", fake_classify)
-    orig_facts = _patch(set_overview, "extract_document_facts", fake_facts)
+    orig_facts = _patch(set_overview, "facts_for", fake_facts)
     try:
         out = summarize_set(["good.pdf", "broken.pdf"])
     finally:

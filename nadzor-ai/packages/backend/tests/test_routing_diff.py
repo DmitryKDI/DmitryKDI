@@ -30,7 +30,7 @@ def test_candidate_plan_pages_prefers_drawing_pages_with_room_facts():
         ],
         page_kinds={3: "text", 7: "drawing"},
     )
-    orig = _patch(routing_diff, "extract_document_facts", lambda path, name: facts)
+    orig = _patch(routing_diff, "facts_for", lambda path, name: facts)
     try:
         candidates = candidate_plan_pages(["rd.pdf"], ["140"])
     finally:
@@ -49,8 +49,8 @@ def test_candidate_plan_pages_falls_back_to_level_when_no_drawing_page_has_the_r
         room_facts=[{"page": 3, "key": "142", "name": "Санузел"}],
         page_kinds={3: "text", 9: "drawing"},
     )
-    orig = _patch(routing_diff, "extract_document_facts", lambda path, name: facts)
-    orig_level = _patch(level_pages, "extract_document_facts", lambda path, name: facts)
+    orig = _patch(routing_diff, "facts_for", lambda path, name: facts)
+    orig_level = _patch(level_pages, "facts_for", lambda path, name: facts)
     try:
         candidates = candidate_plan_pages(["rd.pdf"], ["142"])
     finally:
@@ -82,7 +82,7 @@ def test_build_edges_for_rooms_uses_first_page_with_a_resolved_edge():
         def close(self):
             pass
 
-    orig_facts = _patch(routing_diff, "extract_document_facts", lambda path, name: facts)
+    orig_facts = _patch(routing_diff, "facts_for", lambda path, name: facts)
     orig_open = _patch(routing_diff, "open_pdf", lambda path: _FakeDoc())
     orig_build = _patch(routing_diff, "build_routing_graph", fake_build_routing_graph)
     try:
@@ -98,7 +98,7 @@ def test_build_edges_for_rooms_uses_first_page_with_a_resolved_edge():
 
 
 def test_build_edges_for_rooms_reports_unresolved_room_visibly():
-    orig = _patch(routing_diff, "extract_document_facts", lambda path, name: DocumentFacts(name=name, pages=0, text_facts=[], room_facts=[]))
+    orig = _patch(routing_diff, "facts_for", lambda path, name: DocumentFacts(name=name, pages=0, text_facts=[], room_facts=[]))
     try:
         edges = build_edges_for_rooms(["rd.pdf"], ["999"])
     finally:

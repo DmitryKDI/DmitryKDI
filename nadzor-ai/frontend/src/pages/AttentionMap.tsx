@@ -5,6 +5,7 @@ import {
   backendApi, type EscalationTicket, type TriangulationConfirmation,
 } from '../backendApi'
 import { useApp } from '../store'
+import { useDocuments } from '../useDocuments'
 import { Chip, Empty, SectionCard, Skeleton } from '../components/ui'
 
 const DOMAIN_LABELS: Record<string, string> = {
@@ -29,10 +30,17 @@ function sourceLabel(s: string): string { return SOURCE_LABELS[s] ?? s }
  */
 export default function AttentionMap() {
   const {
-    analysisBeforeDocs: beforeDocs, analysisAfterDocs: afterDocs,
     triangulatedRunId: runId, triangulatedRunStatus: runStatus,
     setTriangulatedRunId, checkedAttention, toggleChecked, pushToast,
   } = useApp()
+  // Комплект берётся с сервера, а не из памяти браузера (Г.114): иначе
+  // карта строилась бы по документам, которых на сервере уже нет.
+  const { before: beforeDocs, after: afterDocs } = useDocuments()
+  const stop = useMutation({
+    mutationFn: () => backendApi.cancelTriangulatedRun(runId as number),
+    onSuccess: (r) => pushToast(r.detail),
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось остановить', 'error'),
+  })
 
   const readyDocs = beforeDocs.some((d) => d.status === 'ok') && afterDocs.some((d) => d.status === 'ok')
 
@@ -85,11 +93,24 @@ export default function AttentionMap() {
               onClick={() => run.mutate()}>
               {run.isPending || runStatus?.status === 'running' ? 'Считаю…' : runId === null ? 'Построить карту внимания' : 'Пересчитать'}
             </button>
+            {/* Остановка длинного дела (Г.114): она не мгновенная, прогон
+                прервётся на ближайшей безопасной точке. */}
+            {runStatus?.status === 'running' && (
+              <button className="ml-2 rounded border border-surface-line px-2 py-1 text-xs text-ink-muted hover:text-danger"
+                disabled={stop.isPending}
+                onClick={() => stop.mutate()}>
+                {stop.isPending ? 'останавливаю…' : 'Остановить'}
+              </button>
+            )}
           </div>
         )}
 
         {readyDocs && runStatus?.status === 'running' && <Skeleton rows={5} />}
 
+        {readyDocs && runStatus?.status === 'cancelled' && (
+          <Empty title="Остановлено инспектором"
+                 hint="Результат неполный. Запустите заново, когда будете готовы." />
+        )}
         {readyDocs && runStatus?.status === 'error' && (
           <Empty title="Анализ завершился с ошибкой" hint={runStatus.error ?? undefined} />
         )}

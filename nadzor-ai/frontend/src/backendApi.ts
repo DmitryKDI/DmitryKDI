@@ -54,6 +54,11 @@ export interface BackendStorageFile {
   /** Документы, которые на него ссылаются. Пусто — файл ничей и уйдёт по сроку. */
   documents: string[]
   cached: boolean
+  /** Из скольких частей состоит том. 0 — не дробился. */
+  parts: number
+  /** Размер вместе с частями: место, которое том занимает на самом деле. */
+  total_size: number
+  in_use: boolean
 }
 
 export interface BackendStorageCleanup {
@@ -67,7 +72,7 @@ export interface BackendStorageCleanup {
 export interface BackendAnalysisRun {
   id: number
   created_at: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'cancelled'
   pairs_total: number
   pairs_done: number
   /** Кто считал прогон — данные о работе ИИ, а не только итог. */
@@ -193,7 +198,7 @@ export interface TriangulatedResult {
 export interface BackendTriangulatedRun {
   id: number
   created_at: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'cancelled'
   provider: string
   error: string | null
   result: TriangulatedResult | null
@@ -204,10 +209,62 @@ export interface BackendTriangulatedRun {
  * Инспектор загружает документы и нажимает одну кнопку: ни промпта, ни
  * модели, ни ключа он не передаёт — всё это держит сервер.
  */
+/** ВЫЖИМКА разбора тома: что нашлось и чего не нашлось (Г.114). */
+/** Ответ на просьбу остановить прогон: остановка не мгновенная. */
+export interface BackendRunCancel {
+  id: number
+  status: string
+  detail: string
+}
+
+export interface BackendDocumentDigest {
+  name: string
+  pages: number
+  drawings: number
+  text_pages: number
+  pages_without_text: number
+  pages_without_text_list: number[]
+  excluded: number
+  excluded_reasons: string[]
+  rooms_total: number
+  rooms: string[]
+  equipment_total: number
+  equipment: string[]
+  sheets_total: number
+  sheets: string[]
+  systems: string[]
+  text_chars: number
+}
+
+/** Один лист разобранного тома. Текста листа здесь нет намеренно. */
+export interface BackendDocumentPage {
+  page: number
+  kind: string
+  sheet_no: string
+  sheet_name: string
+  shifr: string
+  rooms: string[]
+  equipment: number
+  chars: number
+  excluded: string
+}
+
+/** Требование, извлечённое из проектной документации. */
+export interface BackendRequirement {
+  page: number
+  sentence: string
+  summary: string
+  code: string | null
+  document: string
+  section: string | null
+  rooms: string[]
+  norm: string
+}
+
 export interface BackendPdRun {
   id: number
   created_at: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'cancelled'
   provider: string
   extractor: string
   error: string | null
@@ -231,7 +288,7 @@ export interface BackendPdRun {
 export interface BackendComplianceRun {
   id: number
   created_at: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'cancelled'
   pd_run_id: number
   provider: string
   error: string | null
@@ -348,6 +405,25 @@ export const backendApi = {
     }),
   getPdRun: (id: number) => request<BackendPdRun>(`/pd-runs/${id}`),
   listPdRuns: () => request<BackendPdRun[]>('/pd-runs'),
+  cancelPdRun: (id: number) =>
+    request<BackendRunCancel>(`/pd-runs/${id}/cancel`, { method: 'POST' }),
+  cancelComplianceRun: (id: number) =>
+    request<BackendRunCancel>(`/compliance-runs/${id}/cancel`, { method: 'POST' }),
+  cancelAnalysisRun: (id: number) =>
+    request<BackendRunCancel>(`/analysis-runs/${id}/cancel`, { method: 'POST' }),
+  cancelTriangulatedRun: (id: number) =>
+    request<BackendRunCancel>(`/triangulated-runs/${id}/cancel`, { method: 'POST' }),
+  /** Взять том из хранилища в проверку — без повторной загрузки (Г.114). */
+  documentFromStorage: (digest: string, side: 'before' | 'after') =>
+    request<BackendDocument>(
+      `/documents/from-storage?digest=${encodeURIComponent(digest)}&side=${side}`,
+      { method: 'POST' }),
+  getPdRunRequirements: (id: number) =>
+    request<BackendRequirement[]>(`/pd-runs/${id}/requirements`),
+  getDocumentDigest: (id: number) =>
+    request<BackendDocumentDigest>(`/documents/${id}/digest`),
+  getDocumentPages: (id: number) =>
+    request<BackendDocumentPage[]>(`/documents/${id}/pages`),
   checkLlm: () => request<LlmCheck>('/llm-check'),
 
   /** Кнопка «Сверить РД с требованиями ПД» — по сохранённому разбору ПД. */

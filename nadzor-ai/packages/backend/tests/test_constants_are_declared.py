@@ -49,6 +49,13 @@ DECLARED: dict[str, str] = {
     "classification.TITLE_PAGE_MAX_BLOCKS": BUDGET,
     "classification.STAGE_SCAN_PAGES": BUDGET,
     "compliance.DEFAULT_MAX_VISUAL_PAGES": BUDGET,
+    # Сколько примеров показывать в выжимке и какими кусками читать файл ради
+    # отпечатка: сколько работы и сколько строк читается взглядом, а не что
+    # считать правдой. Версия разборщика — тоже не порог: это номер, по
+    # которому прежний разбор перестаёт подходить (Г.114).
+    "facts_digest.EXAMPLES": BUDGET,
+    "facts_store.FACTS_VERSION": BUDGET,
+    "facts_store._CHUNK": BUDGET,
     "document_split.DEFAULT_PART_BYTES": BUDGET,
     "diffing.MAX_DIFF_WORDS": BUDGET,
     "llm._RATE_LIMIT_MAX_RETRIES": BUDGET,

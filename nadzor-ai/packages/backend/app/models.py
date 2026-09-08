@@ -61,6 +61,13 @@ class AnalysisRun(Base):
 
     pairs: Mapped[list["PagePair"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     findings: Mapped[list["Finding"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    # Момент, когда инспектор попросил остановить прогон (Г.114). Отдельно
+    # от статуса: пока исполнитель не дошёл до ближайшей безопасной точки,
+    # прогон ещё идёт, и врать «остановлен» раньше времени нельзя. После
+    # перезапуска сервера эта отметка не даёт продолжить то, что просили
+    # прекратить.
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
 
 
 class PagePair(Base):
@@ -166,6 +173,13 @@ class TriangulatedRun(Base):
     provider: Mapped[str] = mapped_column(String, default="")
     error: Mapped[str | None] = mapped_column(String, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Момент, когда инспектор попросил остановить прогон (Г.114). Отдельно
+    # от статуса: пока исполнитель не дошёл до ближайшей безопасной точки,
+    # прогон ещё идёт, и врать «остановлен» раньше времени нельзя. После
+    # перезапуска сервера эта отметка не даёт продолжить то, что просили
+    # прекратить.
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
 
 
 class PdRun(Base):
@@ -219,6 +233,13 @@ class PdRun(Base):
     # документации текстового слоя почти нет по природе, и без состава
     # пустая сводка неотличима от сбоя (Г.8/Г.10).
     composition: Mapped[str] = mapped_column(Text, default="")
+    # Момент, когда инспектор попросил остановить прогон (Г.114). Отдельно
+    # от статуса: пока исполнитель не дошёл до ближайшей безопасной точки,
+    # прогон ещё идёт, и врать «остановлен» раньше времени нельзя. После
+    # перезапуска сервера эта отметка не даёт продолжить то, что просили
+    # прекратить.
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
 
 
 class ComplianceRun(Base):
@@ -254,6 +275,13 @@ class ComplianceRun(Base):
     report: Mapped[str] = mapped_column(Text, default="")
     counts: Mapped[dict] = mapped_column(JSON, default=dict)
     requirements_total: Mapped[int] = mapped_column(Integer, default=0)
+    # Момент, когда инспектор попросил остановить прогон (Г.114). Отдельно
+    # от статуса: пока исполнитель не дошёл до ближайшей безопасной точки,
+    # прогон ещё идёт, и врать «остановлен» раньше времени нельзя. После
+    # перезапуска сервера эта отметка не даёт продолжить то, что просили
+    # прекратить.
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
 
 
 class ReviewMessage(Base):

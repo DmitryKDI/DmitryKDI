@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .classification import classify_document
-from .documents import extract_document_facts
+from .facts_store import facts_for
 
 # Справочная привязка кода раздела (шифра на штампе/титуле, classification.py)
 # к официальному разделу по ПП РФ № 87 «О составе разделов проектной
@@ -86,7 +86,7 @@ def summarize_volume(pdf_path: str, name: str) -> VolumeSummary:
     — только «что это за том и сколько в нём материала», за секунды, без
     LLM."""
     classification = classify_document(pdf_path, name)
-    facts = extract_document_facts(pdf_path, name)
+    facts = facts_for(pdf_path, name)
     return VolumeSummary(
         name=name, path=pdf_path,
         discipline_code=classification.discipline_code,

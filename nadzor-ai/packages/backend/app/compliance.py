@@ -85,6 +85,7 @@ def check_compliance(
     vision_check: Callable | None = None,
     candidate_pages: Callable | None = None,
     max_visual_pages: int = DEFAULT_MAX_VISUAL_PAGES,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> ComplianceResult:
     """Прогоняет список требований ПД по лестнице проверок против РД.
 
@@ -95,6 +96,17 @@ def check_compliance(
     """
     result = ComplianceResult()
     rd_text = "\n".join(f.get("text", "") for f in rd_text_facts)
+
+    # Ход работы наружу: сколько требований уже получили ответ из скольких.
+    # Через него же вызывающий останавливает прогон — исключением из
+    # обработчика (Г.114). Поэтому он вызывается ВНУТРИ ступеней, а не
+    # только между ними: между ступенями остановка ждала бы конца самой
+    # долгой из них, то есть не работала бы там, где нужна.
+    total = len(requirements)
+
+    def _report() -> None:
+        if on_progress is not None:
+            on_progress(len(result.items), total)
 
     # --- Ступень 1: токен в тексте РД (без модели) ---
     pending: list[Requirement] = []
@@ -109,6 +121,7 @@ def check_compliance(
         else:
             pending.append(req)
 
+    _report()
     if not pending:
         return _finish(result)
 
@@ -155,8 +168,11 @@ def check_compliance(
         else:
             still_pending.append(req)
 
+    _report()
+
     # --- Ступень 3: зрение по листам РД ---
     for req in still_pending:
+        _report()
         pages: list[tuple[str, int]] = []
         # Г.106 — якорем может быть и подсказка по названию помещения, если
         # номер в тексте требования не назван. Она честно помечается: номер в

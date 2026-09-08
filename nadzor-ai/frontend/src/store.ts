@@ -5,7 +5,6 @@ import {
   BackendApiError,
   type BackendAnalysisRun,
   type BackendComplianceRun,
-  type BackendDocument,
   type BackendPdRun,
   type BackendTriangulatedRun,
 } from './backendApi'
@@ -19,7 +18,6 @@ interface Toast {
 
 export interface PendingUpload { name: string; startedAt: number }
 
-type DocsUpdater = BackendDocument[] | ((prev: BackendDocument[]) => BackendDocument[])
 type PendingUpdater = PendingUpload[] | ((prev: PendingUpload[]) => PendingUpload[])
 
 interface AppState {
@@ -31,8 +29,6 @@ interface AppState {
   // Состояние экрана "Новый анализ" живёт здесь, а не в useState компонента:
   // переход на другую вкладку меню размонтирует NewAnalysis, и локальный
   // useState (включая уже загруженные документы и идущий прогон) терялся бы.
-  analysisBeforeDocs: BackendDocument[]
-  analysisAfterDocs: BackendDocument[]
   analysisPendingBefore: PendingUpload[]
   analysisPendingAfter: PendingUpload[]
   analysisRunId: number | null
@@ -67,7 +63,6 @@ interface AppState {
   toggleChecked: (id: string) => void
   pushToast: (text: string, kind?: 'ok' | 'error', undo?: () => void) => void
   dropToast: (id: number) => void
-  setAnalysisDocs: (side: 'before' | 'after', updater: DocsUpdater) => void
   setAnalysisPending: (side: 'before' | 'after', updater: PendingUpdater) => void
   setAnalysisRunId: (id: number | null) => void
   setPdRunId: (side: 'before' | 'after', id: number | null) => void
@@ -85,8 +80,6 @@ export const useApp = create<AppState>()(
       filters: {},
       checkedAttention: {},
       toasts: [],
-      analysisBeforeDocs: [],
-      analysisAfterDocs: [],
       analysisPendingBefore: [],
       analysisPendingAfter: [],
       analysisRunId: null,
@@ -113,12 +106,6 @@ export const useApp = create<AppState>()(
         setTimeout(() => get().dropToast(id), 6000)
       },
       dropToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-      setAnalysisDocs: (side, updater) =>
-        set((s) => {
-          const key = side === 'before' ? 'analysisBeforeDocs' : 'analysisAfterDocs'
-          const prev = s[key]
-          return { [key]: typeof updater === 'function' ? updater(prev) : updater }
-        }),
       setAnalysisPending: (side, updater) =>
         set((s) => {
           const key = side === 'before' ? 'analysisPendingBefore' : 'analysisPendingAfter'
@@ -146,7 +133,6 @@ export const useApp = create<AppState>()(
         if (triangulatedRunId != null) pollTriangulatedRun(triangulatedRunId)
       },
       resetAnalysis: () => set({
-        analysisBeforeDocs: [], analysisAfterDocs: [],
         analysisPendingBefore: [], analysisPendingAfter: [],
         analysisRunId: null, analysisRunStatus: null,
         triangulatedRunId: null, triangulatedRunStatus: null,
@@ -162,10 +148,9 @@ export const useApp = create<AppState>()(
         density: s.density,
         filters: s.filters,
         checkedAttention: s.checkedAttention,
-        // Переживает и смену вкладки, и обновление страницы: инспектор не
-        // должен терять загруженные документы и результат прогона анализа.
-        analysisBeforeDocs: s.analysisBeforeDocs,
-        analysisAfterDocs: s.analysisAfterDocs,
+        // Список документов здесь НЕ хранится (Г.114): он живёт на сервере,
+        // и копия в браузере переживала пересборку базы, чужое удаление и
+        // ручную правку раздела — инспектор видел то, чего уже нет.
         analysisRunId: s.analysisRunId,
         triangulatedRunId: s.triangulatedRunId,
         // Прогон живёт на сервере, поэтому сохраняем только его номер и

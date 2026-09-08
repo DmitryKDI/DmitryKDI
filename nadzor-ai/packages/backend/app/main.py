@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import threading
 import sys
 from pathlib import Path
 
@@ -18,13 +19,13 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, 
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import file_store, models, review_dialog, schemas
+from . import (facts_digest, facts_store, file_store, models, review_dialog,
+               run_control, schemas)
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
 from .document_composition import describe_volume, name_unread_sheets, render_composition
 from .document_split import split_pdf
-from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
 from .llm import (LlmConfig, ca_bundle_description, check_llm_reachable,
                   credentials_from_file)
@@ -217,8 +218,43 @@ def _referenced_digests(db: Session) -> set[str]:
     return keep
 
 
+def _parse_document(document_id: int) -> None:
+    """Разбор загруженного тома: разбор страниц и определение раздела.
+
+    Вынесено из ответа на загрузку (Г.114). Разбор тома в сотни листов —
+    это минуты; пока он шёл внутри запроса, браузер держал соединение и
+    показывал «обрабатывается… 167 с», а инспектор не мог ни загрузить
+    следующий файл, ни понять, работает ли программа вообще. Теперь ответ
+    приходит сразу со статусом `parsing`, а состояние видно в списке.
+    """
+    db = next(get_session())
+    try:
+        doc = db.get(models.Document, document_id)
+        if doc is None:
+            return
+        try:
+            facts = facts_store.facts_for(doc.file_path, doc.name, digest=doc.digest)
+            config = _llm_config(db)
+            vision_fn = make_llm_stamp_classifier(config) if config.provider else None
+            classification = classify_document(doc.file_path, doc.name, vision_stamp_fn=vision_fn)
+            doc.pages = facts.pages
+            # Ручной выбор раздела не затирается: инспектор мог поправить
+            # раздел, пока шёл разбор, и его слово последнее (Г.97).
+            if doc.classification_source != "manual":
+                doc.discipline_code = classification.discipline_code
+                doc.classification_source = classification.source
+            doc.status = "ok"
+        except Exception as exc:  # noqa: BLE001 — на распознавании не валим загрузку
+            doc.status = "error"
+            doc.classification_source = str(exc)
+        db.commit()
+    finally:
+        db.close()
+
+
 @app.post("/documents", response_model=schemas.DocumentOut)
-def upload_document(side: str, file: UploadFile, db: Session = Depends(get_session)):
+def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTasks,
+                    db: Session = Depends(get_session)):
     if side not in ("before", "after"):
         raise HTTPException(400, "side must be 'before' or 'after'")
 
@@ -280,20 +316,13 @@ def upload_document(side: str, file: UploadFile, db: Session = Depends(get_sessi
     db.commit()
     db.refresh(doc)
 
-    try:
-        facts = extract_document_facts(str(dest), original_name)
-        config = _llm_config(db)
-        vision_fn = make_llm_stamp_classifier(config) if config.provider else None
-        classification = classify_document(str(dest), original_name, vision_stamp_fn=vision_fn)
-        doc.pages = facts.pages
-        doc.discipline_code = classification.discipline_code
-        doc.classification_source = classification.source
-        doc.status = "ok"
-    except Exception as exc:  # noqa: BLE001 — на распознавании не валим загрузку
-        doc.status = "error"
-        doc.classification_source = str(exc)
+    # Число страниц известно из проверки лимита — показываем сразу, не
+    # дожидаясь разбора: пустая строка «0 листов» рядом с именем файла
+    # выглядит как сбой загрузки.
+    doc.pages = pages
     db.commit()
     db.refresh(doc)
+    background_tasks.add_task(_parse_document, doc.id)
     # Через `_document_out`, а не напрямую: число частей — вычисляемое поле,
     # и возврат ORM-объекта отдавал бы ноль частей у разрезанного тома.
     return _document_out(doc)
@@ -360,7 +389,31 @@ def update_document(document_id: int, body: schemas.DocumentUpdate, db: Session 
         doc.classification_source = "manual"
     db.commit()
     db.refresh(doc)
-    return doc
+    return _document_out(doc)
+
+
+@app.get("/documents/{document_id}/digest", response_model=schemas.DocumentDigest)
+def document_digest(document_id: int, db: Session = Depends(get_session)):
+    """Выжимка разбора: что нашлось в томе и чего не нашлось (Г.114).
+
+    Считается из ПАМЯТИ РАЗБОРА, а не заново: том, разобранный при
+    загрузке, здесь только читается.
+    """
+    doc = db.get(models.Document, document_id)
+    if doc is None:
+        raise HTTPException(404, "not found")
+    facts = facts_store.facts_for(doc.file_path, doc.name, digest=doc.digest)
+    return schemas.DocumentDigest(**facts_digest.digest_of(facts))
+
+
+@app.get("/documents/{document_id}/pages", response_model=list[schemas.DocumentPageRow])
+def document_pages(document_id: int, db: Session = Depends(get_session)):
+    """Постранично: что разобрано на каждом листе. Текста листа здесь нет."""
+    doc = db.get(models.Document, document_id)
+    if doc is None:
+        raise HTTPException(404, "not found")
+    facts = facts_store.facts_for(doc.file_path, doc.name, digest=doc.digest)
+    return [schemas.DocumentPageRow(**row) for row in facts_digest.page_rows(facts)]
 
 
 @app.get("/page-image/{document_id}/{page}")
@@ -386,8 +439,10 @@ def _run_analysis(run_id: int) -> None:
         before_docs = [db.get(models.Document, i) for i in run.before_document_ids]
         after_docs = [db.get(models.Document, i) for i in run.after_document_ids]
 
-        before_facts = [extract_document_facts(d.file_path, d.name) for d in before_docs]
-        after_facts = [extract_document_facts(d.file_path, d.name) for d in after_docs]
+        before_facts = [facts_store.facts_for(d.file_path, d.name, digest=d.digest)
+                        for d in before_docs]
+        after_facts = [facts_store.facts_for(d.file_path, d.name, digest=d.digest)
+                       for d in after_docs]
 
         before_inputs = [
             DocumentInput(d.name, f.pages, f.text_facts, f.room_facts, d.discipline_code,
@@ -496,6 +551,16 @@ def _run_analysis(run_id: int) -> None:
 
         run.status = "done"
         db.commit()
+    except run_control.RunCancelled:
+        # Остановка по просьбе инспектора — не сбой, и называться должна
+        # своим словом (Г.114): «ошибка» отправила бы искать несуществующую
+        # причину.
+        run = db.get(models.AnalysisRun, run_id)
+        if run is not None:
+            run.status = "cancelled"
+            run.error = "остановлено инспектором"
+            db.commit()
+        run_control.clear(run_control.KIND_ANALYSIS, run_id)
     except Exception as exc:  # noqa: BLE001
         run = db.get(models.AnalysisRun, run_id)
         if run is not None:
@@ -544,6 +609,16 @@ def _run_triangulated(run_id: int) -> None:
         run.result = result
         run.status = "done"
         db.commit()
+    except run_control.RunCancelled:
+        # Остановка по просьбе инспектора — не сбой, и называться должна
+        # своим словом (Г.114): «ошибка» отправила бы искать несуществующую
+        # причину.
+        run = db.get(models.TriangulatedRun, run_id)
+        if run is not None:
+            run.status = "cancelled"
+            run.error = "остановлено инспектором"
+            db.commit()
+        run_control.clear(run_control.KIND_TRIANGULATED, run_id)
     except Exception as exc:  # noqa: BLE001 — сбой прогона должен быть виден инспектору, не ронять сервер
         run = db.get(models.TriangulatedRun, run_id)
         if run is not None:
@@ -733,6 +808,9 @@ def _run_pd(run_id: int) -> None:
             run.units_done, run.units_total = done, total
             run.stage = f"извлекаю требования: пачка {done} из {total}"
             db.commit()
+            # Здесь же — ближайшая безопасная точка остановки (Г.114):
+            # между пачками, не посреди запроса к провайдеру.
+            run_control.check(run_control.KIND_PD, run_id)
 
         requirements = extract_requirements_llm(
             text_facts, config=config, on_norms=llm_norms.extend,
@@ -772,6 +850,16 @@ def _run_pd(run_id: int) -> None:
         run.stage = ""
         run.status = "done"
         db.commit()
+    except run_control.RunCancelled:
+        # Остановка по просьбе инспектора — не сбой, и называться должна
+        # своим словом (Г.114): «ошибка» отправила бы искать несуществующую
+        # причину.
+        run = db.get(models.PdRun, run_id)
+        if run is not None:
+            run.status = "cancelled"
+            run.error = "остановлено инспектором"
+            db.commit()
+        run_control.clear(run_control.KIND_PD, run_id)
     except Exception as exc:  # noqa: BLE001 — сбой прогона виден инспектору, сервер жив
         run = db.get(models.PdRun, run_id)
         if run is not None:
@@ -830,7 +918,7 @@ def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
     for source in sources:
         path, name = source[0], source[1]
         try:
-            facts = extract_document_facts(path, name)
+            facts = facts_store.facts_for(path, name)
         except Exception as exc:  # noqa: BLE001 — один файл не роняет сверку
             print(f"реестр помещений РД не построен ({exc}): {name}", file=sys.stderr)
             continue
@@ -922,8 +1010,15 @@ def _run_compliance(run_id: int) -> None:
                         pages.append(pair)
             return pages
 
+        def _compliance_progress(done: int, total: int) -> None:
+            run.units_done, run.units_total = done, total
+            run.stage = f"сверяю требования: {done} из {total}"
+            db.commit()
+            run_control.check(run_control.KIND_COMPLIANCE, run_id)
+
         result = check_compliance(
             requirements,
+            on_progress=_compliance_progress,
             rd_text_facts=load_text_facts(sources),
             rd_sources=sources,
             config=config if has_key else None,
@@ -936,6 +1031,16 @@ def _run_compliance(run_id: int) -> None:
         run.counts = result.counts
         run.status = "done"
         db.commit()
+    except run_control.RunCancelled:
+        # Остановка по просьбе инспектора — не сбой, и называться должна
+        # своим словом (Г.114): «ошибка» отправила бы искать несуществующую
+        # причину.
+        run = db.get(models.ComplianceRun, run_id)
+        if run is not None:
+            run.status = "cancelled"
+            run.error = "остановлено инспектором"
+            db.commit()
+        run_control.clear(run_control.KIND_COMPLIANCE, run_id)
     except Exception as exc:  # noqa: BLE001 — сбой виден инспектору, сервер жив
         run = db.get(models.ComplianceRun, run_id)
         if run is not None:
@@ -944,6 +1049,33 @@ def _run_compliance(run_id: int) -> None:
             db.commit()
     finally:
         db.close()
+
+
+@app.get("/pd-runs/{run_id}/requirements", response_model=list[schemas.RequirementOut])
+def pd_run_requirements(run_id: int, db: Session = Depends(get_session)):
+    """Требования, извлечённые прогоном разбора — то, ради чего он запускался.
+
+    Читаются из ХРАНИЛИЩА РАЗБОРОВ (`pd_store`), а не из основной базы:
+    там они и лежат, дублировать их значило бы завести второй источник
+    истины об одном и том же (см. PdRun.store_run_id).
+    """
+    run = db.get(models.PdRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    if run.store_run_id is None:
+        # Пусто и «не сохранялось» — разные вещи: разбор РД в хранилище не
+        # кладётся по построению, и молчаливый пустой список выглядел бы
+        # как «требований нет» (Г.10).
+        raise HTTPException(409, "у этого прогона нет сохранённого разбора: "
+                                 "в хранилище кладётся только разбор ПД")
+    return [
+        schemas.RequirementOut(
+            page=r.page, sentence=r.sentence, summary=r.summary, code=r.code,
+            document=r.document, section=r.section, rooms=list(r.rooms or []),
+            norm=r.norm or "",
+        )
+        for r in load_run(run.store_run_id)
+    ]
 
 
 @app.post("/compliance-runs", response_model=schemas.ComplianceRunOut)
@@ -1112,6 +1244,120 @@ def llm_check(db: Session = Depends(get_session)):
                                tls=ca_bundle_description())
 
 
+# Соответствие вида прогона его таблице. Один словарь вместо четырёх почти
+# одинаковых обработчиков: кнопка «стоп» должна вести себя одинаково у
+# разбора, сверки, анализа и карты внимания, а не «почти одинаково».
+_RUN_MODELS = {
+    run_control.KIND_PD: models.PdRun,
+    run_control.KIND_COMPLIANCE: models.ComplianceRun,
+    run_control.KIND_ANALYSIS: models.AnalysisRun,
+    run_control.KIND_TRIANGULATED: models.TriangulatedRun,
+}
+
+
+def _cancel_run(kind: str, run_id: int, db: Session) -> schemas.RunCancelOut:
+    model = _RUN_MODELS[kind]
+    run = db.get(model, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    if run.status not in ("running",):
+        # Уже закончился сам: сказать об этом прямо, а не делать вид, что
+        # остановили — иначе инспектор решит, что результат оборван им.
+        return schemas.RunCancelOut(id=run_id, status=run.status,
+                                    detail="прогон уже завершился — останавливать нечего")
+    run_control.request(kind, run_id)
+    run.cancelled_at = dt.datetime.utcnow()
+    run.stage = "останавливаюсь…"
+    db.commit()
+    return schemas.RunCancelOut(
+        id=run_id, status=run.status,
+        detail="остановка запрошена: прогон прервётся на ближайшей безопасной точке "
+               "(между пачками, не посреди запроса к ИИ)")
+
+
+@app.post("/pd-runs/{run_id}/cancel", response_model=schemas.RunCancelOut)
+def cancel_pd_run(run_id: int, db: Session = Depends(get_session)):
+    return _cancel_run(run_control.KIND_PD, run_id, db)
+
+
+@app.post("/compliance-runs/{run_id}/cancel", response_model=schemas.RunCancelOut)
+def cancel_compliance_run(run_id: int, db: Session = Depends(get_session)):
+    return _cancel_run(run_control.KIND_COMPLIANCE, run_id, db)
+
+
+@app.post("/analysis-runs/{run_id}/cancel", response_model=schemas.RunCancelOut)
+def cancel_analysis_run(run_id: int, db: Session = Depends(get_session)):
+    return _cancel_run(run_control.KIND_ANALYSIS, run_id, db)
+
+
+@app.post("/triangulated-runs/{run_id}/cancel", response_model=schemas.RunCancelOut)
+def cancel_triangulated_run(run_id: int, db: Session = Depends(get_session)):
+    return _cancel_run(run_control.KIND_TRIANGULATED, run_id, db)
+
+
+# Продолжать ли прогоны, оборванные остановкой сервера. По умолчанию да:
+# инспектор просил, чтобы работа не пропадала не только в пределах одной
+# сессии. Выключается переменной окружения — на случай, когда повторные
+# вызовы модели нежелательны.
+RESUME_RUNS_ENV = "NADZOR_RESUME_RUNS"
+
+_RUN_WORKERS = {
+    run_control.KIND_PD: (models.PdRun, lambda rid: _run_pd(rid)),
+    run_control.KIND_COMPLIANCE: (models.ComplianceRun, lambda rid: _run_compliance(rid)),
+    run_control.KIND_ANALYSIS: (models.AnalysisRun, lambda rid: _run_analysis(rid)),
+    run_control.KIND_TRIANGULATED: (models.TriangulatedRun, lambda rid: _run_triangulated(rid)),
+}
+
+
+def resume_interrupted_runs() -> list[str]:
+    """Прогоны, оборванные остановкой сервера, — запустить заново (Г.114).
+
+    Фоновая задача умирает вместе с процессом, а запись в базе остаётся в
+    состоянии «идёт»: после перезапуска инспектор видел живую полосу
+    прогресса у мёртвого прогона. Полоса двигалась ровно до момента
+    остановки и там замирала навсегда — состояние, из которого нельзя
+    выйти и по которому нельзя понять, что произошло.
+
+    Продолжить с середины нельзя: промежуточное состояние разбора нигде не
+    лежит. Поэтому прогон начинается заново — и об этом честно написано в
+    его строке хода, а не подано как продолжение. Заново теперь дёшево:
+    разбор страниц берётся из памяти (`facts_store`), платными остаются
+    только вызовы модели.
+
+    Остановленные инспектором (`cancelled_at`) не продолжаются: просьбу
+    прекратить перезапуск сервера не отменяет.
+    """
+    if os.environ.get(RESUME_RUNS_ENV, "1").strip().lower() in ("0", "no", "false"):
+        return []
+    started: list[tuple[str, int]] = []
+    db = next(get_session())
+    try:
+        for kind, (model, _) in _RUN_WORKERS.items():
+            for row in db.query(model).filter(model.status == "running").all():
+                if row.cancelled_at is not None:
+                    row.status = "cancelled"
+                    row.error = "остановлено инспектором"
+                    continue
+                row.started_at = dt.datetime.utcnow()
+                row.units_done = 0
+                row.stage = "сервер перезапускался — прогон начат заново"
+                started.append((kind, row.id))
+        db.commit()
+    finally:
+        db.close()
+    for kind, run_id in started:
+        worker = _RUN_WORKERS[kind][1]
+        threading.Thread(target=worker, args=(run_id,), daemon=True).start()
+    return [f"{kind}#{run_id}" for kind, run_id in started]
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    resumed = resume_interrupted_runs()
+    if resumed:
+        print("продолжены после перезапуска: " + ", ".join(resumed))
+
+
 @app.get("/settings", response_model=schemas.SettingsOut)
 def get_settings(db: Session = Depends(get_session)):
     return _settings_out(_limits(db), db)
@@ -1180,20 +1426,82 @@ def storage_files(db: Session = Depends(get_session)):
     и увидеть это можно только списком.
     """
     names: dict[str, list[str]] = {}
+    # Отпечаток части -> отпечаток тома, которому она принадлежит. Через
+    # него части и складываются под своим томом, а не стоят в списке
+    # отдельными безымянными строками (Г.114).
+    part_of: dict[str, str] = {}
+    parts_count: dict[str, int] = {}
     for doc in db.query(models.Document).all():
-        for digest in {doc.digest} | {str(p.get("digest")) for p in (doc.parts or [])
-                                      if isinstance(p, dict)}:
-            if digest:
-                names.setdefault(digest, []).append(doc.name)
+        if doc.digest:
+            names.setdefault(doc.digest, []).append(doc.name)
+        pieces = [str(p.get("digest")) for p in (doc.parts or []) if isinstance(p, dict)]
+        parts_count[doc.digest] = max(parts_count.get(doc.digest, 0), len(pieces))
+        for piece in pieces:
+            if piece:
+                part_of[piece] = doc.digest
+
+    sizes = {row.digest: row.size for row in file_store.listing()}
     out: list[schemas.StorageFile] = []
     for row in file_store.listing():
+        if row.digest in part_of:
+            continue  # часть тома: её место — в строке своего тома
+        pieces = [d for d, whole in part_of.items() if whole == row.digest]
         out.append(schemas.StorageFile(
             digest=row.digest, size=row.size, pages=row.pages,
             created_at=row.created_at, used_at=row.used_at,
             documents=sorted(set(names.get(row.digest, []))),
             cached=(file_store.CACHE_DIR / f"{row.digest}.pdf").exists(),
+            parts=parts_count.get(row.digest, 0),
+            total_size=row.size + sum(sizes.get(d, 0) for d in pieces),
+            in_use=bool(names.get(row.digest)),
         ))
     return out
+
+
+@app.post("/documents/from-storage", response_model=schemas.DocumentOut)
+def document_from_storage(digest: str, side: str, name: str | None = None,
+                          db: Session = Depends(get_session)):
+    """Взять том ИЗ ХРАНИЛИЩА в новую проверку — без повторной загрузки (Г.114).
+
+    Файл уже лежит в хранилище, а его разбор — в памяти разбора. Заставлять
+    инспектора снова искать том на диске и снова его загружать значит
+    потратить его время и место на диске ради того, что уже есть. Здесь
+    создаётся только ЗАПИСЬ документа: содержимое переиспользуется по
+    отпечатку, как при повторной загрузке того же файла.
+    """
+    if side not in ("before", "after"):
+        raise HTTPException(400, "side must be 'before' or 'after'")
+    row = next((r for r in file_store.listing() if r.digest == digest), None)
+    if row is None:
+        raise HTTPException(404, "в хранилище нет файла с таким отпечатком")
+    dest = file_store.materialize(digest)
+    if dest is None:
+        raise HTTPException(500, "оригинал не удалось выложить из хранилища")
+
+    # Имя: явно переданное, иначе имя, под которым этот же файл уже
+    # загружали. Придумывать имя из отпечатка нельзя — инспектор не узнает
+    # свой том в строке из шестнадцатеричных цифр.
+    known = [d for d in db.query(models.Document).filter(models.Document.digest == digest).all()]
+    display = name or (known[0].name if known else f"том {digest[:8]}.pdf")
+    source = known[0] if known else None
+
+    doc = models.Document(
+        name=display, side=side, file_path=str(dest), status="parsing",
+        digest=digest, size=row.size, pages=row.pages,
+        parts=list(source.parts or []) if source is not None else [],
+        # Раздел копируется у прежней записи того же файла: он относится к
+        # содержимому, а не к загрузке. Ручную правку это сохраняет.
+        discipline_code=source.discipline_code if source is not None else None,
+        classification_source=source.classification_source if source is not None else None,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    # Разбор берётся из памяти и потому обычно завершается мгновенно, но
+    # идёт тем же фоновым путём: отдельной ветки «а этот файл уже знаком»
+    # быть не должно — она означала бы второй порядок работы.
+    threading.Thread(target=_parse_document, args=(doc.id,), daemon=True).start()
+    return _document_out(doc)
 
 
 @app.post("/storage/cleanup", response_model=schemas.StorageCleanupResult)

@@ -71,7 +71,11 @@ def test_file_name_never_becomes_the_path():
     assert path.name == "побег.pdf", "имя показывается как есть"
     stored = file_store.CACHE_DIR
     assert all(p.parent == stored for p in stored.glob("*.pdf"))
-    assert doc["status"] in ("ok", "error")
+    # Ответ на загрузку приходит СРАЗУ, разбор идёт в фоне (Г.114): статус в
+    # ответе — «разбирается», окончательный виден в списке документов.
+    assert doc["status"] == "parsing", doc["status"]
+    later = next(d for d in client.get("/documents").json() if d["id"] == doc["id"])
+    assert later["status"] in ("ok", "error"), later["status"]
     print("OK: имя файла остаётся метаданными и не строит путь")
 
 
