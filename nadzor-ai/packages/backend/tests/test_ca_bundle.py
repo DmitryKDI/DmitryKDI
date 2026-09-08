@@ -210,6 +210,7 @@ if __name__ == "__main__":
     test_empty_folder_means_system_roots()
     test_tls_failure_says_what_to_do_not_just_what_broke()
     test_certificates_in_a_subfolder_are_found_too()
+    test_certificate_extension_variants_are_all_accepted()
     print("ALL PASS")
 
 
@@ -232,3 +233,23 @@ def test_certificates_in_a_subfolder_are_found_too():
     assert isinstance(bundle, str), "сертификат из подпапки не найден"
     assert len(_ssl.create_default_context(cafile=bundle).get_ca_certs()) >= 1
     print("OK: сертификаты во вложенной папке найдены")
+
+
+def test_certificate_extension_variants_are_all_accepted():
+    """Расширений у сертификата много (.cer, .cert, .crt, .der, .pem).
+    Формат определяется по содержимому, поэтому широкий список расширений
+    ничем не грозит, а пропущенное расширение означает молча ненайденный
+    сертификат — найдено на живом случае с «.cert».
+    """
+    import ssl as _ssl
+    for suffix in (".pem", ".crt", ".cer", ".cert", ".der"):
+        directory = Path(tempfile.mkdtemp())
+        raw = (_REAL_PEM.encode("ascii") if suffix == ".pem"
+               else _ssl.PEM_cert_to_DER_cert(_REAL_PEM))
+        (directory / f"root{suffix}").write_bytes(raw)
+        llm.CERTS_DIR = directory
+        os.environ.pop("GIGACHAT_CA_BUNDLE", None)
+        bundle = llm.ca_bundle()
+        assert isinstance(bundle, str), f"расширение {suffix} не подхвачено"
+        assert len(_ssl.create_default_context(cafile=bundle).get_ca_certs()) >= 1
+    print("OK: подхватываются все распространённые расширения сертификата")

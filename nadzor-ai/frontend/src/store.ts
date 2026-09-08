@@ -1,6 +1,14 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { backendApi, type BackendAnalysisRun, type BackendDocument, type BackendTriangulatedRun } from './backendApi'
+import {
+  backendApi,
+  BackendApiError,
+  type BackendAnalysisRun,
+  type BackendComplianceRun,
+  type BackendDocument,
+  type BackendPdRun,
+  type BackendTriangulatedRun,
+} from './backendApi'
 
 interface Toast {
   id: number
@@ -39,6 +47,20 @@ interface AppState {
   // два прогона не смешивают статус друг друга.
   triangulatedRunId: number | null
   triangulatedRunStatus: BackendTriangulatedRun | null
+  // Прогоны трёх кнопок инспектора (разбор ПД, разбор РД, сверка). Здесь, а
+  // не в useState экрана: разбор тома идёт минутами, и переход на другую
+  // вкладку не должен ни останавливать его, ни терять его результат.
+  // Опрос ведётся из стора и переживает размонтирование экрана.
+  pdRunId: number | null
+  pdRunStatus: BackendPdRun | null
+  rdRunId: number | null
+  rdRunStatus: BackendPdRun | null
+  complianceRunId: number | null
+  complianceRunStatus: BackendComplianceRun | null
+  // Какие документы разбирать: пусто — все загруженные с этой стороны.
+  // Выбор живёт рядом с прогоном, потому что относится к тому же действию.
+  pdSelected: number[]
+  rdSelected: number[]
   toggleMenu: () => void
   setDensity: (value: 'comfortable' | 'compact') => void
   setFilter: (screen: string, key: string, value: string) => void
@@ -48,6 +70,9 @@ interface AppState {
   setAnalysisDocs: (side: 'before' | 'after', updater: DocsUpdater) => void
   setAnalysisPending: (side: 'before' | 'after', updater: PendingUpdater) => void
   setAnalysisRunId: (id: number | null) => void
+  setPdRunId: (side: 'before' | 'after', id: number | null) => void
+  setComplianceRunId: (id: number | null) => void
+  setSelected: (side: 'before' | 'after', ids: number[]) => void
   setTriangulatedRunId: (id: number | null) => void
   resetAnalysis: () => void
 }
@@ -68,6 +93,14 @@ export const useApp = create<AppState>()(
       analysisRunStatus: null,
       triangulatedRunId: null,
       triangulatedRunStatus: null,
+      pdRunId: null,
+      pdRunStatus: null,
+      rdRunId: null,
+      rdRunStatus: null,
+      complianceRunId: null,
+      complianceRunStatus: null,
+      pdSelected: [],
+      rdSelected: [],
       toggleMenu: () => set((s) => ({ menuCollapsed: !s.menuCollapsed })),
       setDensity: (density) => set({ density }),
       setFilter: (screen, key, value) =>
@@ -96,6 +129,18 @@ export const useApp = create<AppState>()(
         set({ analysisRunId, analysisRunStatus: null })
         if (analysisRunId != null) pollAnalysisRun(analysisRunId)
       },
+      setPdRunId: (side, id) => {
+        const key = side === 'before' ? 'pdRunId' : 'rdRunId'
+        const statusKey = side === 'before' ? 'pdRunStatus' : 'rdRunStatus'
+        set({ [key]: id, [statusKey]: null } as Partial<AppState>)
+        if (id != null) pollPdRun(side, id)
+      },
+      setComplianceRunId: (complianceRunId) => {
+        set({ complianceRunId, complianceRunStatus: null })
+        if (complianceRunId != null) pollComplianceRun(complianceRunId)
+      },
+      setSelected: (side, ids) =>
+        set(side === 'before' ? { pdSelected: ids } : { rdSelected: ids }),
       setTriangulatedRunId: (triangulatedRunId) => {
         set({ triangulatedRunId, triangulatedRunStatus: null })
         if (triangulatedRunId != null) pollTriangulatedRun(triangulatedRunId)
@@ -105,6 +150,9 @@ export const useApp = create<AppState>()(
         analysisPendingBefore: [], analysisPendingAfter: [],
         analysisRunId: null, analysisRunStatus: null,
         triangulatedRunId: null, triangulatedRunStatus: null,
+        pdRunId: null, pdRunStatus: null, rdRunId: null, rdRunStatus: null,
+        complianceRunId: null, complianceRunStatus: null,
+        pdSelected: [], rdSelected: [],
       }),
     }),
     {
@@ -120,6 +168,13 @@ export const useApp = create<AppState>()(
         analysisAfterDocs: s.analysisAfterDocs,
         analysisRunId: s.analysisRunId,
         triangulatedRunId: s.triangulatedRunId,
+        // Прогон живёт на сервере, поэтому сохраняем только его номер и
+        // выбор томов: состояние подтянется опросом при следующем открытии.
+        pdRunId: s.pdRunId,
+        rdRunId: s.rdRunId,
+        complianceRunId: s.complianceRunId,
+        pdSelected: s.pdSelected,
+        rdSelected: s.rdSelected,
       }),
       onRehydrateStorage: () => (state) => {
         // Прогон мог остаться незавершённым, пока страница была закрыта —
@@ -138,10 +193,31 @@ export const useApp = create<AppState>()(
           const id = state.triangulatedRunId
           setTimeout(() => pollTriangulatedRun(id), 0)
         }
+        // Разбор и сверка идут на сервере, поэтому переживают перезагрузку
+        // страницы: опрос просто подхватывается заново по сохранённому id.
+        if (state?.pdRunId != null) {
+          const id = state.pdRunId
+          setTimeout(() => pollPdRun('before', id), 0)
+        }
+        if (state?.rdRunId != null) {
+          const id = state.rdRunId
+          setTimeout(() => pollPdRun('after', id), 0)
+        }
+        if (state?.complianceRunId != null) {
+          const id = state.complianceRunId
+          setTimeout(() => pollComplianceRun(id), 0)
+        }
       },
     },
   ),
 )
+
+/** Ответ, после которого повторять бессмысленно: записи больше нет.
+ *  Сетевой сбой и «не найдено» требуют разного — первое повторяют, второе
+ *  забывают. Без этого различия опрос удалённого прогона крутится вечно. */
+function isGone(error: unknown): boolean {
+  return error instanceof BackendApiError && error.status >= 400 && error.status < 500
+}
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -154,7 +230,15 @@ function pollAnalysisRun(runId: number): void {
     let data: BackendAnalysisRun
     try {
       data = await backendApi.getAnalysisRun(runId)
-    } catch {
+    } catch (error) {
+      // Прогона нет — сервер перезапустили с новой схемой базы, запись
+      // удалили. Это навсегда, а не «сеть моргнула»: продолжать опрос
+      // значит бесконечно сыпать 404 в консоль и держать в интерфейсе
+      // работу, которой не существует (Г.112).
+      if (isGone(error)) {
+        useApp.setState({ analysisRunId: null, analysisRunStatus: null })
+        return
+      }
       pollTimer = setTimeout(tick, 800)
       return
     }
@@ -184,6 +268,65 @@ function pollTriangulatedRun(runId: number): void {
     useApp.setState({ triangulatedRunStatus: data })
     if (data.status !== 'done' && data.status !== 'error') {
       triangulatedPollTimer = setTimeout(tick, 800)
+    }
+  }
+  void tick()
+}
+
+// Опрос разбора и сверки. Тот же приём, что у прогонов выше: таймер живёт в
+// модуле, а не в компоненте, поэтому переход на другую вкладку меню не
+// прерывает наблюдение за работой, которая идёт на сервере.
+const pdPollTimers: Record<'before' | 'after', ReturnType<typeof setTimeout> | null> = {
+  before: null, after: null,
+}
+
+function pollPdRun(side: 'before' | 'after', runId: number): void {
+  const idKey = side === 'before' ? 'pdRunId' : 'rdRunId'
+  const statusKey = side === 'before' ? 'pdRunStatus' : 'rdRunStatus'
+  if (pdPollTimers[side]) clearTimeout(pdPollTimers[side] as ReturnType<typeof setTimeout>)
+  const tick = async () => {
+    if (useApp.getState()[idKey] !== runId) return
+    let data: BackendPdRun
+    try {
+      data = await backendApi.getPdRun(runId)
+    } catch (error) {
+      if (isGone(error)) {
+        useApp.setState({ [idKey]: null, [statusKey]: null } as Partial<AppState>)
+        return
+      }
+      pdPollTimers[side] = setTimeout(tick, 1000)
+      return
+    }
+    if (useApp.getState()[idKey] !== runId) return
+    useApp.setState({ [statusKey]: data } as Partial<AppState>)
+    if (data.status !== 'done' && data.status !== 'error') {
+      pdPollTimers[side] = setTimeout(tick, 1000)
+    }
+  }
+  void tick()
+}
+
+let compliancePollTimer: ReturnType<typeof setTimeout> | null = null
+
+function pollComplianceRun(runId: number): void {
+  if (compliancePollTimer) clearTimeout(compliancePollTimer)
+  const tick = async () => {
+    if (useApp.getState().complianceRunId !== runId) return
+    let data: BackendComplianceRun
+    try {
+      data = await backendApi.getComplianceRun(runId)
+    } catch (error) {
+      if (isGone(error)) {
+        useApp.setState({ complianceRunId: null, complianceRunStatus: null })
+        return
+      }
+      compliancePollTimer = setTimeout(tick, 1000)
+      return
+    }
+    if (useApp.getState().complianceRunId !== runId) return
+    useApp.setState({ complianceRunStatus: data })
+    if (data.status !== 'done' && data.status !== 'error') {
+      compliancePollTimer = setTimeout(tick, 1000)
     }
   }
   void tick()

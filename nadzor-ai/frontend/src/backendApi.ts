@@ -45,6 +45,17 @@ export interface BackendStorage {
   retention_days: number
 }
 
+export interface BackendStorageFile {
+  digest: string
+  size: number
+  pages: number
+  created_at: string
+  used_at: string
+  /** Документы, которые на него ссылаются. Пусто — файл ничей и уйдёт по сроку. */
+  documents: string[]
+  cached: boolean
+}
+
 export interface BackendStorageCleanup {
   removed_files: number
   freed_bytes: number
@@ -208,6 +219,12 @@ export interface BackendPdRun {
   side: 'before' | 'after'
   /** Состав тома: листов чертежей, таблиц по типам. Считается всегда (Г.95). */
   composition: string
+  /** Ход работы: этап словами и пройдено/всего в пачках. Оценку остатка
+   *  считает интерфейс по скорости этого прогона — сервер её не выдумывает. */
+  stage: string
+  units_total: number
+  units_done: number
+  started_at: string | null
 }
 
 /** Прогон сверки «выполнено ли в РД то, что требует ПД» (Г.96). */
@@ -222,6 +239,12 @@ export interface BackendComplianceRun {
   report: string
   counts: Record<string, number>
   requirements_total: number
+  /** Ход работы: этап словами и пройдено/всего в пачках. Оценку остатка
+   *  считает интерфейс по скорости этого прогона — сервер её не выдумывает. */
+  stage: string
+  units_total: number
+  units_done: number
+  started_at: string | null
 }
 
 /**
@@ -265,7 +288,10 @@ export interface BackendSettings {
   provider: 'anthropic' | 'gigachat'
   base_url: string
   model: string
-  api_key: string
+  /** Сам ключ наружу не отдаётся — только факт, задан ли он (Г.112). */
+  api_key_set?: boolean
+  /** Отправляется только администратором; интерфейс инспектора не шлёт. */
+  api_key?: string
   retention_days?: number
   max_upload_kb?: number
   max_pages?: number
@@ -351,6 +377,7 @@ export const backendApi = {
     }),
 
   getStorage: () => request<BackendStorage>('/storage'),
+  getStorageFiles: () => request<BackendStorageFile[]>('/storage/files'),
   cleanupStorage: (dropCache = false) =>
     request<BackendStorageCleanup>(`/storage/cleanup?drop_cache=${dropCache}`, { method: 'POST' }),
 

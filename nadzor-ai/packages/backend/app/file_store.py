@@ -202,6 +202,22 @@ def drop_cache(keep: set[str] | None = None) -> tuple[int, int]:
     return (removed, freed)
 
 
+def listing(limit: int = 500) -> list[StoredFile]:
+    """Что лежит в хранилище, самое свежее по обращению — первым.
+
+    Предел выборки — бюджет ответа, а не правило: хранилище может держать
+    тысячи файлов, и отдавать их одним списком в интерфейс незачем.
+    """
+    with _session() as db:
+        rows = db.scalars(
+            select(StoredFile).order_by(StoredFile.used_at.desc()).limit(limit)).all()
+        # Содержимое наружу не отдаём — только описание: в списке оно не
+        # нужно, а весит на порядки больше всего остального ответа.
+        return [StoredFile(digest=r.digest, size=r.size, pages=r.pages,
+                           content=b"", created_at=r.created_at, used_at=r.used_at)
+                for r in rows]
+
+
 def stats() -> StoreStats:
     with _session() as db:
         files = db.scalar(select(func.count()).select_from(StoredFile)) or 0

@@ -274,6 +274,7 @@ def extract_requirements_llm(
     on_chunk_error: Callable[[int, Exception], None] | None = None,
     on_norms: Callable[[list[dict]], None] | None = None,
     hint_for_section: Callable[[str | None], str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Requirement]:
     """Требования из ЛЮБОЙ прозы ПД — постранично пачками под потолок
     символов, каждая пачка отдельным вызовом ЛЛМ. Сбой одной пачки (сеть,
@@ -314,8 +315,17 @@ def extract_requirements_llm(
     # нужны именно привязанные к помещению (`cross_check_requirements`,
     # сверка с РД по номеру), фильтруют список на своей стороне — там, где
     # это их контракт, а не здесь, где это потеря данных.
+    # `on_progress(сделано, всего)` — честный ход работы для полосы
+    # прогресса. Единица измерения — пачка, потому что именно она стоит
+    # один вызов модели и именно из пачек складывается время: считать
+    # проценты по страницам значило бы показывать движение там, где его
+    # нет, а по требованиям — не знать заранее, сколько их будет.
+    chunks = _chunk_text_facts(text_facts, max_chars_per_call)
+    total = len(chunks)
+    if on_progress:
+        on_progress(0, total)
     out: list[Requirement] = []
-    for chunk in _chunk_text_facts(text_facts, max_chars_per_call):
+    for done, chunk in enumerate(chunks, start=1):
         chunk_section = discipline or (chunk[0].get("section") if chunk else None)
         system_prompt = requirement_extraction_system_prompt(chunk_section)
         if hint_for_section is not None:
@@ -326,8 +336,12 @@ def extract_requirements_llm(
         except Exception as exc:  # noqa: BLE001 — сбой одной пачки не должен ронять извлечение по остальным
             if on_chunk_error:
                 on_chunk_error(chunk[0]["page"] if chunk else -1, exc)
+            if on_progress:
+                on_progress(done, total)  # сорванная пачка — тоже пройденная
             continue
         if not result:
+            if on_progress:
+                on_progress(done, total)
             continue
         if on_norms:
             found = result.get("norms")
@@ -362,4 +376,6 @@ def extract_requirements_llm(
                 document=str(source.get("document") or ""),
                 section=source.get("section") or discipline,
             ))
+        if on_progress:
+            on_progress(done, total)
     return out

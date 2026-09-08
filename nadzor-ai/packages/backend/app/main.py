@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sys
 from pathlib import Path
@@ -25,7 +26,8 @@ from .document_composition import describe_volume, name_unread_sheets, render_co
 from .document_split import split_pdf
 from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
-from .llm import LlmConfig, ca_bundle_description, check_llm_reachable
+from .llm import (LlmConfig, ca_bundle_description, check_llm_reachable,
+                  credentials_from_file)
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import (
     attach_norms,
@@ -162,8 +164,13 @@ def _llm_config(db: Session) -> LlmConfig:
     """
     s = db.query(models.Settings).first()
     provider = s.provider if s is not None else "gigachat"
-    api_key = (s.api_key if s is not None else "") or os.environ.get(
-        _PROVIDER_ENV_KEY.get(provider, ""), "")
+    # Три источника по убыванию явности: настройки → переменная окружения →
+    # файл, положенный в каталог `secrets/` (Г.112). Последний нужен, чтобы
+    # стенд был настроен сразу после развёртывания: положил выданный файл —
+    # и всё работает, ничего не вводя. В репозиторий он не попадает.
+    api_key = ((s.api_key if s is not None else "")
+               or os.environ.get(_PROVIDER_ENV_KEY.get(provider, ""), "")
+               or credentials_from_file(provider))
     return LlmConfig(
         provider=provider, api_key=api_key,
         base_url=s.base_url if s is not None else "",
@@ -667,6 +674,8 @@ def _run_pd(run_id: int) -> None:
 
         config = _llm_config(db)
         run.provider = config.provider
+        run.started_at = dt.datetime.utcnow()
+        run.stage = "читаю состав комплекта"
         db.commit()
 
         # Г.97 — третий элемент: раздел, заданный вручную; он побеждает.
@@ -682,6 +691,8 @@ def _run_pd(run_id: int) -> None:
         run.composition = render_composition(volumes)
         db.commit()
 
+        run.stage = "проверяю связь с ИИ"
+        db.commit()
         reachable, why = check_llm_reachable(config if config.api_key else None)
         if not reachable:
             # Состав уже посчитан и сохранён выше — инспектор увидит его
@@ -709,12 +720,23 @@ def _run_pd(run_id: int) -> None:
             run.composition = render_composition(volumes)
             db.commit()
 
+        run.stage = "читаю текст страниц"
+        db.commit()
         text_facts = load_text_facts(sources)
         # Г.103 — перечень нормативов собирается ПОПУТНО тем же вызовом,
         # которым идёт выжимка: отдельного прохода по документу не нужно.
         llm_norms: list[dict] = []
+        def _progress(done: int, total: int) -> None:
+            # Пишем ход прямо в запись прогона: интерфейс читает её опросом
+            # и потому переживает переход на другую вкладку и перезагрузку
+            # страницы — прогресс живёт на сервере, а не в браузере (Г.112).
+            run.units_done, run.units_total = done, total
+            run.stage = f"извлекаю требования: пачка {done} из {total}"
+            db.commit()
+
         requirements = extract_requirements_llm(
             text_facts, config=config, on_norms=llm_norms.extend,
+            on_progress=_progress,
             # Г.105 — подсказка по разделу пачки: накопленное на прежних томах
             # того же раздела. Ничего не подтверждает, факт по-прежнему должен
             # быть на странице.
@@ -726,6 +748,8 @@ def _run_pd(run_id: int) -> None:
         # подсказываются по названию из экспликации того же тома: без этого
         # оно тонет среди «требований к объекту целиком», и листа для
         # просмотра под него не подобрать.
+        run.stage = "связываю требования с помещениями и нормативами"
+        db.commit()
         attach_rooms_by_name(requirements, sources)
         norms, norms_section = attach_norms(requirements, text_facts, config, llm_norms)
         # Г.105 — профиль пополняется ПОСЛЕ разбора и до сборки отчёта: в
@@ -745,6 +769,7 @@ def _run_pd(run_id: int) -> None:
                 requirements, documents=[d.name for _, d in docs], extractor="llm",
                 provider=config.provider, model=config.model,
             )
+        run.stage = ""
         run.status = "done"
         db.commit()
     except Exception as exc:  # noqa: BLE001 — сбой прогона виден инспектору, сервер жив
@@ -867,6 +892,9 @@ def _run_compliance(run_id: int) -> None:
 
         config = _llm_config(db)
         run.provider = config.provider
+        run.started_at = dt.datetime.utcnow()
+        run.stage = "проверяю связь с ИИ"
+        run.units_total = len(requirements)
         db.commit()
         has_key = bool(config.api_key)
         if has_key:
@@ -878,8 +906,12 @@ def _run_compliance(run_id: int) -> None:
                 db.commit()
                 return
 
+        run.stage = "строю реестр помещений рабочей документации"
+        db.commit()
         sources = [(d.file_path, d.name, _manual_section(d)) for _, d in rd_docs]
         room_index = _rd_room_index(sources) if has_key else {}
+        run.stage = "сверяю требования с рабочей документацией"
+        db.commit()
 
         def _candidates(rooms: list[str], _sources) -> list[tuple[str, int]]:
             pages: list[tuple[str, int]] = []
@@ -1082,7 +1114,19 @@ def llm_check(db: Session = Depends(get_session)):
 
 @app.get("/settings", response_model=schemas.SettingsOut)
 def get_settings(db: Session = Depends(get_session)):
-    return db.query(models.Settings).first()
+    return _settings_out(_limits(db), db)
+
+
+def _settings_out(row: "models.Settings", db: Session) -> schemas.SettingsOut:
+    """Настройки БЕЗ ключа: наружу идёт только факт, задан он или нет.
+
+    Ключ считается заданным и тогда, когда он приходит из переменной
+    окружения при развёртывании (Г.94) — инспектор не должен видеть
+    «не задан» только потому, что поле в базе пустое.
+    """
+    out = schemas.SettingsOut.model_validate(row)
+    out.api_key_set = bool(_llm_config(db).api_key)
+    return out
 
 
 @app.put("/settings", response_model=schemas.SettingsOut)
@@ -1091,7 +1135,8 @@ def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_sess
     s.provider = body.provider
     s.base_url = body.base_url
     s.model = body.model
-    s.api_key = body.api_key
+    if body.api_key is not None:
+        s.api_key = body.api_key
     # Сроки и лимиты необязательны: интерфейс может прислать только настройки
     # провайдера, и тогда прежние значения сохраняются, а не обнуляются.
     for field in ("retention_days", "max_upload_kb", "max_pages", "part_kb"):
@@ -1100,7 +1145,7 @@ def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_sess
             setattr(s, field, max(0, int(value)))
     db.commit()
     db.refresh(s)
-    return s
+    return _settings_out(s, db)
 
 
 @app.get("/storage", response_model=schemas.StorageStats)
@@ -1123,6 +1168,32 @@ def storage_stats(db: Session = Depends(get_session)):
         documents=db.query(models.Document).count(),
         retention_days=_limits(db).retention_days,
     )
+
+
+@app.get("/storage/files", response_model=list[schemas.StorageFile])
+def storage_files(db: Session = Depends(get_session)):
+    """Что лежит в хранилище оригиналов, с именами ссылающихся документов.
+
+    Имя файла в самом хранилище не хранится (оно приходит от загружающей
+    стороны и в путь не идёт), поэтому подписи берутся из записей
+    документов. Оригинал без единой подписи — кандидат на уборку по сроку,
+    и увидеть это можно только списком.
+    """
+    names: dict[str, list[str]] = {}
+    for doc in db.query(models.Document).all():
+        for digest in {doc.digest} | {str(p.get("digest")) for p in (doc.parts or [])
+                                      if isinstance(p, dict)}:
+            if digest:
+                names.setdefault(digest, []).append(doc.name)
+    out: list[schemas.StorageFile] = []
+    for row in file_store.listing():
+        out.append(schemas.StorageFile(
+            digest=row.digest, size=row.size, pages=row.pages,
+            created_at=row.created_at, used_at=row.used_at,
+            documents=sorted(set(names.get(row.digest, []))),
+            cached=(file_store.CACHE_DIR / f"{row.digest}.pdf").exists(),
+        ))
+    return out
 
 
 @app.post("/storage/cleanup", response_model=schemas.StorageCleanupResult)

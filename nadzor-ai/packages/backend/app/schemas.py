@@ -33,6 +33,22 @@ class StorageStats(BaseModel):
     retention_days: int
 
 
+class StorageFile(BaseModel):
+    """Один оригинал в хранилище — то, что инспектор видит списком.
+
+    `documents` — названия документов, которые на него ссылаются. Пусто
+    означает «файл больше никому не нужен и уйдёт по сроку хранения», и это
+    ровно то, ради чего список открывают.
+    """
+    digest: str
+    size: int
+    pages: int
+    created_at: dt.datetime
+    used_at: dt.datetime
+    documents: list[str] = []
+    cached: bool = False
+
+
 class StorageCleanupResult(BaseModel):
     removed_files: int
     freed_bytes: int
@@ -126,7 +142,11 @@ class SettingsOut(BaseModel):
     provider: str
     base_url: str
     model: str
-    api_key: str
+    # Сам ключ наружу НЕ отдаётся (Г.112/Б.5): интерфейсу нужен один факт —
+    # задан он или нет. Отдавать секрет в браузер только ради того, чтобы
+    # показать точки в поле ввода, значит класть его в каждый ответ сервера
+    # и в историю запросов.
+    api_key_set: bool = False
     retention_days: int = 90
     max_upload_kb: int = 512 * 1024
     max_pages: int = 5000
@@ -137,7 +157,9 @@ class SettingsUpdate(BaseModel):
     provider: str
     base_url: str = ""
     model: str = ""
-    api_key: str = ""
+    # None означает «не трогать»: интерфейс ключ не присылает вовсе, и
+    # пустая строка не должна стирать заданный при развёртывании ключ.
+    api_key: str | None = None
     retention_days: int | None = None
     max_upload_kb: int | None = None
     max_pages: int | None = None
@@ -166,6 +188,14 @@ class PdRunOut(BaseModel):
     store_run_id: int | None
     side: str
     composition: str
+    # Ход работы: этап словами и пройдено/всего в пачках. Оценку остатка
+    # считает интерфейс по фактической скорости этого прогона — придумывать
+    # её на сервере не из чего, а показывать выдуманное время хуже, чем не
+    # показывать никакого (Г.112).
+    stage: str = ""
+    units_total: int = 0
+    units_done: int = 0
+    started_at: dt.datetime | None = None
 
 
 class LlmCheckOut(BaseModel):
@@ -198,6 +228,14 @@ class ComplianceRunOut(BaseModel):
     report: str
     counts: dict
     requirements_total: int
+    # Ход работы: этап словами и пройдено/всего в пачках. Оценку остатка
+    # считает интерфейс по фактической скорости этого прогона — придумывать
+    # её на сервере не из чего, а показывать выдуманное время хуже, чем не
+    # показывать никакого (Г.112).
+    stage: str = ""
+    units_total: int = 0
+    units_done: int = 0
+    started_at: dt.datetime | None = None
 
 
 class DocumentUpdate(BaseModel):

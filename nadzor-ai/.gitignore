@@ -24,3 +24,4 @@ certs/*.pem
 certs/*.crt
 certs/*.cer
 certs/.cache/
+secrets/

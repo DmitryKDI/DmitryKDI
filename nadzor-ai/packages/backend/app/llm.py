@@ -63,7 +63,11 @@ GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 #   false  — не проверять (последнее средство, видно в логе).
 CERTS_DIR = Path(os.environ.get(
     "GIGACHAT_CA_DIR", Path(__file__).resolve().parents[3] / "certs"))
-_CERT_SUFFIXES = (".pem", ".crt", ".cer")
+# Расширений у сертификата много, и это ровно тот случай, где перечень
+# должен быть широким: формат определяется по содержимому (см. `_as_pem`),
+# поэтому лишнее расширение ничем не грозит, а пропущенное означает молча
+# ненайденный сертификат. Найдено на живом случае: файлы пришли с «.cert».
+_CERT_SUFFIXES = (".pem", ".crt", ".cer", ".cert", ".der", ".ca-bundle", ".txt")
 
 
 def _as_pem(raw: bytes) -> bytes:
@@ -158,6 +162,49 @@ def _bundle_from_certs_dir() -> str | None:
             stale.unlink(missing_ok=True)
         combined.write_bytes(b"\n".join(blobs))
     return str(combined)
+
+
+# Ключ можно не вводить и не прописывать в переменных: достаточно положить
+# файл, выданный в личном кабинете провайдера, в каталог `secrets/` рядом с
+# проектом — тот же приём «просто положи файл», что и с сертификатами.
+# В репозиторий каталог не идёт (см. .gitignore): ключ относится к машине и
+# к учётной записи, а не к коду, и попав в общий репозиторий он становится
+# общедоступным (Б.5).
+SECRETS_DIR = Path(os.environ.get(
+    "NADZOR_SECRETS_DIR", Path(__file__).resolve().parents[3] / "secrets"))
+
+# Строка ключа среди прочего текста выгрузки из личного кабинета: там рядом
+# лежат идентификатор приложения и название тарифа, и заставлять человека
+# вырезать нужную строку руками — лишний шаг, на котором ошибаются.
+_CREDENTIALS_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
+
+
+def credentials_from_file(provider: str) -> str:
+    """Ключ провайдера из файла в `secrets/`, или пустая строка.
+
+    Ищется файл, в имени которого есть название провайдера; если такого нет
+    — любой файл каталога. Формат не навязывается: принимается и голый
+    ключ, и выгрузка из личного кабинета целиком.
+    """
+    if not SECRETS_DIR.is_dir():
+        return ""
+    files = sorted(p for p in SECRETS_DIR.iterdir()
+                   if p.is_file() and not p.name.startswith(".")
+                   and p.suffix.lower() in ("", ".txt", ".key", ".env"))
+    named = [p for p in files if provider.lower() in p.name.lower()]
+    for path in (named or files):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001 — нечитаемый файл не роняет запуск
+            print(f"файл с ключом не прочитан ({exc}): {path}", file=sys.stderr)
+            continue
+        stripped = text.strip()
+        if _CREDENTIALS_RE.fullmatch(stripped):
+            return stripped
+        found = _CREDENTIALS_RE.search(text)
+        if found:
+            return found.group(0)
+    return ""
 
 
 def ca_bundle():
@@ -390,6 +437,13 @@ def call_llm_json(
     raise ValueError(f"unknown provider: {provider}")
 
 
+# Бюджеты предполётной проверки: сколько ждать ответа и сколько раз пробовать.
+# Не пороги истины — ошибка стоит времени, а не правильности разбора.
+_REACH_TIMEOUT = 45.0
+_REACH_ATTEMPTS = 3
+_REACH_RETRY_DELAY = 2.0
+
+
 def check_llm_reachable(llm_config: LlmConfig | None) -> tuple[bool, str]:
     """Предполётная проверка связи с провайдером — один короткий вызов.
 
@@ -408,15 +462,29 @@ def check_llm_reachable(llm_config: LlmConfig | None) -> tuple[bool, str]:
     """
     if llm_config is None:
         return False, "ключ ЛЛМ не задан — проверять нечего"
-    try:
-        call_llm_json(
-            llm_config,
-            "Ты отвечаешь строго JSON. Проверка связи.",
-            'Ответь ровно: {"ok": true}',
-            timeout=30.0,
-        )
-    except Exception as exc:  # noqa: BLE001 — причина нужна целиком, любая
-        return False, f"{type(exc).__name__}: {exc}{_tls_advice(exc)}"
+    # Пробуем несколько раз: наблюдался разовый ConnectTimeout там, где через
+    # минуту связь была. Отказ по одной неудачной попытке блокировал бы весь
+    # разбор из-за секундного провала сети, а разбор — это минуты работы,
+    # которые не должны зависеть от одного пакета.
+    last: Exception | None = None
+    for attempt in range(_REACH_ATTEMPTS):
+        try:
+            call_llm_json(
+                llm_config,
+                "Ты отвечаешь строго JSON. Проверка связи.",
+                'Ответь ровно: {"ok": true}',
+                timeout=_REACH_TIMEOUT,
+            )
+            last = None
+            break
+        except Exception as exc:  # noqa: BLE001 — причина нужна целиком, любая
+            last = exc
+            if attempt + 1 < _REACH_ATTEMPTS:
+                time.sleep(_REACH_RETRY_DELAY)
+    if last is not None:
+        exc = last
+        return False, (f"{type(exc).__name__}: {exc} "
+                       f"(попыток: {_REACH_ATTEMPTS}){_tls_advice(exc)}")
     return True, f"связь с провайдером есть ({ca_bundle_description()})"
 
 

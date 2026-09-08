@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   backendApi, CORRECTION_KINDS, pageImageUrl, type BackendDocument, type BackendFinding,
-  type BackendPdRun, type BackendSettings, type LlmCheck, type ReviewMessage,
+  type BackendComplianceRun, type BackendPdRun, type BackendSettings, type LlmCheck,
+  type ReviewMessage,
 } from '../backendApi'
 import { useApp, type PendingUpload } from '../store'
 import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/ui'
@@ -248,7 +249,7 @@ function FindingGroup({ label, findings, onReview }: {
  * «разбор РД» нет намеренно, чтобы различие не завелось там, где его нет.
  */
 function ParseCard({
-  title, subtitle, docs, run, onStart, pending, llmCheck,
+  title, subtitle, docs, run, onStart, pending, llmCheck, selected, onSelect,
 }: {
   title: string
   subtitle: string
@@ -257,33 +258,63 @@ function ParseCard({
   onStart: () => void
   pending: boolean
   llmCheck?: LlmCheck
+  selected: number[]
+  onSelect: (ids: number[]) => void
 }) {
   const running = run?.status === 'running' || pending
+  // Пустой выбор означает «все загруженные»: инспектор, которому нужен весь
+  // комплект, не должен ничего отмечать. Отметки нужны там, где том тяжёлый
+  // и разбирать нужно не всё сразу.
+  const chosen = selected.length ? docs.filter((d) => selected.includes(d.id)) : docs
+  const toggle = (id: number) => {
+    const base = selected.length ? selected : docs.map((d) => d.id)
+    const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id]
+    onSelect(next.length === docs.length ? [] : next)
+  }
   return (
     <SectionCard title={title} subtitle={subtitle}>
+      {docs.length > 1 && (
+        <div className="mb-3 rounded-md border border-surface-line p-2">
+          <div className="mb-1 flex items-center justify-between text-xs text-ink-muted">
+            <span>Что разбирать — выбрано {chosen.length} из {docs.length}</span>
+            <button type="button" className="text-xs text-accent hover:underline"
+                    onClick={() => onSelect([])}>все</button>
+          </div>
+          <ul className="space-y-1">
+            {docs.map((doc) => (
+              <li key={doc.id}>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input type="checkbox" checked={chosen.some((d) => d.id === doc.id)}
+                         disabled={running} onChange={() => toggle(doc.id)} />
+                  <span className="min-w-0 flex-1 truncate" title={doc.name}>{doc.name}</span>
+                  <span className="text-xs text-ink-faint">{doc.pages} л.</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          disabled={docs.length === 0 || running}
+          disabled={chosen.length === 0 || running}
           onClick={onStart}
           className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
-          {running ? 'Разбираем…' : 'Разобрать документацию'}
+          {running ? 'Разбираем…' : docs.length > 1 && chosen.length < docs.length
+            ? `Разобрать выбранное (${chosen.length})` : 'Разобрать документацию'}
         </button>
         {docs.length === 0 && <span className="text-xs text-ink-muted">Сначала загрузите документы выше.</span>}
         {/* Г.91 — состояние связи видно ДО запуска: разбор тома это десятки
             вызовов и минуты, а при оборванной связи каждый молча вернул бы
             пустой результат. */}
+        {/* Инспектору нужен один факт: работает ИИ или нет. Какой это
+            провайдер, каким набором проверяется сертификат и текст сбоя —
+            вопросы администратора, они остались в ответе /llm-check и в
+            карточке настроек, но с рабочего экрана убраны. */}
         {llmCheck && (
-          <span className={`text-xs ${llmCheck.reachable ? 'text-ink-muted' : 'text-danger'}`}>
-            {llmCheck.reachable ? `ИИ (${llmCheck.provider}): связь есть` : `ИИ (${llmCheck.provider}): ${llmCheck.message}`}
-            {/* Состояние проверки сертификата видно ВСЕГДА, а не только при
-                ошибке: «проверка отключена» не должно выглядеть так же, как
-                «всё в порядке». */}
-            {llmCheck.tls && (
-              <span className={llmCheck.tls.includes('ОТКЛЮЧЕНА') ? ' text-critical' : ' text-ink-faint'}>
-                {' · '}{llmCheck.tls}
-              </span>
-            )}
+          <span className={`text-xs ${llmCheck.reachable ? 'text-ink-muted' : 'text-danger'}`}
+                title={llmCheck.reachable ? undefined : llmCheck.message}>
+            {llmCheck.reachable ? 'ИИ работает' : 'ИИ не отвечает — разбор будет неполным'}
           </span>
         )}
       </div>
@@ -293,7 +324,7 @@ function ParseCard({
           Загрузите документы и нажмите кнопку. Настраивать ничего не нужно: правила извлечения и модель заданы в системе.
         </p>
       )}
-      {run?.status === 'running' && <Skeleton rows={3} />}
+      {run?.status === 'running' && <RunProgress run={run} />}
       {run?.status === 'error' && (
         <div className="space-y-2">
           <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">{run.error}</div>
@@ -335,6 +366,73 @@ function ParseCard({
 }
 
 
+/**
+ * Полоса прогресса, которая не врёт (Г.112).
+ *
+ * Три правила, каждое против типового обмана:
+ *
+ * 1. Доля берётся из ФАКТА — сколько пачек страниц сервер уже прошёл.
+ *    Пока сервер не сказал, сколько их всего, полоса не рисуется вовсе:
+ *    ползунок, ползущий «примерно», выглядит как работа там, где её
+ *    измерить ещё нечем.
+ * 2. Остаток считается по СКОРОСТИ ЭТОГО прогона: прошедшее время делённое
+ *    на сделанное. Никаких средних по прошлым запускам — том на 40 листов
+ *    и том на 700 идут с разной скоростью.
+ * 3. Оценка появляется не сразу: по одной пачке скорость ещё не измерена,
+ *    и любое число было бы выдумкой. До этого честно пишем «оцениваю».
+ */
+function RunProgress({ run }: { run: BackendPdRun | BackendComplianceRun }) {
+  const total = run.units_total || 0
+  const done = run.units_done || 0
+  const started = run.started_at ? new Date(run.started_at + 'Z').getTime() : null
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const share = total > 0 ? Math.min(1, done / total) : null
+  const elapsed = started ? Math.max(0, now - started) : null
+  // Две пройденные единицы — минимум, на котором скорость вообще есть.
+  const eta = (elapsed && share !== null && done >= 2 && done < total)
+    ? Math.round((elapsed / done) * (total - done) / 1000)
+    : null
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-xs text-ink-muted">
+        <span>{run.stage || 'идёт разбор'}</span>
+        {share !== null && <span>{done} из {total}</span>}
+      </div>
+      {share !== null ? (
+        <div className="h-2 w-full overflow-hidden rounded-full bg-surface-muted">
+          <div className="h-full rounded-full bg-accent transition-[width] duration-500"
+               style={{ width: `${Math.round(share * 100)}%` }} />
+        </div>
+      ) : (
+        // Полосы нет намеренно: доля ещё не измерена, и рисовать движение
+        // означало бы показывать прогресс там, где его нечем посчитать.
+        <div className="h-2 w-full overflow-hidden rounded-full bg-surface-muted">
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-accent/40" />
+        </div>
+      )}
+      <p className="text-xs text-ink-faint">
+        {elapsed !== null && <>идёт {formatDuration(Math.round(elapsed / 1000))}</>}
+        {eta !== null
+          ? <> · осталось примерно {formatDuration(eta)}</>
+          : share !== null && done < total ? <> · оцениваю оставшееся время</> : null}
+      </p>
+    </div>
+  )
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds} с`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} мин`
+  return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`
+}
+
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1073741824).toFixed(1)} ГБ`
   if (bytes >= 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} МБ`
@@ -359,6 +457,14 @@ function StorageCard() {
     },
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось выполнить уборку', 'error'),
   })
+  const [showFiles, setShowFiles] = useState(false)
+  // Список запрашивается только когда его открыли: в хранилище бывают сотни
+  // записей, и тянуть их ради двух цифр в свёрнутой карточке незачем.
+  const files = useQuery({
+    queryKey: ['backend-storage-files'],
+    queryFn: backendApi.getStorageFiles,
+    enabled: showFiles,
+  })
   const data = storage.data
   return (
     <SectionCard title="Хранилище документов">
@@ -378,6 +484,10 @@ function StorageCard() {
           </p>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn-ghost px-3 py-1.5 text-sm"
+              onClick={() => setShowFiles((v) => !v)}>
+              {showFiles ? 'Скрыть список' : 'Показать, что лежит'}
+            </button>
+            <button type="button" className="btn-ghost px-3 py-1.5 text-sm"
               disabled={cleanup.isPending} onClick={() => cleanup.mutate(false)}>
               Убрать по сроку хранения
             </button>
@@ -386,6 +496,37 @@ function StorageCard() {
               Освободить кэш
             </button>
           </div>
+          {showFiles && (
+            <div className="max-h-72 overflow-auto rounded-md border border-surface-line">
+              {!files.data ? <Skeleton rows={3} /> : files.data.length === 0 ? (
+                <p className="p-3 text-xs text-ink-muted">Хранилище пусто.</p>
+              ) : (
+                <ul className="divide-y divide-surface-line text-xs">
+                  {files.data.map((f) => (
+                    <li key={f.digest} className="px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        {/* Имя файла в хранилище не хранится (оно приходит от
+                            загружающей стороны и в путь не идёт), поэтому
+                            подпись берётся из документов, которые на него
+                            ссылаются. Ничей файл — кандидат на уборку, и
+                            увидеть это можно только списком. */}
+                        <span className="min-w-0 flex-1 truncate">
+                          {f.documents.length ? f.documents.join(', ') : 'ничей — уйдёт по сроку хранения'}
+                        </span>
+                        <span className="whitespace-nowrap text-ink-faint">
+                          {formatSize(f.size)}{f.pages ? ` · ${f.pages} л.` : ''}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-ink-faint">
+                        {f.digest.slice(0, 12)} · обращались {new Date(f.used_at + 'Z').toLocaleDateString()}
+                        {f.cached ? ' · есть в кэше' : ' · только в базе'}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       )}
     </SectionCard>
@@ -402,10 +543,12 @@ export default function NewAnalysis() {
     analysisPendingBefore: pendingBefore, analysisPendingAfter: pendingAfter,
     analysisRunId: runId, analysisRunStatus: runStatus,
     setAnalysisDocs, setAnalysisPending, setAnalysisRunId,
+    pdRunId, pdRunStatus, rdRunStatus, complianceRunStatus, complianceRunId,
+    pdSelected, rdSelected, setPdRunId, setComplianceRunId, setSelected,
   } = useApp()
 
   const settings = useQuery({ queryKey: ['backend-settings'], queryFn: backendApi.getSettings })
-  const [form, setForm] = useState<BackendSettings>({ provider: 'anthropic', base_url: '', model: '', api_key: '' })
+  const [form, setForm] = useState<BackendSettings>({ provider: 'gigachat', base_url: '', model: '' })
   useEffect(() => { if (settings.data) setForm(settings.data) }, [settings.data])
 
   const saveSettings = useMutation({
@@ -495,22 +638,13 @@ export default function NewAnalysis() {
   // Г.94 — стадия 1: разбор ПД одной кнопкой. Отдельно от сравнения с РД и
   // ПЕРЕД ним: разбор ПД самодостаточен, рабочей документации на половине
   // объектов нет вовсе, и её отсутствие не должно мешать получить сводку.
-  const [pdRunId, setPdRunId] = useState<number | null>(null)
-  const [rdRunId, setRdRunId] = useState<number | null>(null)
-  const pdRun = useQuery({
-    queryKey: ['pd-run', pdRunId],
-    queryFn: () => backendApi.getPdRun(pdRunId as number),
-    enabled: pdRunId !== null,
-    refetchInterval: (q) => (q.state.data?.status === 'running' ? 1500 : false),
-  })
-  // Г.95 — разбор РД идёт ТЕМ ЖЕ механизмом, отличается только стороной
-  // комплекта: отдельного пути для рабочей документации в коде нет.
-  const rdRun = useQuery({
-    queryKey: ['pd-run', rdRunId],
-    queryFn: () => backendApi.getPdRun(rdRunId as number),
-    enabled: rdRunId !== null,
-    refetchInterval: (q) => (q.state.data?.status === 'running' ? 1500 : false),
-  })
+  // Г.112 — прогон и его ход живут в общем сторе и опрашиваются оттуда,
+  // а не в useQuery этого экрана: разбор тома идёт минутами, и переход на
+  // другую вкладку меню не должен ни прерывать наблюдение, ни терять
+  // результат. Г.95 — разбор РД идёт ТЕМ ЖЕ механизмом, отличается только
+  // стороной комплекта: отдельного пути для рабочей документации нет.
+  const pdRun = { data: pdRunStatus ?? undefined }
+  const rdRun = { data: rdRunStatus ?? undefined }
   const llmCheck = useQuery({ queryKey: ['llm-check'], queryFn: backendApi.checkLlm })
   // Г.97 — ручная правка раздела: после ответа сервера список файлов
   // перечитывается, чтобы источник («указан вручную») был виден сразу.
@@ -519,13 +653,19 @@ export default function NewAnalysis() {
       backendApi.updateDocumentSection(id, code),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['backend-documents'] }) },
   })
+  // Пустой выбор означает «все загруженные» — см. ParseCard.
+  const idsFor = (docs: BackendDocument[], selected: number[]) =>
+    selected.length ? docs.filter((d) => selected.includes(d.id)).map((d) => d.id)
+                    : docs.map((d) => d.id)
   const startPdRun = useMutation({
-    mutationFn: () => backendApi.createPdRun(beforeDocs.map((d) => d.id), 'before'),
-    onSuccess: (run) => setPdRunId(run.id),
+    mutationFn: () => backendApi.createPdRun(idsFor(beforeDocs, pdSelected), 'before'),
+    onSuccess: (run) => setPdRunId('before', run.id),
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось запустить разбор', 'error'),
   })
   const startRdRun = useMutation({
-    mutationFn: () => backendApi.createPdRun(afterDocs.map((d) => d.id), 'after'),
-    onSuccess: (run) => setRdRunId(run.id),
+    mutationFn: () => backendApi.createPdRun(idsFor(afterDocs, rdSelected), 'after'),
+    onSuccess: (run) => setPdRunId('after', run.id),
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось запустить разбор', 'error'),
   })
 
   /**
@@ -625,15 +765,13 @@ function ReviewDialog({ runId }: { runId: number }) {
 }
 
 // Г.96 — третья кнопка: сверка по СОХРАНЁННОМУ разбору ПД.
-  const [complianceRunId, setComplianceRunId] = useState<number | null>(null)
-  const complianceRun = useQuery({
-    queryKey: ['compliance-run', complianceRunId],
-    queryFn: () => backendApi.getComplianceRun(complianceRunId as number),
-    enabled: complianceRunId !== null,
-    refetchInterval: (q) => (q.state.data?.status === 'running' ? 2000 : false),
-  })
+  // Сверка тоже опрашивается из стора (Г.112): она идёт минутами и не
+  // должна обрываться переходом на другую вкладку.
+  const complianceRun = { data: complianceRunStatus ?? undefined }
   const startCompliance = useMutation({
-    mutationFn: () => backendApi.createComplianceRun(pdRunId as number, afterDocs.map((d) => d.id)),
+    mutationFn: () => // Сверке нужен номер ПРОГОНА разбора (не запись в хранилище): сервер
+      // сам возьмёт из него сохранённые требования.
+      backendApi.createComplianceRun(pdRunId as number, idsFor(afterDocs, rdSelected)),
     onSuccess: (run) => setComplianceRunId(run.id),
   })
 
@@ -664,13 +802,15 @@ function ReviewDialog({ runId }: { runId: number }) {
           title="1. Разбор проектной документации"
           subtitle="Требования и способы производства работ + состав тома. Рабочая документация не нужна: её отсутствие не ошибка"
           docs={beforeDocs} run={pdRun.data} pending={startPdRun.isPending}
-          onStart={() => startPdRun.mutate()} llmCheck={llmCheck.data} />
+          onStart={() => startPdRun.mutate()} llmCheck={llmCheck.data}
+          selected={pdSelected} onSelect={(ids) => setSelected('before', ids)} />
 
         <ParseCard
           title="2. Разбор рабочей документации"
           subtitle="Тот же механизм, другая сторона комплекта. Если связного текста нет — показывается состав тома: листы чертежей, таблицы"
           docs={afterDocs} run={rdRun.data} pending={startRdRun.isPending}
-          onStart={() => startRdRun.mutate()} />
+          onStart={() => startRdRun.mutate()}
+          selected={rdSelected} onSelect={(ids) => setSelected('after', ids)} />
 
         <SectionCard
           title="3. Соответствие РД требованиям ПД"
@@ -838,14 +978,16 @@ function ReviewDialog({ runId }: { runId: number }) {
                 <option key={value} value={value}>{label}</option>
               ))}
             </select>
-            <label className="block text-xs text-ink-faint">Ключ API</label>
-            <input className="input" type="password" value={form.api_key}
-              onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
-            {form.provider === 'gigachat' && (
-              <p className="text-xs text-ink-faint">
-                Base64-строка от «Client ID:Client Secret» (реквизиты приложения GigaChat API), не сам пароль.
-              </p>
-            )}
+            {/* Поля ключа здесь нет намеренно (Г.112): ключ задаётся один раз
+                при развёртывании — переменной окружения GIGACHAT_CREDENTIALS в
+                файле .env, — и инспектор его не вводит и не видит. Секрет,
+                который нельзя ввести в интерфейсе, нельзя и подсмотреть с
+                чужого экрана (Б.5). Показывается только факт: задан или нет. */}
+            <p className="text-xs text-ink-faint">
+              Ключ: {settings.data?.api_key_set
+                ? 'задан при развёртывании'
+                : 'НЕ ЗАДАН — пропишите GIGACHAT_CREDENTIALS в файле .env и перезапустите сервер'}
+            </p>
             <label className="block text-xs text-ink-faint">Модель</label>
             <input className="input" list="model-suggestions" placeholder={PROVIDER_DEFAULT_MODEL[form.provider]}
               value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />

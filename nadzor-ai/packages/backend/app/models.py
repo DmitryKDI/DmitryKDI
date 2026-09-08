@@ -191,6 +191,15 @@ class PdRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Ход работы для полосы прогресса (Г.112). Единица — пачка страниц,
+    # потому что именно она стоит один вызов модели и из пачек складывается
+    # время. Отдельно — момент начала: без него нельзя посчитать скорость,
+    # а без скорости любая оценка остатка была бы выдумкой.
+    stage: Mapped[str] = mapped_column(String, default="")
+    units_total: Mapped[int] = mapped_column(Integer, default=0)
+    units_done: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
     status: Mapped[str] = mapped_column(String, default="running")  # running|done|error
     document_ids: Mapped[list] = mapped_column(JSON, default=list)
     # Г.95 — сторона комплекта: 'before' (ПД) | 'after' (РД/ИД). Механизм
@@ -228,6 +237,15 @@ class ComplianceRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Ход работы для полосы прогресса (Г.112). Единица — пачка страниц,
+    # потому что именно она стоит один вызов модели и из пачек складывается
+    # время. Отдельно — момент начала: без него нельзя посчитать скорость,
+    # а без скорости любая оценка остатка была бы выдумкой.
+    stage: Mapped[str] = mapped_column(String, default="")
+    units_total: Mapped[int] = mapped_column(Integer, default=0)
+    units_done: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
     status: Mapped[str] = mapped_column(String, default="running")  # running|done|error
     pd_run_id: Mapped[int] = mapped_column(Integer, default=0)
     rd_document_ids: Mapped[list] = mapped_column(JSON, default=list)
