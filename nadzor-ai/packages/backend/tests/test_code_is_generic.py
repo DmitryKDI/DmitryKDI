@@ -40,8 +40,31 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+ROOT = Path(__file__).resolve().parents[3]
 APP = Path(__file__).resolve().parents[1] / "app"
-SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
+SCRIPTS = ROOT / "scripts"
+
+# Инструкция — то, что агент читает в начале сессии и принимает за рамку.
+# Конкретика здесь работает сильнее, чем в коде: код можно прочитать и
+# понять, а инструкция задаёт способ думать до того, как открыт первый файл.
+_INSTRUCTION_FILES = ("CLAUDE.md", "CONTEXT.md", "GIGACODE.md")
+
+# Журнал находок — не инструкция, а ДОКАЗАТЕЛЬСТВА. «На таком-то томе
+# измерено то-то» — это запись наблюдения, и вычищать из неё предмет замера
+# значит превращать доказательство в лозунг. Поэтому здесь запрещены только
+# реквизиты объекта: они не добавляют доказательности, но утекают в git
+# (Г.12) и долетают до следующей «слепой» сессии (Г.24).
+_EVIDENCE_FILES = ("docs/PRILOZHENIE-G-ISTORIYA.md",)
+
+# Лексика ОДНОГО раздела проектной документации. В инструкции правило,
+# сформулированное такими словами, читается как правило про этот раздел —
+# даже если механизм общий. Список заведомо неполный и это нормально: он
+# ловит самый частый случай, а не заменяет чтение (Г.11).
+_ONE_DISCIPLINE_VOCABULARY = re.compile(
+    r"\b(?:воздухообмен\w*|воздуховод\w*|венткамер\w*|дымоудален\w*|радиатор\w*|"
+    r"теплоноситель\w*|стояк\w*|приточн\w*|вытяжн\w*|отоплени\w*|вентиляц\w*|"
+    r"кондиционир\w*|подпор\w*|бетон\w*|арматур\w*|канализац\w*|водоснабжен\w*)\b",
+    re.IGNORECASE)
 
 # Файлы-реестры: наблюдения о разделах — их прямое содержимое (Г.88).
 _DATA_REGISTRIES = {
@@ -152,3 +175,57 @@ def test_the_check_actually_catches_what_it_claims():
             p = Path(tmp) / f"good_{i}.py"
             p.write_text(line, encoding="utf-8")
             assert not _offences(p), f"ложное срабатывание: {line} -> {_offences(p)}"
+
+
+def _doc_offences(path: Path, forbid_vocabulary: bool) -> list[str]:
+    src = path.read_text(encoding="utf-8")
+    out: list[str] = []
+    for label, pattern in _OBJECT_MARKERS.items():
+        for m in pattern.finditer(src):
+            if _is_placeholder(m):
+                continue
+            line = src[: m.start()].count("\n") + 1
+            out.append(f"{path.name}:{line} реквизит объекта ({label})")
+    if not forbid_vocabulary:
+        return out
+    for m in _NORM.finditer(src):
+        if _FORM_STANDARD.match(m.group(0)) or m.group(0).startswith("ГОСТ Р 34.10"):
+            continue
+        line = src[: m.start()].count("\n") + 1
+        out.append(f"{path.name}:{line} обозначение норматива: {m.group(0)}")
+    for m in _ONE_DISCIPLINE_VOCABULARY.finditer(src):
+        line = src[: m.start()].count("\n") + 1
+        out.append(f"{path.name}:{line} лексика одного раздела: {m.group(0)}")
+    return out
+
+
+def test_instruction_is_written_for_any_documentation_not_for_one_example():
+    """Инструкция задаёт рамку до того, как открыт первый файл (Г.104).
+
+    Поэтому конкретика здесь работает сильнее, чем в коде: правило,
+    сформулированное словами одного раздела, читается как правило про этот
+    раздел, даже когда механизм общий. Проверяются реквизиты объекта,
+    обозначения нормативов и лексика одного раздела.
+
+    Что НЕ запрещено и запрещено быть не должно: явная пометка границы
+    («это раздело-специфично», «статус n=1»). Она не конкретика, а
+    признание области применимости; убрать её значит выдать узкий механизм
+    за общий — ровно то, что Г.42 назвал настоящим overfitting.
+    """
+    offences = [o for name in _INSTRUCTION_FILES
+                for o in _doc_offences(ROOT / name, forbid_vocabulary=True)]
+    assert not offences, (
+        "Инструкция написана под конкретный пример.\n"
+        "Сформулируйте правило через роль, а предмет замера оставьте в журнале:\n  "
+        + "\n  ".join(offences))
+
+
+def test_evidence_journal_carries_no_object_identifiers():
+    """Журнал — доказательства, и предмет замера в нём уместен. Реквизиты
+    объекта — нет: доказательности они не добавляют, но это данные объекта в
+    git (Г.12) и готовый ответ для следующей «слепой» сессии (Г.24)."""
+    offences = [o for name in _EVIDENCE_FILES
+                for o in _doc_offences(ROOT / name, forbid_vocabulary=False)]
+    assert not offences, (
+        "В журнале находок остались реквизиты проверяемого объекта:\n  "
+        + "\n  ".join(offences))
