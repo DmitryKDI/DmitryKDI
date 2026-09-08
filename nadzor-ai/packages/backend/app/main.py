@@ -808,6 +808,10 @@ def _run_pd(run_id: int) -> None:
             run.units_done, run.units_total = done, total
             run.stage = f"извлекаю требования: пачка {done} из {total}"
             db.commit()
+            # Каждая десятая пачка — в окно сервера: длинный прогон должен
+            # подавать признаки жизни и там, где браузер не открыт (Г.116).
+            if done == 0 or total <= 10 or done % 10 == 0 or done == total:
+                print(f"разбор #{run_id}: пачка {done} из {total}", file=sys.stderr)
             # Здесь же — ближайшая безопасная точка остановки (Г.114):
             # между пачками, не посреди запроса к провайдеру.
             run_control.check(run_control.KIND_PD, run_id)
@@ -1010,10 +1014,18 @@ def _run_compliance(run_id: int) -> None:
                         pages.append(pair)
             return pages
 
-        def _compliance_progress(done: int, total: int) -> None:
+        # Название последней напечатанной ступени. Печатается ТОЛЬКО смена
+        # ступени, а не каждое требование: иначе окно сервера заливает
+        # тысячей строк, и полезное в нём тонет (Г.116).
+        printed: list[str] = []
+
+        def _compliance_progress(done: int, total: int, note: str = "") -> None:
             run.units_done, run.units_total = done, total
-            run.stage = f"сверяю требования: {done} из {total}"
+            run.stage = f"{note or 'сверяю требования'}: {done} из {total}"
             db.commit()
+            if note and note not in printed:
+                printed.append(note)
+                print(f"сверка #{run_id}: {note} ({done} из {total})", file=sys.stderr)
             run_control.check(run_control.KIND_COMPLIANCE, run_id)
 
         result = check_compliance(

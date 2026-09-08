@@ -85,7 +85,7 @@ def check_compliance(
     vision_check: Callable | None = None,
     candidate_pages: Callable | None = None,
     max_visual_pages: int = DEFAULT_MAX_VISUAL_PAGES,
-    on_progress: Callable[[int, int], None] | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> ComplianceResult:
     """Прогоняет список требований ПД по лестнице проверок против РД.
 
@@ -104,9 +104,16 @@ def check_compliance(
     # долгой из них, то есть не работала бы там, где нужна.
     total = len(requirements)
 
-    def _report() -> None:
+    def _report(note: str) -> None:
+        """Ход работы вместе с НАЗВАНИЕМ ступени.
+
+        Г.116 — без названия ступени счётчик замирает на всё время смысловой
+        сверки (она идёт одним вызовом на весь список), и прогон выглядит
+        зависшим. Ступени идут с разной скоростью, и человек должен видеть,
+        какая из них сейчас, а не только число.
+        """
         if on_progress is not None:
-            on_progress(len(result.items), total)
+            on_progress(len(result.items), total, note)
 
     # --- Ступень 1: токен в тексте РД (без модели) ---
     pending: list[Requirement] = []
@@ -121,7 +128,7 @@ def check_compliance(
         else:
             pending.append(req)
 
-    _report()
+    _report("сверка по обозначениям")
     if not pending:
         return _finish(result)
 
@@ -144,6 +151,7 @@ def check_compliance(
         result.not_run.append(
             "смысловая сверка текста РД — шаг не подключён в этом прогоне")
     if llm_verify is not None:
+        _report("смысловая сверка текста РД моделью")
         try:
             for v in llm_verify(pending, rd_text_facts, config):
                 verdicts[str(v.get("sentence", ""))] = v
@@ -168,11 +176,11 @@ def check_compliance(
         else:
             still_pending.append(req)
 
-    _report()
+    _report("смысловая сверка текста РД")
 
     # --- Ступень 3: зрение по листам РД ---
     for req in still_pending:
-        _report()
+        _report("просмотр листов РД")
         pages: list[tuple[str, int]] = []
         # Г.106 — якорем может быть и подсказка по названию помещения, если
         # номер в тексте требования не назван. Она честно помечается: номер в

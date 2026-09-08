@@ -997,7 +997,19 @@ function ReviewDialog({ runId }: { runId: number }) {
             нашлось в доступных данных», а решение принимает инспектор.
           </p>
 
-          {complianceRun.data?.status === 'running' && <Skeleton rows={3} />}
+          {/* Полоса хода работы, а не серая заглушка (Г.116): сверка идёт
+              минутами и десятками вызовов, и заглушка не отличала «работает»
+              от «зависло». Кнопка остановки — выше, рядом с запуском. */}
+          {complianceRun.data?.status === 'running' && (
+            <RunProgress run={complianceRun.data}
+              onStop={() => stopRun.compliance.mutate()}
+              stopping={stopRun.compliance.isPending} />
+          )}
+          {complianceRun.data?.status === 'cancelled' && (
+            <div className="rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2 text-sm text-ink-muted">
+              Остановлено инспектором. Сверка неполная — запустите заново, когда будете готовы.
+            </div>
+          )}
           {complianceRun.data?.status === 'error' && (
             <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm text-danger">
               {complianceRun.data.error}
