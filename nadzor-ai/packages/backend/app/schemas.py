@@ -173,6 +173,10 @@ class LlmCheckOut(BaseModel):
     reachable: bool
     provider: str
     message: str
+    # Чем проверяется TLS. Отдельным полем, а не внутри message: состояние
+    # «проверка отключена» обязано быть видно всегда, а не только когда
+    # что-то сломалось (Г.110).
+    tls: str = ""
 
 
 class ComplianceRunCreate(BaseModel):

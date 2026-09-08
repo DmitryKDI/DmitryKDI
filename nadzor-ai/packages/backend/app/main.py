@@ -25,7 +25,7 @@ from .document_composition import describe_volume, name_unread_sheets, render_co
 from .document_split import split_pdf
 from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
-from .llm import LlmConfig, check_llm_reachable
+from .llm import LlmConfig, ca_bundle_description, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import (
     attach_norms,
@@ -1073,9 +1073,11 @@ def llm_check(db: Session = Depends(get_session)):
             reachable=False, provider=config.provider,
             message="ключ провайдера не задан — ни в настройках, ни в переменной окружения "
                     f"{_PROVIDER_ENV_KEY.get(config.provider, '')}",
+            tls=ca_bundle_description(),
         )
     ok, message = check_llm_reachable(config)
-    return schemas.LlmCheckOut(reachable=ok, provider=config.provider, message=message)
+    return schemas.LlmCheckOut(reachable=ok, provider=config.provider, message=message,
+                               tls=ca_bundle_description())
 
 
 @app.get("/settings", response_model=schemas.SettingsOut)

@@ -276,6 +276,14 @@ function ParseCard({
         {llmCheck && (
           <span className={`text-xs ${llmCheck.reachable ? 'text-ink-muted' : 'text-danger'}`}>
             {llmCheck.reachable ? `ИИ (${llmCheck.provider}): связь есть` : `ИИ (${llmCheck.provider}): ${llmCheck.message}`}
+            {/* Состояние проверки сертификата видно ВСЕГДА, а не только при
+                ошибке: «проверка отключена» не должно выглядеть так же, как
+                «всё в порядке». */}
+            {llmCheck.tls && (
+              <span className={llmCheck.tls.includes('ОТКЛЮЧЕНА') ? ' text-critical' : ' text-ink-faint'}>
+                {' · '}{llmCheck.tls}
+              </span>
+            )}
           </span>
         )}
       </div>

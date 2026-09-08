@@ -254,6 +254,8 @@ export const CORRECTION_KINDS = [
 
 /** Предполётная проверка связи (Г.91): узнать о проблеме ДО разбора. */
 export interface LlmCheck {
+  /** Чем проверяется TLS: системный набор, файл из certs/ или «отключена». */
+  tls?: string
   reachable: boolean
   provider: string
   message: string

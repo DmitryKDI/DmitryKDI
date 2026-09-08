@@ -14,13 +14,15 @@ nadzor-browser/main.js: тот же контракт structured-JSON вывод�
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
 
 import httpx
 
@@ -41,17 +43,81 @@ GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 GIGACHAT_API_BASE = os.environ.get("GIGACHAT_API_BASE", "https://api.giga.chat")
 # Личный/бизнес — тариф аккаунта, не модели; задаётся авторизационным ключом.
 GIGACHAT_SCOPE = os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-# TLS-сертификат хостов Сбера обычно подписан НУЦ Минцифры — вне России это
-# не в системном доверенном наборе. Отключать проверку (verify=False) нельзя
-# (действующая политика безопасности проекта) — вместо этого путь к
-# сертификату задаётся явно через переменную окружения, если он нужен.
-# По умолчанию — True (проверять). Отключить можно только явно:
-# GIGACHAT_CA_BUNDLE=false (или 0, no).
-_GIGACHAT_CA_RAW = os.environ.get("GIGACHAT_CA_BUNDLE", "")
-if _GIGACHAT_CA_RAW.lower() in ("false", "0", "no"):
-    GIGACHAT_CA_BUNDLE = False
-else:
-    GIGACHAT_CA_BUNDLE = _GIGACHAT_CA_RAW or True
+# TLS-сертификат хостов провайдера может быть подписан удостоверяющим
+# центром, которого нет в системном доверенном наборе (типичный симптом —
+# CERTIFICATE_VERIFY_FAILED на первом же вызове). Отключать проверку нельзя:
+# это снимает защиту от подмены на всём канале, а не «чинит сертификат».
+#
+# Правильный путь и он же самый простой для пользователя: положить файл
+# корневого сертификата в каталог `certs/` в корне проекта. Ничего больше
+# делать не нужно — каталог просматривается сам, все найденные сертификаты
+# СКЛЕИВАЮТСЯ с системным набором (certifi), поэтому и хосты провайдера, и
+# все остальные продолжают проверяться. Собранный набор кэшируется под
+# именем-отпечатком, поэтому добавление или замена файла подхватывается, а
+# лишней работы при каждом вызове нет.
+#
+# Переменная окружения GIGACHAT_CA_BUNDLE остаётся и побеждает каталог:
+#   путь   — использовать этот файл;
+#   false  — не проверять (последнее средство, видно в логе).
+CERTS_DIR = Path(os.environ.get(
+    "GIGACHAT_CA_DIR", Path(__file__).resolve().parents[3] / "certs"))
+_CERT_SUFFIXES = (".pem", ".crt", ".cer")
+
+
+def _bundle_from_certs_dir() -> str | None:
+    """Склеенный набор «системные корни + всё из certs/», или None."""
+    if not CERTS_DIR.is_dir():
+        return None
+    # Скрытые файлы пропускаются намеренно: собранный набор лежит в
+    # подкаталоге, но точечные файлы в каталоге сертификатов оставляют и
+    # редакторы, и системы синхронизации. Найдено тестом: первая версия
+    # клала собранный набор рядом, он попадал в собственный список, и
+    # отпечаток менялся на каждом вызове — то есть набор пересобирался
+    # бесконечно.
+    found = sorted(p for p in CERTS_DIR.iterdir()
+                   if p.suffix.lower() in _CERT_SUFFIXES
+                   and p.is_file() and not p.name.startswith("."))
+    if not found:
+        return None
+    blobs = [p.read_bytes() for p in found]
+    try:
+        import certifi
+        blobs.insert(0, Path(certifi.where()).read_bytes())
+    except Exception as exc:  # noqa: BLE001 — без системных корней набор всё равно рабочий
+        print(f"системный набор корневых сертификатов не добавлен ({exc}): "
+              f"проверяться будут только сертификаты из {CERTS_DIR}", file=sys.stderr)
+    digest = hashlib.sha256(b"".join(blobs)).hexdigest()[:16]
+    cache = CERTS_DIR / ".cache"
+    combined = cache / f"bundle-{digest}.pem"
+    if not combined.exists():
+        cache.mkdir(exist_ok=True)
+        for stale in cache.glob("bundle-*.pem"):
+            stale.unlink(missing_ok=True)
+        combined.write_bytes(b"\n".join(blobs))
+    return str(combined)
+
+
+def ca_bundle():
+    """Чем проверять TLS: путь к набору, True (системный) или False (не
+    проверять). Считается при каждом обращении, а не один раз при импорте:
+    положенный в `certs/` файл должен подхватываться без правки кода."""
+    raw = os.environ.get("GIGACHAT_CA_BUNDLE", "").strip()
+    if raw.lower() in ("false", "0", "no"):
+        return False
+    if raw:
+        return raw
+    return _bundle_from_certs_dir() or True
+
+
+def ca_bundle_description() -> str:
+    """Человеческое описание того, чем сейчас проверяется TLS — чтобы
+    «проверка отключена» никогда не выглядело так же, как «всё в порядке»."""
+    value = ca_bundle()
+    if value is False:
+        return "проверка сертификата ОТКЛЮЧЕНА (GIGACHAT_CA_BUNDLE=false)"
+    if value is True:
+        return "системный набор корневых сертификатов"
+    return f"набор из certs/ вместе с системным: {value}"
 
 _gigachat_token_cache: dict[str, tuple[str, float]] = {}  # api_key -> (token, истекает_в_monotonic)
 
@@ -63,7 +129,7 @@ def _gigachat_upload_image(access_token: str, png_bytes: bytes) -> str:
         files={"file": ("page.png", png_bytes, "image/png")},
         data={"purpose": "general"},
         headers={"Authorization": f"Bearer {access_token}"},
-        timeout=60.0, verify=GIGACHAT_CA_BUNDLE,
+        timeout=60.0, verify=ca_bundle(),
     )
     return resp.json()["id"]
 
@@ -86,7 +152,7 @@ def _gigachat_token(client_id: str, client_secret: str) -> str:
             "RqUID": str(uuid.uuid4()),
             "Authorization": f"Basic {creds}",
         },
-        timeout=30.0, verify=GIGACHAT_CA_BUNDLE,
+        timeout=30.0, verify=ca_bundle(),
     )
     data = resp.json()
     token = data["access_token"]
@@ -113,7 +179,7 @@ class LlmConfig:
         return self.base_url
 
 
-def extract_json_object(text: str) -> Optional[dict]:
+def extract_json_object(text: str) -> dict | None:
     if not text:
         return None
     cleaned = _THINK_BLOCK_RE.sub("", text).strip()
@@ -191,9 +257,9 @@ def call_llm_json(
     config: LlmConfig,
     system_prompt: str,
     user_text: str,
-    images: Optional[list[str]] = None,
+    images: list[str] | None = None,
     timeout: float = 120.0,
-) -> Optional[dict]:
+) -> dict | None:
     """Синхронный structured-JSON вызов. images — список data-URL (png/jpeg)."""
     provider = config.provider
     model = config.resolved_model()
@@ -252,7 +318,7 @@ def call_llm_json(
         resp = _post_json(
             f"{GIGACHAT_API_BASE}/v1/chat/completions",
             json=body, headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            timeout=timeout, verify=GIGACHAT_CA_BUNDLE,
+            timeout=timeout, verify=ca_bundle(),
         )
         data = resp.json()
         text = data["choices"][0]["message"]["content"]
@@ -287,5 +353,23 @@ def check_llm_reachable(llm_config: LlmConfig | None) -> tuple[bool, str]:
             timeout=30.0,
         )
     except Exception as exc:  # noqa: BLE001 — причина нужна целиком, любая
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, "связь с провайдером есть"
+        return False, f"{type(exc).__name__}: {exc}{_tls_advice(exc)}"
+    return True, f"связь с провайдером есть ({ca_bundle_description()})"
+
+
+def _tls_advice(exc: Exception) -> str:
+    """Подсказка ровно на тот случай, который пользователь не решит сам.
+
+    Сообщение «CERTIFICATE_VERIFY_FAILED» ничего не говорит о том, что
+    делать, и толкает к первому попавшемуся совету из интернета —
+    отключить проверку. Поэтому здесь называется рабочее действие, а
+    отключение упомянуто последним и как последнее средство.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    if "CERTIFICATE_VERIFY" not in text.upper() and "SSL" not in text.upper():
+        return ""
+    return (f". Это не ключ и не сеть: сертификат хоста подписан центром, "
+            f"которого нет в доверенном наборе машины. Положите файл корневого "
+            f"сертификата (.pem/.crt/.cer) в каталог {CERTS_DIR} и перезапустите "
+            f"сервер — он подхватится сам и будет склеен с системным набором. "
+            f"Сейчас используется: {ca_bundle_description()}")
