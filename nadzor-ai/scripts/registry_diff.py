@@ -241,7 +241,8 @@ def _load_text_facts(paths: list[str]) -> list[dict]:
     return out
 
 
-def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: LlmConfig, _emit) -> list:
+def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: LlmConfig,
+                                      _emit, on_norms=None) -> list:
     """Обёртка над `extract_requirements_llm` с видимым счётчиком сбоев
     (Г.77): сбой ВСЕХ пачек (сеть/ключ/сертификат) раньше давал честный, но
     неотличимый от «в документе нет требований» пустой список — реально
@@ -254,7 +255,8 @@ def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: Llm
         failed_pages.append(first_page)
         _emit(f"  [сбой пачки требований, стр.{first_page}+]: {exc!r}")
 
-    result = extract_requirements_llm(pd_text_facts, llm_config, on_chunk_error=_on_error)
+    result = extract_requirements_llm(pd_text_facts, llm_config, on_chunk_error=_on_error,
+                                      on_norms=on_norms)
     if failed_pages:
         _emit(f"ВНИМАНИЕ: извлечение требований (Г.36) — {len(failed_pages)} пачек(и) вызова ЛЛМ "
               f"упали (см. выше) — итоговый список требований по ним НЕ пополнен, "
@@ -835,7 +837,7 @@ def _supplied_documents(paths: list[str]) -> list[SuppliedDocument]:
     """Один `SuppliedDocument` на реально переданный файл — обозначение из
     имени файла плюс хвост шифра из штампа первой страницы (Г.17), на
     случай, когда имя файла ничего не говорит о комплекте (реальный случай
-    этого проекта: `V2_01-05-04-02-07_Том 5.4.2 ОВ (1).pdf` не намекает на
+    этого проекта: имя вида «маркировка + номер тома + марка» не намекает на
     «ИОС5.4.2» из штампа). Штамп в кривых на первой странице — не сбой, а
     просто нет доп. подсказки (Г.10), совпадение по имени файла всё равно
     отрабатывает."""

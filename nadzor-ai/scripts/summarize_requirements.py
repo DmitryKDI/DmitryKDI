@@ -155,6 +155,8 @@ def main() -> None:
 
         # Шаг 3 — требования. Главный шаг.
         _emit("=== Шаг 3. Требования и способы производства работ ===")
+        # Г.103 — перечень нормативов приходит попутно с выжимкой.
+        llm_norms: list[dict] = []
         if llm_config is not None:
             # Г.91 — связь проверяется ДО десятков вызовов, а не по их итогу.
             reachable, why = check_llm_reachable(llm_config)
@@ -177,7 +179,8 @@ def main() -> None:
                     remaining -= volume.vision_calls
                 _emit("  наименования листов дочитаны по изображению:")
                 _emit(render_composition(volumes))
-            requirements = _extract_requirements_llm_visible(pd_text_facts, llm_config, _emit)
+            requirements = _extract_requirements_llm_visible(
+                pd_text_facts, llm_config, _emit, on_norms=llm_norms.extend)
         else:
             _emit("  Ключ ЛЛМ не задан — regex-путь: сводка будет СЫРОЙ, с шумом.")
             _emit("  Это не ошибка, но результат хуже: чтобы модель отсеяла шум сама,")
@@ -196,7 +199,7 @@ def main() -> None:
         # параметр (Г.101). Считается ДО сводки, потому что сводка печатает
         # привязку рядом с требованием.
         _emit("=== Шаг 4. Нормативная база ===")
-        _, norms_section = attach_norms(requirements, pd_text_facts, llm_config)
+        _, norms_section = attach_norms(requirements, pd_text_facts, llm_config, llm_norms)
         _emit(norms_section)
         _emit("")
 

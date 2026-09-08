@@ -17,7 +17,13 @@ import pymupdf
 
 from .classification import classify_document
 from .llm import LlmConfig
-from .norms_registry import find_norms, link_by_meaning, link_cited, render_norms_section
+from .norms_registry import (
+    find_norms,
+    link_by_meaning,
+    link_cited,
+    norms_from_llm,
+    render_norms_section,
+)
 from .requirement_registry import Requirement, _normalize_for_dedup
 from .set_overview import official_section_label
 
@@ -72,7 +78,8 @@ def load_text_facts(sources: list[tuple]) -> list[dict]:
 
 
 def attach_norms(requirements: list[Requirement], text_facts: list[dict],
-                 config: LlmConfig | None = None) -> tuple[list, str]:
+                 config: LlmConfig | None = None,
+                 llm_norms: list[dict] | None = None) -> tuple[list, str]:
     """Привязать требования к нормативам ПЕРЕЧНЯ ЭТОГО ТОМА (Г.101).
 
     Один код на CLI и сервер, как и всё остальное в этом модуле (Г.94).
@@ -87,11 +94,19 @@ def attach_norms(requirements: list[Requirement], text_facts: list[dict],
        ключа шаг не выполняется, и требование остаётся без привязки — это
        «не сопоставляли», а не «норматива нет».
 
+    Откуда берётся сам перечень: `llm_norms` — то, что модель прочитала
+    попутно с выжимкой (основной путь, Г.103), иначе поиск по тексту
+    (запасной путь без ключа). Заголовок раздела с перечнем у каждого
+    проектировщика свой, и закрытый список формулировок в регулярке — это
+    заточка под уже виденные документы.
+
     Возвращает `(нормативы, текст раздела отчёта)`. Пустой перечень — не
     ошибка и не повод угадывать нормативы по разделу: раздел отчёта прямо
     говорит, что перечня в томе не найдено (Г.10).
     """
-    norms = find_norms(text_facts)
+    norms = norms_from_llm(llm_norms or [])
+    if not norms:
+        norms = find_norms(text_facts)
     if not norms:
         return [], render_norms_section([], requirements)
     pending = link_cited(requirements, norms)

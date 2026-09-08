@@ -218,3 +218,45 @@ def test_report_separates_cited_from_matched():
 
     text = render_norms_section(norms, [cited, guessed])
     assert "названа в тексте: 1" in text
+
+
+# --- перечень приходит от модели попутно с выжимкой (Г.103) -----------------
+
+def test_norms_read_by_the_model_are_accepted_but_filtered():
+    """Основной путь: заголовок раздела с перечнем у каждого проектировщика
+    свой, и закрытый список формулировок в регулярке — заточка под уже
+    виденные документы. Документ и так уходит в модель ради выжимки.
+
+    Ответ модели — недоверенные данные: принимается только то, что похоже на
+    обозначение нормативного документа, иначе модель может дописать в
+    перечень то, чего на странице нет (раздел 0, п.7)."""
+    from app.norms_registry import norms_from_llm
+
+    norms = norms_from_llm([
+        {"designation": "СП 00.00000.0000", "title": "Наименование документа", "page": 70},
+        {"designation": "всякий текст не про норматив", "title": "", "page": 70},
+        {"designation": "", "title": "пусто", "page": 70},
+        "строка вместо объекта",
+    ])
+    assert [n.designation for n in norms] == ["СП 00.00000.0000"]
+    assert norms[0].title == "Наименование документа"
+    assert norms[0].page == 70
+
+
+def test_model_answer_duplicates_collapse_by_designation():
+    """Перечень может встретиться в нескольких пачках (лист содержания и сам
+    перечень) — документ от этого не удваивается."""
+    from app.norms_registry import norms_from_llm
+
+    norms = norms_from_llm([
+        {"designation": "ГОСТ 00000-00", "title": "Первое упоминание"},
+        {"designation": "ГОСТ 00000-00*", "title": "Оно же со звёздочкой редакции"},
+    ])
+    assert len(norms) == 1
+
+
+def test_text_path_stays_as_the_no_key_fallback():
+    """Г.92 — детерминированный путь ценен не только как запасной: он же
+    перекрёстная проверка того, что вернула модель."""
+    facts = [{"page": 76, "text": LIST_PAGE}]
+    assert find_norms(facts), "без ключа перечень всё равно находится по тексту"

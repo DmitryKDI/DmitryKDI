@@ -1,4 +1,4 @@
-.PHONY: help install backend web up down test lint security clean
+.PHONY: help install backend web up down test check-generic lint security clean
 
 help:            ## Список команд
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -21,6 +21,10 @@ down:            ## Остановить и удалить контейнеры
 
 test:            ## Прогнать тесты с покрытием
 	PYTHONPATH=.:packages/backend .venv/bin/python -m pytest packages/backend/tests -q
+
+check-generic:   ## Проверить, что код не заточен под конкретный пример (раздел 0, п.8)
+	PYTHONPATH=.:packages/backend .venv/bin/python -m pytest \
+		packages/backend/tests/test_code_is_generic.py -q
 
 lint:            ## Стиль и границы модулей
 	.venv/bin/ruff check packages scripts

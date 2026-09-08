@@ -612,11 +612,15 @@ def _run_pd(run_id: int) -> None:
             db.commit()
 
         text_facts = load_text_facts(sources)
-        requirements = extract_requirements_llm(text_facts, config=config)
+        # Г.103 — перечень нормативов собирается ПОПУТНО тем же вызовом,
+        # которым идёт выжимка: отдельного прохода по документу не нужно.
+        llm_norms: list[dict] = []
+        requirements = extract_requirements_llm(
+            text_facts, config=config, on_norms=llm_norms.extend)
         # Г.101 — норматив ИЗ ПЕРЕЧНЯ ЭТОГО ТОМА проставляется до сохранения:
         # иначе привязка не попадёт ни в сводку, ни в датасет, ни в стадию
         # сверки, и её пришлось бы считать заново на каждом шаге.
-        _, norms_section = attach_norms(requirements, text_facts, config)
+        _, norms_section = attach_norms(requirements, text_facts, config, llm_norms)
         run.summary = render_summary(requirements) + "\n" + norms_section
         run.requirements_total = len(requirements)
         run.extractor = "llm"

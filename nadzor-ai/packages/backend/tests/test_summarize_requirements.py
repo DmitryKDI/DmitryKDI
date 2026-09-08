@@ -68,7 +68,7 @@ def test_api_key_from_env_var_reaches_llm_config(monkeypatch, tmp_path):
     seen: list[str] = []
     monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible",
-                        lambda facts, cfg, emit: seen.append(cfg.api_key) or [])
+                        lambda facts, cfg, emit, **kw: seen.append(cfg.api_key) or [])
     sr.main()
 
     assert seen == ["FAKE_ENV_KEY"]
@@ -87,7 +87,7 @@ def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path
     monkeypatch.setattr(sys, "argv",
                         ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
     monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
-    monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit: [])
+    monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit, **kw: [])
     sr.main()
 
     out = capsys.readouterr().out
@@ -106,7 +106,7 @@ def test_unconnected_steps_are_announced_not_silently_skipped(monkeypatch, capsy
     monkeypatch.setattr(sys, "argv",
                         ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
     monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
-    monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit: [])
+    monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit, **kw: [])
     sr.main()
 
     assert "не подключены" in capsys.readouterr().out
