@@ -16,6 +16,29 @@ class DocumentOut(BaseModel):
     classification_source: str | None
     status: str
     uploaded_at: dt.datetime
+    # Размер оригинала и число частей, на которые он разрезан для обработки.
+    # Инспектору это говорит, почему тяжёлый том обрабатывается по кускам;
+    # нумерация листов при этом остаётся исходной.
+    size: int = 0
+    parts_count: int = 0
+
+
+class StorageStats(BaseModel):
+    """Что занимает место и что можно освободить."""
+    files: int
+    bytes: int
+    cache_files: int
+    cache_bytes: int
+    documents: int
+    retention_days: int
+
+
+class StorageCleanupResult(BaseModel):
+    removed_files: int
+    freed_bytes: int
+    cache_removed: int
+    cache_freed_bytes: int
+    kept_referenced: int
 
 
 class AnalysisRunCreate(BaseModel):
@@ -104,6 +127,10 @@ class SettingsOut(BaseModel):
     base_url: str
     model: str
     api_key: str
+    retention_days: int = 90
+    max_upload_kb: int = 512 * 1024
+    max_pages: int = 5000
+    part_kb: int = 32 * 1024
 
 
 class SettingsUpdate(BaseModel):
@@ -111,6 +138,10 @@ class SettingsUpdate(BaseModel):
     base_url: str = ""
     model: str = ""
     api_key: str = ""
+    retention_days: int | None = None
+    max_upload_kb: int | None = None
+    max_pages: int | None = None
+    part_kb: int | None = None
 
 
 class PdRunCreate(BaseModel):

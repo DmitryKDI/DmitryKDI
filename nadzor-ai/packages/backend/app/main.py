@@ -9,27 +9,32 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
-import uuid
 from pathlib import Path
 
+import pymupdf
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import models, review_dialog, schemas
+from . import file_store, models, review_dialog, schemas
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
-from .document_composition import (describe_volume, name_unread_sheets,
-                                   render_composition)
+from .document_composition import describe_volume, name_unread_sheets, render_composition
+from .document_split import split_pdf
 from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
-from .pd_stage import (attach_norms, attach_rooms_by_name, load_text_facts,
-                       record_profile, render_section_knowledge, render_summary)
+from .pd_stage import (
+    attach_norms,
+    attach_rooms_by_name,
+    load_text_facts,
+    record_profile,
+    render_section_knowledge,
+    render_summary,
+)
 from .pd_store import load_run, save_run
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_text_verify import verify_general_requirements_llm
@@ -44,8 +49,9 @@ from .vision import (
 )
 from .vision_page_compare import check_requirement_on_page
 
-UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+# Каталог кэша оригиналов — производное от хранилища (`file_store`): его
+# можно удалить целиком, файлы восстановятся из базы по требованию.
+UPLOAD_DIR = file_store.CACHE_DIR
 
 app = FastAPI(title="НАДЗОР.ИИ — backend")
 app.add_middleware(
@@ -168,20 +174,101 @@ def _llm_config(db: Session) -> LlmConfig:
 # ---------- Документы ----------
 
 
+def _document_out(doc: models.Document) -> schemas.DocumentOut:
+    """Ответ о документе с вычисляемыми полями: число частей в БД не
+    хранится, а инспектору важно видеть, что тяжёлый том обрабатывается
+    по кускам (нумерация листов при этом исходная)."""
+    out = schemas.DocumentOut.model_validate(doc)
+    out.parts_count = len(doc.parts or [])
+    return out
+
+
+def _limits(db: Session) -> models.Settings:
+    row = db.query(models.Settings).first()
+    if row is None:
+        row = models.Settings()
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def _referenced_digests(db: Session) -> set[str]:
+    """Отпечатки, на которые ещё ссылается хоть один документ.
+
+    Удалить оригинал, на который есть ссылка, нельзя ни по какому сроку:
+    иначе разбор перестанет открываться, а инспектор увидит ошибку вместо
+    документа, который он сам загрузил.
+    """
+    keep: set[str] = set()
+    for doc in db.query(models.Document).all():
+        if doc.digest:
+            keep.add(doc.digest)
+        for part in (doc.parts or []):
+            if isinstance(part, dict) and part.get("digest"):
+                keep.add(str(part["digest"]))
+    return keep
+
+
 @app.post("/documents", response_model=schemas.DocumentOut)
 def upload_document(side: str, file: UploadFile, db: Session = Depends(get_session)):
     if side not in ("before", "after"):
         raise HTTPException(400, "side must be 'before' or 'after'")
 
+    limits = _limits(db)
+    # Читаем в память один раз: отпечаток, лимит и укладка в хранилище нужны
+    # до того, как файл где-то окажется. Лимит проверяется по факту
+    # прочитанного, а не по заголовку запроса — заголовок присылает клиент.
+    data = file.file.read()
+    if not data:
+        raise HTTPException(400, "пустой файл")
+    max_bytes = max(1, limits.max_upload_kb) * 1024
+    if len(data) > max_bytes:
+        raise HTTPException(413, f"файл больше допустимого: {len(data) / 1048576:.1f} МБ "
+                                 f"при пределе {limits.max_upload_kb / 1024:.0f} МБ")
+    # Тип определяется по сигнатуре, а не по расширению (Б.4): расширение
+    # приходит от загружающей стороны и ничего не доказывает.
+    if not data.startswith(b"%PDF-"):
+        raise HTTPException(415, "это не PDF (проверка по сигнатуре файла, не по расширению)")
+
     # Оригинальное имя файла — только отображаемые метаданные (используется в
     # классификации по имени и в подписях находок), на диск не идёт вообще:
     # приходит от клиента и не должно участвовать в построении пути.
     original_name = Path(file.filename or "document.pdf").name
-    dest = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
 
-    doc = models.Document(name=original_name, side=side, file_path=str(dest), status="parsing")
+    digest = file_store.digest_of(data)
+    pages = 0
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as probe:
+            pages = probe.page_count
+    except Exception as exc:  # noqa: BLE001 — битый PDF не должен ронять сервер
+        raise HTTPException(415, f"PDF не открывается: {exc}") from exc
+    if pages > max(1, limits.max_pages):
+        raise HTTPException(413, f"в документе {pages} страниц при пределе {limits.max_pages}")
+
+    # Дедупликация по содержимому: тот же том, загруженный второй раз,
+    # места больше не занимает — ключ хранилища и есть отпечаток.
+    file_store.put(data, pages=pages)
+    dest = file_store.materialize(digest)
+    if dest is None:
+        raise HTTPException(500, "оригинал не сохранён в хранилище")
+
+    # Тяжёлый том режется на части ПО ВЕСУ (`document_split`): нумерация
+    # листов при этом остаётся исходной, части — внутреннее устройство.
+    part_rows: list[dict] = []
+    part_bytes = max(1, limits.part_kb) * 1024
+    if len(data) > part_bytes:
+        try:
+            for part in split_pdf(dest, part_bytes):
+                part_digest = file_store.put(part.data, pages=part.pages)
+                part_rows.append({"digest": part_digest, "first_page": part.first_page,
+                                  "pages": part.pages})
+        except Exception as exc:  # noqa: BLE001 — не смогли разрезать, работаем целиком
+            print(f"том не разрезан на части ({exc}): {original_name}", file=sys.stderr)
+            part_rows = []
+
+    doc = models.Document(name=original_name, side=side, file_path=str(dest),
+                          status="parsing", digest=digest, size=len(data), parts=part_rows)
     db.add(doc)
     db.commit()
     db.refresh(doc)
@@ -200,12 +287,15 @@ def upload_document(side: str, file: UploadFile, db: Session = Depends(get_sessi
         doc.classification_source = str(exc)
     db.commit()
     db.refresh(doc)
-    return doc
+    # Через `_document_out`, а не напрямую: число частей — вычисляемое поле,
+    # и возврат ORM-объекта отдавал бы ноль частей у разрезанного тома.
+    return _document_out(doc)
 
 
 @app.get("/documents", response_model=list[schemas.DocumentOut])
 def list_documents(db: Session = Depends(get_session)):
-    return db.query(models.Document).order_by(models.Document.uploaded_at.desc()).all()
+    rows = db.query(models.Document).order_by(models.Document.uploaded_at.desc()).all()
+    return [_document_out(d) for d in rows]
 
 
 @app.delete("/documents/{document_id}")
@@ -213,9 +303,15 @@ def delete_document(document_id: int, db: Session = Depends(get_session)):
     doc = db.get(models.Document, document_id)
     if doc is None:
         raise HTTPException(404, "not found")
-    Path(doc.file_path).unlink(missing_ok=True)
+    mine = {doc.digest} | {str(p.get("digest")) for p in (doc.parts or []) if isinstance(p, dict)}
     db.delete(doc)
     db.commit()
+    # Оригинал удаляется, только если на него не осталось ссылок: одно и то
+    # же содержимое бывает загружено в двух комплектах (дедупликация), и
+    # удаление одного документа не должно уносить чужой файл.
+    still_used = _referenced_digests(db)
+    for digest in mine - still_used - {""}:
+        file_store.forget(digest)
     return {"ok": True}
 
 
@@ -994,6 +1090,55 @@ def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_sess
     s.base_url = body.base_url
     s.model = body.model
     s.api_key = body.api_key
+    # Сроки и лимиты необязательны: интерфейс может прислать только настройки
+    # провайдера, и тогда прежние значения сохраняются, а не обнуляются.
+    for field in ("retention_days", "max_upload_kb", "max_pages", "part_kb"):
+        value = getattr(body, field, None)
+        if value is not None:
+            setattr(s, field, max(0, int(value)))
     db.commit()
     db.refresh(s)
     return s
+
+
+@app.get("/storage", response_model=schemas.StorageStats)
+def storage_stats(db: Session = Depends(get_session)):
+    """Сколько занимают оригиналы и сколько — восстановимый кэш.
+
+    Разделено намеренно: кэш можно удалить целиком в любой момент без потери
+    данных, оригиналы — нет. Пока эти две цифры показывались одной, «6 ГБ на
+    диске» не отвечало на вопрос, сколько из них можно освободить сейчас.
+    """
+    stats = file_store.stats()
+    cache_files = cache_bytes = 0
+    if file_store.CACHE_DIR.is_dir():
+        for path in file_store.CACHE_DIR.glob("*.pdf"):
+            cache_files += 1
+            cache_bytes += path.stat().st_size
+    return schemas.StorageStats(
+        files=stats.files, bytes=stats.bytes,
+        cache_files=cache_files, cache_bytes=cache_bytes,
+        documents=db.query(models.Document).count(),
+        retention_days=_limits(db).retention_days,
+    )
+
+
+@app.post("/storage/cleanup", response_model=schemas.StorageCleanupResult)
+def storage_cleanup(drop_cache: bool = False, db: Session = Depends(get_session)):
+    """Убрать оригиналы, к которым не обращались дольше срока хранения.
+
+    Оригинал, на который ссылается хоть один документ, не удаляется никогда,
+    сколько бы времени ни прошло: иначе инспектор откроет свой же документ и
+    получит ошибку. `drop_cache` дополнительно чистит кэш — место
+    освобождается сразу, файлы восстановятся из базы при обращении.
+    """
+    keep = _referenced_digests(db)
+    removed, freed = file_store.purge_unused(_limits(db).retention_days, keep=keep)
+    cache_removed = cache_freed = 0
+    if drop_cache:
+        cache_removed, cache_freed = file_store.drop_cache(keep=set())
+    return schemas.StorageCleanupResult(
+        removed_files=removed, freed_bytes=freed,
+        cache_removed=cache_removed, cache_freed_bytes=cache_freed,
+        kept_referenced=len(keep),
+    )

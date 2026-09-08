@@ -127,7 +127,14 @@ function UploadZone({
                 <span className="min-w-0 flex-1 truncate" title={doc.name}>
                   {doc.status === 'parsing' && <span className="text-ink-faint">Обрабатывается… </span>}
                   {doc.status === 'error' && <span className="text-critical">Ошибка · </span>}
-                  {doc.name} <span className="text-ink-faint">· {doc.pages} л.</span>
+                  {doc.name} <span className="text-ink-faint">
+                    · {doc.pages} л.{doc.size ? ` · ${formatSize(doc.size)}` : ''}
+                    {/* Разрезание тяжёлого тома на части — внутреннее устройство
+                        хранения, но инспектору важно понимать, почему такой том
+                        обрабатывается дольше. Нумерация листов при этом
+                        остаётся исходной, и это сказано прямо. */}
+                    {doc.parts_count > 1 && ` · ${doc.parts_count} частей (нумерация листов исходная)`}
+                  </span>
                 </span>
                 <span className="flex items-center gap-2">
                   <DisciplineBadge doc={doc} onChange={(code) => onSetSection(doc.id, code)} />
@@ -319,6 +326,63 @@ function ParseCard({
   )
 }
 
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1073741824).toFixed(1)} ГБ`
+  if (bytes >= 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} МБ`
+  return `${Math.max(1, Math.round(bytes / 1024))} КБ`
+}
+
+/** Хранилище оригиналов: сколько занято и что можно освободить.
+ *
+ *  Оригиналы и кэш показаны РАЗДЕЛЬНО намеренно: кэш удаляется в любой
+ *  момент без потери данных (файлы восстановятся из базы), оригиналы — нет.
+ *  Одной цифрой «сколько на диске» этого не сказать, а решение принимает
+ *  администратор. */
+function StorageCard() {
+  const queryClient = useQueryClient()
+  const { pushToast } = useApp()
+  const storage = useQuery({ queryKey: ['backend-storage'], queryFn: backendApi.getStorage })
+  const cleanup = useMutation({
+    mutationFn: (dropCache: boolean) => backendApi.cleanupStorage(dropCache),
+    onSuccess: (r) => {
+      pushToast(`Удалено оригиналов: ${r.removed_files}, освобождено ${formatSize(r.freed_bytes + r.cache_freed_bytes)}`)
+      queryClient.invalidateQueries({ queryKey: ['backend-storage'] })
+    },
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось выполнить уборку', 'error'),
+  })
+  const data = storage.data
+  return (
+    <SectionCard title="Хранилище документов">
+      {!data ? <Skeleton rows={2} /> : (
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between"><span className="text-ink-muted">Оригиналов в базе</span>
+            <span>{data.files} · {formatSize(data.bytes)}</span></div>
+          <div className="flex justify-between"><span className="text-ink-muted">Кэш на диске (восстановимый)</span>
+            <span>{data.cache_files} · {formatSize(data.cache_bytes)}</span></div>
+          <div className="flex justify-between"><span className="text-ink-muted">Документов в работе</span>
+            <span>{data.documents}</span></div>
+          <div className="flex justify-between"><span className="text-ink-muted">Срок хранения</span>
+            <span>{data.retention_days} дн.</span></div>
+          <p className="rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2 text-xs text-ink-muted">
+            Оригинал, на который ссылается загруженный документ, не удаляется никогда —
+            сколько бы ни стоял срок хранения. Одинаковые файлы хранятся один раз.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn-ghost px-3 py-1.5 text-sm"
+              disabled={cleanup.isPending} onClick={() => cleanup.mutate(false)}>
+              Убрать по сроку хранения
+            </button>
+            <button type="button" className="btn-ghost px-3 py-1.5 text-sm"
+              disabled={cleanup.isPending} onClick={() => cleanup.mutate(true)}>
+              Освободить кэш
+            </button>
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  )
+}
 
 export default function NewAnalysis() {
   const queryClient = useQueryClient()
@@ -789,6 +853,8 @@ function ReviewDialog({ runId }: { runId: number }) {
             </p>
           </div>
         </SectionCard>
+
+        <StorageCard />
 
         <SectionCard title="Запуск анализа">
           <button className="btn-primary w-full justify-center"

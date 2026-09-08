@@ -29,6 +29,15 @@ class Document(Base):
     classification_source: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="parsing")  # parsing|ok|error
     uploaded_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Отпечаток содержимого — ключ оригинала в отдельном хранилище
+    # (`file_store`). Через него документ и файл связаны: два документа с
+    # одинаковым содержимым ссылаются на один оригинал.
+    digest: Mapped[str] = mapped_column(String, default="", index=True)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    # Части тяжёлого тома: [{digest, first_page, pages}] в порядке листов.
+    # Пусто — том целый. Нумерация листов наружу всегда исходная, части —
+    # внутреннее устройство хранения (`document_split`).
+    parts: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class AnalysisRun(Base):
@@ -273,3 +282,13 @@ class Settings(Base):
     base_url: Mapped[str] = mapped_column(String, default="")
     model: Mapped[str] = mapped_column(String, default="")
     api_key: Mapped[str] = mapped_column(String, default="")
+    # Сроки и лимиты хранения (Б.4/Б.5). Значения по умолчанию — бюджеты, а
+    # не пороги истины: их меняет администратор под свой стенд, и от них не
+    # зависит правильность разбора, только сколько места и времени он берёт.
+    # Единица — килобайт, а не мегабайт: интерфейс показывает мегабайты,
+    # но в килобайтах предел можно задать и для маленького стенда, и
+    # проверить тестом, не собирая гигабайтный файл ради проверки лимита.
+    retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    max_upload_kb: Mapped[int] = mapped_column(Integer, default=512 * 1024)
+    max_pages: Mapped[int] = mapped_column(Integer, default=5000)
+    part_kb: Mapped[int] = mapped_column(Integer, default=32 * 1024)

@@ -49,6 +49,7 @@ DECLARED: dict[str, str] = {
     "classification.TITLE_PAGE_MAX_BLOCKS": BUDGET,
     "classification.STAGE_SCAN_PAGES": BUDGET,
     "compliance.DEFAULT_MAX_VISUAL_PAGES": BUDGET,
+    "document_split.DEFAULT_PART_BYTES": BUDGET,
     "diffing.MAX_DIFF_WORDS": BUDGET,
     "llm._RATE_LIMIT_MAX_RETRIES": BUDGET,
     "llm._RATE_LIMIT_BASE_DELAY": BUDGET,

@@ -30,6 +30,27 @@ export interface BackendDocument {
   classification_source: string | null
   status: 'parsing' | 'ok' | 'error'
   uploaded_at: string
+  /** Размер оригинала в байтах и число частей, на которые он разрезан для
+   *  обработки. Нумерация листов при этом остаётся исходной. */
+  size: number
+  parts_count: number
+}
+
+export interface BackendStorage {
+  files: number
+  bytes: number
+  cache_files: number
+  cache_bytes: number
+  documents: number
+  retention_days: number
+}
+
+export interface BackendStorageCleanup {
+  removed_files: number
+  freed_bytes: number
+  cache_removed: number
+  cache_freed_bytes: number
+  kept_referenced: number
 }
 
 export interface BackendAnalysisRun {
@@ -243,6 +264,10 @@ export interface BackendSettings {
   base_url: string
   model: string
   api_key: string
+  retention_days?: number
+  max_upload_kb?: number
+  max_pages?: number
+  part_kb?: number
 }
 
 export const backendApi = {
@@ -322,6 +347,10 @@ export const backendApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approved }),
     }),
+
+  getStorage: () => request<BackendStorage>('/storage'),
+  cleanupStorage: (dropCache = false) =>
+    request<BackendStorageCleanup>(`/storage/cleanup?drop_cache=${dropCache}`, { method: 'POST' }),
 
   getSettings: () => request<BackendSettings>('/settings'),
   updateSettings: (settings: BackendSettings) =>
