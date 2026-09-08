@@ -122,9 +122,16 @@ def _bundle_from_certs_dir() -> str | None:
     # клала собранный набор рядом, он попадал в собственный список, и
     # отпечаток менялся на каждом вызове — то есть набор пересобирался
     # бесконечно.
-    found = sorted(p for p in CERTS_DIR.iterdir()
+    # Поиск ВГЛУБЬ, а не только в самом каталоге: распаковка архива в
+    # проводнике Windows создаёт подпапку с именем архива, и сертификаты
+    # оказываются на уровень ниже. Первая версия их не видела и молча
+    # оставалась на системном наборе — пользователь сделал всё правильно и
+    # не получил ни результата, ни сообщения (Г.10). Служебный подкаталог
+    # со сборкой и скрытые файлы пропускаются.
+    found = sorted(p for p in CERTS_DIR.rglob("*")
                    if p.suffix.lower() in _CERT_SUFFIXES + (".zip",)
-                   and p.is_file() and not p.name.startswith("."))
+                   and p.is_file() and not p.name.startswith(".")
+                   and not any(part.startswith(".") for part in p.relative_to(CERTS_DIR).parts))
     if not found:
         return None
     blobs: list[bytes] = []

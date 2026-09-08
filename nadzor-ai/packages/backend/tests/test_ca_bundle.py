@@ -209,4 +209,26 @@ if __name__ == "__main__":
     test_disabled_verification_is_never_silent()
     test_empty_folder_means_system_roots()
     test_tls_failure_says_what_to_do_not_just_what_broke()
+    test_certificates_in_a_subfolder_are_found_too()
     print("ALL PASS")
+
+
+def test_certificates_in_a_subfolder_are_found_too():
+    """Распаковка архива в проводнике Windows создаёт подпапку с именем
+    архива. Первая версия искала только в самом каталоге и молча оставалась
+    на системном наборе: пользователь сделал всё правильно и не получил ни
+    результата, ни сообщения. Найдено проверкой реального сценария, а не
+    рассуждением.
+    """
+    import ssl as _ssl
+    directory = Path(tempfile.mkdtemp())
+    nested = directory / "windows_russian_trusted_root_ca"
+    nested.mkdir()
+    (nested / "root.cer").write_bytes(_ssl.PEM_cert_to_DER_cert(_REAL_PEM))
+    llm.CERTS_DIR = directory
+    os.environ.pop("GIGACHAT_CA_BUNDLE", None)
+
+    bundle = llm.ca_bundle()
+    assert isinstance(bundle, str), "сертификат из подпапки не найден"
+    assert len(_ssl.create_default_context(cafile=bundle).get_ca_certs()) >= 1
+    print("OK: сертификаты во вложенной папке найдены")

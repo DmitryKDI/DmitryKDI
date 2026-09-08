@@ -1,13 +1,63 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// Убийца устаревшего сервис-воркера (Г.111).
+//
+// Симптом, ради которого это написано: в браузере открывается СТАРАЯ версия
+// приложения — экраны, которых в коде уже нет. Причина не в сборке: рабочую
+// версию подменяет сервис-воркер, установленный прошлой сборкой. Он отдаёт
+// свой кэш и переживает и перезапуск сервера, и обновление кода, и обычное
+// обновление страницы.
+//
+// Само по себе это не чинится: пока по адресу /sw.js ничего нет, браузер
+// оставляет прежнего воркера. Поэтому в режиме разработки по этому адресу
+// отдаётся воркер-самоликвидатор: он чистит все кэши, снимает регистрацию и
+// перезагружает открытые вкладки. После одного обновления страницы окно
+// показывает то, что действительно лежит в коде.
+function killStaleServiceWorker(): Plugin {
+  const script = [
+    "self.addEventListener('install', () => self.skipWaiting())",
+    "self.addEventListener('activate', (event) => event.waitUntil((async () => {",
+    "  for (const key of await caches.keys()) await caches.delete(key)",
+    "  await self.registration.unregister()",
+    "  for (const client of await self.clients.matchAll({ type: 'window' })) client.navigate(client.url)",
+    "})()))",
+  ].join('\n')
+  return {
+    name: 'kill-stale-service-worker',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.split('?')[0] !== '/sw.js') return next()
+        res.setHeader('Content-Type', 'application/javascript')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(script)
+      })
+    },
+  }
+}
 
 // Мобильный режим: офлайн обязателен — связь на стройке нестабильна.
 export default defineConfig({
   plugins: [
     react(),
+    killStaleServiceWorker(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,svg,png}'],
+        // Новая сборка обязана вытеснять предыдущую сразу, а не ждать,
+        // пока пользователь закроет все вкладки: иначе он смотрит на старое
+        // приложение и не понимает, почему правки не появились.
+        clientsClaim: true,
+        skipWaiting: true,
+        cleanupOutdatedCaches: true,
+        // Обращения к бэкенду сервис-воркер не перехватывает: это данные
+        // разбора, а не оболочка приложения, и отдавать их из кэша значит
+        // показывать инспектору вчерашний результат как сегодняшний.
+        navigateFallbackDenylist: [/^\/backend/],
+      },
       manifest: {
         name: 'НАДЗОР.ИИ — предиктивный строительный надзор',
         short_name: 'НАДЗОР.ИИ',
@@ -18,34 +68,16 @@ export default defineConfig({
         start_url: '/',
         icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
       },
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png}'],
-        runtimeCaching: [
-          {
-            // Карта внимания и гипотезы должны открываться без связи.
-            urlPattern: /\/api\/(attention|findings|objects)/,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'nadzor-api',
-              expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 14 },
-            },
-          },
-          {
-            urlPattern: /\/api\/documents\/.*\/page\//,
-            handler: 'CacheFirst',
-            options: { cacheName: 'nadzor-pages', expiration: { maxEntries: 120 } },
-          },
-        ],
-      },
     }),
   ],
   server: {
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/api': { target: process.env.VITE_API_URL || 'http://localhost:8000', changeOrigin: true },
-      // Отдельный лёгкий бэкенд (packages/backend) — сравнение документов,
-      // без RBAC/аудита; см. NewAnalysis.tsx и backendApi.ts.
+      // Г.85 удалил второй сервер (порт 8000) вместе со всей витриной CRM.
+      // Проксирование на него оставалось и вело в никуда: обращение по /api
+      // упиралось в закрытый порт и показывало «не удалось выполнить запрос»
+      // вместо понятной причины. Осталась одна цель — движок разбора.
       '/backend': {
         target: process.env.VITE_BACKEND_URL || 'http://localhost:8010',
         changeOrigin: true,
