@@ -227,15 +227,37 @@ def ca_bundle():
     return _bundle_from_certs_dir() or True
 
 
+def certificate_names() -> list[str]:
+    """Имена файлов сертификатов, реально попавших в набор."""
+    if not CERTS_DIR.is_dir():
+        return []
+    return sorted(
+        p.name for p in CERTS_DIR.rglob("*")
+        if p.suffix.lower() in _CERT_SUFFIXES + (".zip",)
+        and p.is_file() and not p.name.startswith(".")
+        and not any(part.startswith(".") for part in p.relative_to(CERTS_DIR).parts))
+
+
 def ca_bundle_description() -> str:
-    """Человеческое описание того, чем сейчас проверяется TLS — чтобы
-    «проверка отключена» никогда не выглядело так же, как «всё в порядке»."""
+    """Чем сейчас проверяется TLS — ИМЕНАМИ ваших файлов, а не путём к
+    служебной сборке.
+
+    Путь к собранному набору («какой-то .pem») выглядел так, будто программа
+    подставила посторонний файл вместо положенных сертификатов. На деле это
+    ровно они: OpenSSL принимает набор одним файлом, а не каталогом, поэтому
+    ваши файлы склеиваются с системными корнями в один. Показывать надо то,
+    что человек клал руками.
+    """
     value = ca_bundle()
     if value is False:
         return "проверка сертификата ОТКЛЮЧЕНА (GIGACHAT_CA_BUNDLE=false)"
     if value is True:
         return "системный набор корневых сертификатов"
-    return f"набор из certs/ вместе с системным: {value}"
+    names = certificate_names()
+    if names:
+        return ("проверка идёт по вашим сертификатам из certs/ "
+                f"({', '.join(names)}) вместе с системными")
+    return f"набор сертификатов: {value}"
 
 _gigachat_token_cache: dict[str, tuple[str, float]] = {}  # api_key -> (token, истекает_в_monotonic)
 

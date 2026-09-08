@@ -445,6 +445,35 @@ function formatSize(bytes: number): string {
  *  момент без потери данных (файлы восстановятся из базы), оригиналы — нет.
  *  Одной цифрой «сколько на диске» этого не сказать, а решение принимает
  *  администратор. */
+/** Версия работающего кода (Г.113).
+ *
+ *  Заведено после того, как в браузере несколько раз открывалась старая
+ *  версия: отличить «код на диске не обновился» от «страница из кэша» было
+ *  нечем, и любое объяснение выглядело отговоркой. Дата и заголовок
+ *  последнего коммита читаются с сервера, то есть показывают именно тот
+ *  код, который сейчас отвечает на запросы, а не то, что лежит в браузере.
+ */
+function VersionCard() {
+  const version = useQuery({ queryKey: ['backend-version'], queryFn: backendApi.getVersion })
+  const v = version.data
+  return (
+    <SectionCard title="Версия">
+      {!v ? <Skeleton rows={1} /> : (
+        <div className="space-y-1 text-xs text-ink-muted">
+          <div className="flex justify-between gap-2">
+            <span>Код на сервере</span>
+            <span className="font-mono">{v.commit || '—'} · {v.date || '—'}</span>
+          </div>
+          <p className="text-ink-faint">{v.subject}</p>
+          <p className="text-ink-faint">
+            Если дата старая — обновите проект: система работает тем кодом, что лежит на диске.
+          </p>
+        </div>
+      )}
+    </SectionCard>
+  )
+}
+
 function StorageCard() {
   const queryClient = useQueryClient()
   const { pushToast } = useApp()
@@ -1005,6 +1034,8 @@ function ReviewDialog({ runId }: { runId: number }) {
         </SectionCard>
 
         <StorageCard />
+
+        <VersionCard />
 
         <SectionCard title="Запуск анализа">
           <button className="btn-primary w-full justify-center"

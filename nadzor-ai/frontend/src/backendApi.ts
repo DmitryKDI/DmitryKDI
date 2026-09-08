@@ -376,6 +376,9 @@ export const backendApi = {
       body: JSON.stringify({ approved }),
     }),
 
+  /** Какая версия кода работает — чтобы «старое или новое» решалось взглядом. */
+  getVersion: () => request<{ commit: string; date: string; subject: string; branch: string }>('/version'),
+
   getStorage: () => request<BackendStorage>('/storage'),
   getStorageFiles: () => request<BackendStorageFile[]>('/storage/files'),
   cleanupStorage: (dropCache = false) =>

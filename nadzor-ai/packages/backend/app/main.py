@@ -1215,3 +1215,30 @@ def storage_cleanup(drop_cache: bool = False, db: Session = Depends(get_session)
         cache_removed=cache_removed, cache_freed_bytes=cache_freed,
         kept_referenced=len(keep),
     )
+
+
+@app.get("/version")
+def version():
+    """Какая версия кода сейчас работает.
+
+    Появилось после того, как в браузере несколько раз открывалась старая
+    версия и отличить «код не обновился» от «страница из кэша» было нечем
+    (Г.113). Показывается в интерфейсе, поэтому вопрос закрывается взглядом,
+    а не разбирательством.
+    """
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                                  text=True, timeout=5).stdout.strip()
+        except Exception:  # noqa: BLE001 — версия не критична для работы
+            return ""
+
+    return {
+        "commit": git("rev-parse", "--short", "HEAD"),
+        "date": git("log", "-1", "--format=%cs"),
+        "subject": git("log", "-1", "--format=%s")[:120],
+        "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+    }
