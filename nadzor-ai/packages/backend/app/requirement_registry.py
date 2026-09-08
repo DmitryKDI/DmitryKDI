@@ -64,13 +64,9 @@ equipment.py — Ведомость оборудования; обе — таб�
 """
 from __future__ import annotations
 
-import json
 import re
-import sys
-from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import lru_cache
-from pathlib import Path
 
 _CODE_ITEM_RE = re.compile(
     r"(?:\n|^)[ \t]*[-–—]\s*"
@@ -287,99 +283,63 @@ def extract_general_requirements(
 _ROOM_KEYWORD_MIN_WORD_LEN = 5
 _ROOM_KEYWORD_MIN_PREFIX = 4
 
-# Г.107 — родовые слова в названиях помещений живут в ДАННЫХ, а не здесь.
-# Слово, которое в названиях работает родовым типом и уточняется соседним
-# словом, цепляет все помещения этого типа разом. Вычислить такие слова из
-# самого прогона не удалось, и это измерено: ни доля названий, ни число
-# разных слов-соседей не дают границы между родовым и осмысленным —
-# подгонять порог под один пример нельзя (Г.11). Поэтому наблюдение лежит в
-# реестре `data/generic_room_words.json` со своим статусом n=1 и пополняется
-# в ходе эксплуатации, а механика остаётся без единого слова словаря.
-# Отсутствие или порча файла ничего не ломает — список просто пуст.
-_GENERIC_ROOM_WORDS_FILE = "generic_room_words.json"
-
-
-@lru_cache(maxsize=1)
-def _generic_room_prefixes() -> frozenset[str]:
-    path = Path(__file__).resolve().parents[3] / "data" / _GENERIC_ROOM_WORDS_FILE
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        items = data.get("prefixes") or []
-        return frozenset(
-            str(item["prefix"])[:_ROOM_KEYWORD_MIN_PREFIX].lower()
-            for item in items if isinstance(item, dict) and item.get("prefix")
-        )
-    except Exception as exc:  # noqa: BLE001 — реестр наблюдений не обязателен
-        print(f"реестр родовых слов не прочитан ({exc}): {path}", file=sys.stderr)
-        return frozenset()
-
-
 def _significant_words(text: str) -> set[str]:
     words = re.findall(r"[а-яё]+", text.lower())
-    return {
-        w for w in words
-        if len(w) >= _ROOM_KEYWORD_MIN_WORD_LEN
-        and w[:_ROOM_KEYWORD_MIN_PREFIX] not in _generic_room_prefixes()
-    }
+    return {w for w in words if len(w) >= _ROOM_KEYWORD_MIN_WORD_LEN}
 
 
-# Г.106 — второй источник шума той же подсказки, найденный замером на
-# реальном томе (первый — родовое слово в названии помещения, стоп-лист
-# выше). Слово, которым назван ПРЕДМЕТ тома, стоит почти в каждом его
-# требовании: совпав с названием помещения, оно привязывает к этому
-# помещению треть тома и подсказка перестаёт что-либо подсказывать.
-# Замер на реальном томе: два таких слова стояли в 7,1% требований каждое
-# и цепляли одно помещение к 22 требованиям; слова, по которым подсказка
-# и нужна (тип помещения, название процесса), стояли в 0,3-0,6%. Порядок
-# разный, поэтому граница берётся между ними, а не подгоняется.
+# Г.108 — почему здесь НЕТ отсева и НЕТ ни одного порога.
 #
-# Список таких слов НЕ зашивается: он вычисляется из самих требований
-# этого документа (`topic_prefixes`) и потому в каждом разделе свой —
-# механизм не знает ни одного термина ни одной дисциплины.
-TOPIC_PREFIX_MIN_SHARE = 0.05
-
-
-def topic_prefixes(texts: list[str], min_share: float = TOPIC_PREFIX_MIN_SHARE) -> set[str]:
-    """Префиксы слов, встречающихся не реже `min_share` доли текстов — это
-    предмет документа, а не признак конкретного помещения."""
-    if not texts:
-        return set()
-    counts: Counter[str] = Counter()
-    for text in texts:
-        counts.update({w[:_ROOM_KEYWORD_MIN_PREFIX] for w in _significant_words(text)})
-    threshold = min_share * len(texts)
-    return {prefix for prefix, n in counts.items() if n >= threshold}
-
-
+# Слово, которым назван предмет тома, стоит почти в каждом его требовании и
+# потому плохо указывает на место. Отделить его от слова, называющего место,
+# пробовали четырьмя способами: доля требований с этим словом, доля названий
+# помещений, число разных слов-соседей в названиях, двусторонний idf. Ни один
+# не дал границы, которая не была бы подогнана под разобранные документы, и
+# это ожидаемо: одно и то же слово бывает И темой тома, И названием типа
+# помещения одновременно — разделения нет в самих данных.
+#
+# Поэтому подсказка ничего не выбрасывает: она РАНЖИРУЕТ. Помещение, чьё
+# название совпало по редкому слову, стоит выше помещения, совпавшего по
+# слову, которое встречается повсюду. Сколько взять из этого порядка, решает
+# бюджет потребителя (сколько листов инспектор успеет посмотреть), а не
+# придуманный порог истины. Вес слова — вычисляемая величина, а не число в
+# коде: чем в большем числе названий и томов слово встречается, тем меньше
+# оно различает.
 def match_requirement_rooms_by_name(sentence: str, room_facts: list[dict],
-                                    ignore_prefixes: set[str] | None = None) -> list[str]:
+                                    word_weight: Callable[[str], float] | None = None
+                                    ) -> list[str]:
     """Помещения, чьё НАЗВАНИЕ пересекается по ключевому слову с текстом
-    требования формы 3 — не строгая привязка (в отличие от `rooms` формы
-    1/2, где номер стоит явно в скобках), а информационная подсказка «это
-    требование, вероятно, касается этих помещений», для ручного просмотра
-    вместе со сводкой (Г.47). Возвращает номера без дублей, в порядке
-    первого совпадения по `room_facts`."""
+    требования — не строгая привязка (в отличие от `rooms`, где номер стоит
+    в документе явно), а подсказка «вероятно, речь об этих помещениях».
+
+    Возвращает номера ПО УБЫВАНИЮ различительной силы совпавшего слова:
+    ничего не отсеивается, порядок и есть ответ (см. заметку выше). Без
+    `word_weight` все слова равны, и порядок остаётся реестровым — механизм
+    работает и когда взвешивать нечем.
+    """
     req_words = _significant_words(sentence)
-    if ignore_prefixes:
-        req_words = {w for w in req_words if w[:_ROOM_KEYWORD_MIN_PREFIX] not in ignore_prefixes}
     if not req_words:
         return []
+    scored: list[tuple[float, int, str]] = []
     seen: set[str] = set()
-    out: list[str] = []
-    for f in room_facts:
-        key = f.get("key")
-        name = f.get("name") or ""
+    for position, fact in enumerate(room_facts):
+        key = fact.get("key")
         if not key or key in seen:
             continue
-        for room_word in _significant_words(name):
-            if any(
-                room_word[:_ROOM_KEYWORD_MIN_PREFIX] == req_word[:_ROOM_KEYWORD_MIN_PREFIX]
-                for req_word in req_words
-            ):
-                seen.add(key)
-                out.append(key)
-                break
-    return out
+        best = 0.0
+        for room_word in _significant_words(fact.get("name") or ""):
+            for req_word in req_words:
+                if room_word[:_ROOM_KEYWORD_MIN_PREFIX] != req_word[:_ROOM_KEYWORD_MIN_PREFIX]:
+                    continue
+                weight = word_weight(room_word) if word_weight else 1.0
+                best = max(best, weight)
+        if best > 0:
+            seen.add(key)
+            scored.append((best, position, key))
+    # При равном весе порядок остаётся прежним — по первому появлению в
+    # реестре: устойчивость важнее, чем красота сортировки.
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [key for _, _, key in scored]
 
 
 # Г.67 — реальная жалоба на «воду» в форме 3: одна и та же шаблонная фраза

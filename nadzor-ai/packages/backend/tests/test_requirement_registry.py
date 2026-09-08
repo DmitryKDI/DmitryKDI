@@ -12,7 +12,6 @@ from app.requirement_registry import (
     match_requirement_rooms_by_name,
     render_general_requirements_summary,
     render_requirements_summary,
-    topic_prefixes,
 )
 
 SAMPLE_DIR = Path("/home/user/nadzor_sample")
@@ -260,22 +259,59 @@ def test_match_requirement_rooms_by_name_finds_real_pd_rooms():
     print("OK: требование про лаборатории физики/химии связано с реальными помещениями ПД по названию")
 
 
-def test_match_requirement_rooms_by_name_excludes_generic_kabinet_word():
-    """Реальный шум первого прогона на настоящем ПД: «кабинет» — родовое
-    слово, встречается почти в трети названий помещений школы («Кабинет
-    врача», «Учебный кабинет», ...). «кабинетах физики и химии» не должно
-    цеплять любой «Кабинет X», только конкретную тему (физика/химия)."""
-    sentence = ("Воздуховоды от вытяжных шкафов в лаборанских и кабинетах физики и "
-               "химии выполнить из коррозионностойких материалов.")
+def test_hint_ranks_instead_of_filtering():
+    """Г.108 — подсказка ничего не выбрасывает, она упорядочивает.
+
+    Отсев требует порога, а порога, отделяющего слово предмета тома от
+    слова, называющего место, в данных нет: измерено четырьмя способами, ни
+    один границы не дал (см. заметку в модуле). Порядок такого выбора не
+    требует: помещение, совпавшее по различительному слову, стоит выше
+    помещения, совпавшего по слову, которое встречается повсюду. Сколько
+    взять из порядка, решает бюджет потребителя.
+    """
+    sentence = "Вентиляция помещений лаборантских выполняется отдельными системами"
     room_facts = [
-        {"key": "140", "name": "Физического эксперимента"},
-        {"key": "160", "name": "Кабинет врача"},
-        {"key": "163", "name": "Процедурный кабинет"},
-        {"key": "233", "name": "Кабинет иностранного языка"},
+        {"key": "012", "name": "Венткамера"},
+        {"key": "147", "name": "Лаборантская тип АВ"},
     ]
-    matched = match_requirement_rooms_by_name(sentence, room_facts)
-    assert matched == ["140"], matched
-    print("OK: родовое слово «кабинет» само по себе не даёт совпадения, только тема требования")
+    # Ничего не потеряно: оба помещения на месте в обоих случаях.
+    plain = match_requirement_rooms_by_name(sentence, room_facts)
+    assert set(plain) == {"012", "147"}, plain
+
+    weighted = match_requirement_rooms_by_name(
+        sentence, room_facts,
+        word_weight=lambda w: 0.2 if w.startswith("вент") else 3.0)
+    assert weighted == ["147", "012"], weighted
+    print("OK: подсказка ранжирует, а не отсеивает — ничего не теряется")
+
+
+def test_hint_order_is_stable_when_nothing_distinguishes_the_rooms():
+    """Без весов порядок остаётся реестровым: механизм обязан работать и
+    там, где взвешивать нечем (пустая база, первый том раздела)."""
+    sentence = "Требование касается лаборантских помещений"
+    room_facts = [
+        {"key": "301", "name": "Лаборантская первая"},
+        {"key": "302", "name": "Лаборантская вторая"},
+    ]
+    assert match_requirement_rooms_by_name(sentence, room_facts) == ["301", "302"]
+    print("OK: без весов порядок устойчив и совпадает с порядком реестра")
+
+
+def test_weight_is_asked_for_every_matched_word_not_for_the_requirement():
+    """Вес спрашивается у СЛОВА НАЗВАНИЯ, а не у требования: это делает
+    источник веса подменяемым (данные документа, накопленная база) и
+    оставляет механизм без собственного словаря."""
+    asked = []
+
+    def weight(word):
+        asked.append(word)
+        return 1.0
+
+    match_requirement_rooms_by_name(
+        "Помещения лаборантских и кабинетов",
+        [{"key": "301", "name": "Лаборантская тип АВ"}], word_weight=weight)
+    assert asked == ["лаборантская"], asked
+    print("OK: вес запрашивается у слова названия — источник веса подменяем")
 
 
 def test_match_requirement_rooms_by_name_no_match_for_unrelated_rooms():
@@ -296,63 +332,6 @@ def test_match_requirement_rooms_by_name_ignores_short_words():
     room_facts = [{"key": "105", "name": "Зона входа"}]
     assert match_requirement_rooms_by_name(sentence, room_facts) == []
     print("OK: слова короче 5 букв не считаются ключевыми и не дают совпадения")
-
-
-def test_topic_prefixes_finds_words_of_the_document_itself():
-    """Г.106 — слово, которым назван предмет тома, стоит почти в каждом его
-    требовании и потому ничего не различает. Список таких слов не зашит: он
-    считается из самих требований прогона, поэтому у каждого раздела свой."""
-    texts = [
-        "Кровельное покрытие выполняется по несущим плитам",
-        "Кровельные воронки с электрообогревом",
-        "Уклон кровельного ковра не менее 1,5 процента",
-        "Кровельное ограждение высотой 0,6 м",
-        "Лаборантская оборудуется вытяжным шкафом",
-    ]
-    topics = topic_prefixes(texts, min_share=0.5)
-    assert "кров" in topics, topics
-    assert "лабо" not in topics, topics
-    print("OK: предмет тома распознан как неразличающее слово, редкое слово сохранено")
-
-
-def test_topic_prefixes_of_two_documents_do_not_coincide():
-    """Механизм не знает терминов ни одной дисциплины: на двух наборах
-    требований разной темы он выдаёт разные слова, ничего не зная о них."""
-    one = ["Ограждение лестничных маршей", "Ограждение кровли", "Ограждение приямка"]
-    two = ["Освещение рабочей зоны", "Освещение эвакуационное", "Освещение аварийное"]
-    assert topic_prefixes(one, min_share=0.9) == {"огра"}
-    assert topic_prefixes(two, min_share=0.9) == {"осве"}
-    print("OK: слова предмета вычисляются по документу, а не берутся из списка")
-
-
-def test_match_requirement_rooms_by_name_drops_topic_word_of_the_volume():
-    """Реальный шум, найденный замером (Г.106): слово предмета тома стоит и
-    в требовании, и в названии помещения — и привязывает это помещение к
-    трети всех требований. Замер на реальном томе: 27 требований к одному
-    помещению, после правила 10, причём отсеялись именно те, где совпадало
-    ТОЛЬКО слово предмета."""
-    sentence = "Тепловые нагрузки на вентиляцию приведены в таблице"
-    room_facts = [
-        {"key": "012", "name": "Венткамера"},
-        {"key": "147", "name": "Лаборантская тип АВ"},
-    ]
-    assert match_requirement_rooms_by_name(sentence, room_facts) == ["012"]
-    matched = match_requirement_rooms_by_name(
-        sentence, room_facts, ignore_prefixes={"вент"})
-    assert matched == [], matched
-    print("OK: совпадение только по слову предмета тома подсказкой не считается")
-
-
-def test_match_requirement_rooms_by_name_keeps_room_when_other_word_matches():
-    """Отсев слова предмета не должен рубить требование, которое называет
-    помещение по существу: если совпало ещё и тематическое слово, подсказка
-    остаётся."""
-    sentence = "Вентиляционное оборудование размещено в отдельных венткамерах"
-    room_facts = [{"key": "012", "name": "Венткамера приточная"}]
-    matched = match_requirement_rooms_by_name(
-        sentence, room_facts, ignore_prefixes={"обор"})
-    assert matched == ["012"], matched
-    print("OK: помещение сохраняется, когда совпало не только слово предмета")
 
 
 def test_general_requirements_ignore_short_and_long_fragments():
@@ -462,13 +441,12 @@ if __name__ == "__main__":
     test_general_requirements_catch_sentence_without_room_paren()
     test_general_requirements_catch_perfective_vypolnit_form()
     test_match_requirement_rooms_by_name_finds_real_pd_rooms()
+    test_hint_ranks_instead_of_filtering()
+    test_hint_order_is_stable_when_nothing_distinguishes_the_rooms()
+    test_weight_is_asked_for_every_matched_word_not_for_the_requirement()
     test_match_requirement_rooms_by_name_excludes_generic_kabinet_word()
     test_match_requirement_rooms_by_name_no_match_for_unrelated_rooms()
     test_match_requirement_rooms_by_name_ignores_short_words()
-    test_topic_prefixes_finds_words_of_the_document_itself()
-    test_topic_prefixes_of_two_documents_do_not_coincide()
-    test_match_requirement_rooms_by_name_drops_topic_word_of_the_volume()
-    test_match_requirement_rooms_by_name_keeps_room_when_other_word_matches()
     test_general_requirements_keep_room_numbers_when_present()
     test_general_requirements_ignore_short_and_long_fragments()
     test_general_requirements_do_not_leak_into_cross_check_pipeline()

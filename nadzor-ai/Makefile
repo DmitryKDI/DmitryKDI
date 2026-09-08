@@ -24,7 +24,8 @@ test:            ## Прогнать тесты с покрытием
 
 check-generic:   ## Проверить, что код не заточен под конкретный пример (раздел 0, п.8)
 	PYTHONPATH=.:packages/backend .venv/bin/python -m pytest \
-		packages/backend/tests/test_code_is_generic.py -q
+		packages/backend/tests/test_code_is_generic.py \
+		packages/backend/tests/test_constants_are_declared.py -q
 
 lint:            ## Стиль и границы модулей
 	.venv/bin/ruff check packages scripts

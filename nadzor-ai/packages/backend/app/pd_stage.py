@@ -10,7 +10,10 @@
 """
 from __future__ import annotations
 
+import math
 import sys
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import pymupdf
@@ -28,16 +31,19 @@ from .norms_registry import (
 from .requirement_registry import (
     Requirement,
     _normalize_for_dedup,
+    _significant_words,
     match_requirement_rooms_by_name,
-    topic_prefixes,
 )
 from .section_profile import (
     KIND_NORM,
     KIND_TABLE,
     KIND_TERM,
+    KIND_WORD,
     collect_terms,
+    collect_words,
     observe,
     render_profile,
+    word_volumes,
 )
 from .set_overview import official_section_label
 
@@ -160,14 +166,43 @@ def attach_rooms_by_name(requirements: list[Requirement],
         except Exception as exc:  # noqa: BLE001 — один файл не роняет разбор
             print(f"реестр помещений не построен ({exc}): {name}", file=sys.stderr)
 
-    # Слова, которыми назван предмет самого тома, стоят почти в каждом его
-    # требовании и потому ничего не различают (Г.106). Считаются по этому
-    # же прогону и отдельно для каждого документа: у разных разделов слова
-    # разные, а знать их заранее механизм не должен.
-    topics: dict[str, set[str]] = {}
-    for name in room_facts:
-        texts = [r.summary or r.sentence for r in requirements if r.document == name]
-        topics[name] = topic_prefixes(texts)
+    # Слова предмета этого вида томов приходят из НАКОПЛЕННОЙ базы, а не
+    # из порога по текущему документу (Г.108): по одному тому предмет от
+    # места не отличается ничем, что не было бы подгонкой под этот том.
+    # База считает слова по ТОМАМ, поэтому с каждым разобранным томом
+    # раздела подсказка становится точнее сама, без правки кода.
+    # Вес слова — вычисляемая величина, а не константа (Г.108): чем в
+    # большем числе названий помещений этого документа и в требованиях
+    # большего числа РАЗНЫХ томов раздела слово встречается, тем хуже оно
+    # различает место. База растёт от эксплуатации, поэтому порядок сам
+    # становится точнее — без правки кода и без порогов.
+    weights: dict[str, Callable[[str], float]] = {}
+    for name, facts in room_facts.items():
+        rooms_with_word: Counter[str] = Counter()
+        total_rooms = 0
+        counted: set[str] = set()
+        for fact in facts:
+            key = fact.get("key")
+            if not key or key in counted:
+                continue
+            counted.add(key)
+            total_rooms += 1
+            rooms_with_word.update(_significant_words(fact.get("name") or ""))
+        section = next((r.section for r in requirements if r.document == name), None)
+        volumes = word_volumes(section)
+
+        def weight(word: str, _rooms=rooms_with_word, _total=total_rooms,
+                   _volumes=volumes) -> float:
+            # Числа в формуле нет вообще: обе величины считаются по данным.
+            # Слева — редкость среди названий помещений этого документа,
+            # справа — в скольких РАЗНЫХ томах раздела слово уже видели в
+            # требованиях. Тема документации повторяется из тома в том, имя
+            # места — нет, поэтому счётчик томов и есть штраф. С каждым
+            # разобранным томом различение уточняется само.
+            rarity = math.log((_total + 1) / (_rooms.get(word, 0) + 1)) + 1.0
+            return rarity / (1 + _volumes.get(word, 0))
+
+        weights[name] = weight
 
     hinted = 0
     for req in requirements:
@@ -177,7 +212,7 @@ def attach_rooms_by_name(requirements: list[Requirement],
         if not facts:
             continue
         rooms = match_requirement_rooms_by_name(
-            req.summary or req.sentence, facts, ignore_prefixes=topics.get(req.document))
+            req.summary or req.sentence, facts, word_weight=weights.get(req.document))
         if rooms:
             req.rooms_by_name = rooms
             hinted += 1
@@ -192,9 +227,10 @@ def record_profile(requirements: list[Requirement], volumes=(), norms=()) -> Non
     пополнился, следующий том того же раздела разбирается с подсказкой,
     собранной на предыдущих.
 
-    Наблюдения трёх видов и все три — побочный продукт уже сделанной работы,
-    отдельных вызовов модели не требующий: устойчивые обороты требований,
-    нормативы из перечня тома, реально встреченные типы таблиц.
+    Наблюдения четырёх видов, и все четыре — побочный продукт уже сделанной
+    работы, отдельных вызовов модели не требующий: устойчивые обороты
+    требований, значимые слова требований, нормативы из перечня тома,
+    реально встреченные типы таблиц.
 
     Единица счёта — ТОМ: наблюдения группируются по документу, и повторный
     разбор того же файла счётчик не увеличивает (см. `section_profile`).
@@ -209,6 +245,12 @@ def record_profile(requirements: list[Requirement], volumes=(), norms=()) -> Non
             terms = collect_terms(texts)
             if terms:
                 observe(section, KIND_TERM, terms, document=document)
+            # Г.108 — значимые слова требований тома. Без частот и порогов:
+            # различать «предмет вида документации» и «название места» имеет
+            # смысл только по числу РАЗНЫХ томов, а это считает база.
+            words = collect_words(texts)
+            if words:
+                observe(section, KIND_WORD, words, document=document)
 
         for volume in volumes:
             if volume.tables_by_kind:
