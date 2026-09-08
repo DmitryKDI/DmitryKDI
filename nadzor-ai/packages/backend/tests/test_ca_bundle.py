@@ -14,13 +14,55 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import llm  # noqa: E402
 
-_FAKE_CERT = b"-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n"
+# Настоящий самоподписанный сертификат нужен там, где набор обязан быть
+# принят OpenSSL, а не просто собран: подделка из строки этого не проверит.
+_REAL_PEM = """-----BEGIN CERTIFICATE-----
+MIIDEzCCAfugAwIBAgIUSfub3L21Nln/3m2P4g3MYm4xXUMwDQYJKoZIhvcNAQEL
+BQAwGTEXMBUGA1UEAwwOVGVzdCBSb290IENBIDEwHhcNMjYwOTA4MTQyNDUyWhcN
+MzYwOTA1MTQyNDUyWjAZMRcwFQYDVQQDDA5UZXN0IFJvb3QgQ0EgMTCCASIwDQYJ
+KoZIhvcNAQEBBQADggEPADCCAQoCggEBAJdMGuwMtp06Zo5dIzpAB6iB3EfeNTbk
+v+8zimMtysiXhJaAHC2xDYw17lWz8vzgZl3SHa9rsrgfBHW0ZACUVnxk67xHzu6d
+8ZgdQdvyAXeSoKQznqvTCm6QLFYgutJKDHV1tixOjwkMQbixCij5ws9jKvRBYgD5
+3DUUhYLzadA2JxBOXSrczshtEI/irL9mq3k27y9jvc0n0suYqeekFeBdCa9stfV+
+5ntR7tYrCrrVJOD8cPh04UIA2x1LncUkq+AgfbTQEWk5k11LPyl9TwMaDCNse2eJ
+bUTVKHO2eL2kFiPL/EtXjLkD4LkrZXMd7E86w8cu/TNfC5Q6s+pv15sCAwEAAaNT
+MFEwHQYDVR0OBBYEFLMjVFAhgkbVIeiq2krxFzx3L6X6MB8GA1UdIwQYMBaAFLMj
+VFAhgkbVIeiq2krxFzx3L6X6MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEL
+BQADggEBAA5plbie+35CYm6umFW+18FBhJ76k8Air751mQenQ4ktUujmp0IR/7Ef
+GIeBglWXKTG3yCmVzP6MWm8oiPGOIAuDUqIszyTtiTcQvYxA6tAwuBeya8S+WyvE
+rqEwKnZXwqNGfSk7O6H7738F079aAsNgai0jO8NkxQrBe3ZAkEwB8RmUVoR4848m
+hfwIy/KqqsNjVYUF+i/Rz+3xpMD+erKihjka5OowLvyV0mIej2ETtmZNbpmAuSfZ
+/xfLeQTzPBssUh6sqY3NAui4XMXvRgek1VhpMYXt1iL4V7xFaP98YO39uP2x1qox
+cBKWB7ykmRrBPYAAizcn1JSwKJlsYmM=
+-----END CERTIFICATE-----
+"""
+_REAL_PEM_2 = """-----BEGIN CERTIFICATE-----
+MIIDEzCCAfugAwIBAgIUf3yvuKQbKY5u1CAI5B/F7nnW7SAwDQYJKoZIhvcNAQEL
+BQAwGTEXMBUGA1UEAwwOVGVzdCBSb290IENBIDIwHhcNMjYwOTA4MTQyNDUyWhcN
+MzYwOTA1MTQyNDUyWjAZMRcwFQYDVQQDDA5UZXN0IFJvb3QgQ0EgMjCCASIwDQYJ
+KoZIhvcNAQEBBQADggEPADCCAQoCggEBAMt5VoiwgAA1Z06rZAX40eJqpVd4mRNM
+blF08qW8mKvuLFFHhtI5gvo8kaMV5RmPqU7QPs85EM7OZV4UJok3mew72hWvEzif
+YtER2hSfvARJdbPmNsPwxKBn1qiVgdXOuhmupaeIJZjrlWG8zS/QLMRM7QYse0Lv
+D/8xbzqL0OBcC95IdreKxQRQWUZyBdrZi9BWYvxQvjHLCH4qMCiDOtKDqb433z59
+2DuNPL3glF0nW/4l0BFKBinXrc9fuCEuj6JcE4OblArajrsmlz+rTIPeYSEsdgOz
+qjZPdOJc3X863HN5FasUeFUvRBcTfEe//I6aGDssNOrQ12BTCPWASe0CAwEAAaNT
+MFEwHQYDVR0OBBYEFEygxnDRYK7rGjRb7LeOskDCusUwMB8GA1UdIwQYMBaAFEyg
+xnDRYK7rGjRb7LeOskDCusUwMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEL
+BQADggEBAGyQyiDhTTEGNwi56StmJVHd5XPtpb4NzV0zpGhK4jKNNPihCyydakri
+wsp1W9KVUup2PWv0FEHabZ0YsH9l7QbErzI2+SYHV335P5YwUI8quGGzkNGYwLpy
+ZCr4U+3Dnafeuhfuak3hztmA2gHkm2MKViMwb04KfHRjcokxDAqgLsp6gE3Lt8h3
+5ceVO/gUjd0Hvxxk/gbxPQxRcwVE/exoOdBAvv2CGLR0F8NvOt1F1FBMkYEY3Pjh
+FQhR87TBAwzgLnAXpSumBq50V4+sIeFl9W4aymHLHbMEOUkAfAOS774OZb1IHSMh
+s/IeTjPj4wto0DZFET5EM3FXJJ53Q1Y=
+-----END CERTIFICATE-----
+"""
+
 
 
 def _certs_dir(*names: str) -> Path:
     directory = Path(tempfile.mkdtemp())
     for name in names:
-        (directory / name).write_bytes(_FAKE_CERT)
+        (directory / name).write_bytes(_REAL_PEM.encode('ascii'))
     llm.CERTS_DIR = directory
     os.environ.pop("GIGACHAT_CA_BUNDLE", None)
     return directory
@@ -32,7 +74,7 @@ def test_certificate_dropped_into_the_folder_is_picked_up():
     value = llm.ca_bundle()
     assert isinstance(value, str), value
     assert Path(value).exists()
-    assert _FAKE_CERT in Path(value).read_bytes()
+    assert _REAL_PEM.encode('ascii') in Path(value).read_bytes()
     print("OK: сертификат из каталога подхвачен без единой настройки")
 
 
@@ -44,7 +86,7 @@ def test_system_roots_are_kept_not_replaced():
     import certifi
     system = Path(certifi.where()).read_bytes()
     assert system in bundle, "системные корни потеряны"
-    assert _FAKE_CERT in bundle
+    assert _REAL_PEM.encode('ascii') in bundle
     print("OK: системные корни сохранены, свой сертификат добавлен")
 
 
@@ -61,7 +103,7 @@ def test_bundle_is_rebuilt_when_a_certificate_changes():
     directory = _certs_dir("root.pem")
     first = llm.ca_bundle()
     assert llm.ca_bundle() == first, "набор пересобирается на каждом вызове"
-    (directory / "root.pem").write_bytes(_FAKE_CERT + b"changed\n")
+    (directory / "root.pem").write_bytes(_REAL_PEM_2.encode("ascii"))
     assert llm.ca_bundle() != first, "изменённый сертификат не подхватился"
     print("OK: изменение сертификата пересобирает набор, повтор — нет")
 
@@ -96,6 +138,56 @@ def test_empty_folder_means_system_roots():
     assert llm.ca_bundle() is True
     assert "системный" in llm.ca_bundle_description()
     print("OK: пустой каталог — обычная системная проверка")
+
+
+def test_binary_certificate_is_converted_not_glued_as_is():
+    """Официальная выгрузка для Windows — файлы .cer в двоичном виде (DER).
+    Склеенные как есть, они дают набор, который OpenSSL не читает, и
+    проверка молча остаётся сломанной. Формат определяется по содержимому,
+    а не по расширению."""
+    import ssl as _ssl
+    directory = Path(tempfile.mkdtemp())
+    der = _ssl.PEM_cert_to_DER_cert(_REAL_PEM)
+    (directory / "root.cer").write_bytes(der)
+    llm.CERTS_DIR = directory
+    os.environ.pop("GIGACHAT_CA_BUNDLE", None)
+
+    bundle = llm.ca_bundle()
+    assert isinstance(bundle, str)
+    context = _ssl.create_default_context(cafile=bundle)
+    assert len(context.get_ca_certs()) >= 1, "OpenSSL не принял собранный набор"
+    print("OK: двоичный сертификат преобразован в текстовый и принят OpenSSL")
+
+
+def test_archive_is_read_without_unpacking_by_hand():
+    """С сайта удостоверяющего центра сертификаты отдают архивом. Требовать
+    от пользователя распаковку — лишний шаг, на котором он ошибётся."""
+    import ssl as _ssl
+    import zipfile
+    directory = Path(tempfile.mkdtemp())
+    with zipfile.ZipFile(directory / "roots.zip", "w") as archive:
+        archive.writestr("Root_CA.cer", _ssl.PEM_cert_to_DER_cert(_REAL_PEM))
+        archive.writestr("readme.txt", "не сертификат, должен быть пропущен")
+    llm.CERTS_DIR = directory
+    os.environ.pop("GIGACHAT_CA_BUNDLE", None)
+
+    context = _ssl.create_default_context(cafile=llm.ca_bundle())
+    assert len(context.get_ca_certs()) >= 1
+    print("OK: сертификат прочитан прямо из архива, посторонний файл пропущен")
+
+
+def test_broken_file_is_skipped_with_a_reason_not_silently():
+    """Негодный файл не должен ронять запуск и не должен исчезать молча."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "мусор.cer").write_bytes(b"\x00\x01 not a certificate")
+    (directory / "good.pem").write_bytes(_REAL_PEM.encode("ascii"))
+    llm.CERTS_DIR = directory
+    os.environ.pop("GIGACHAT_CA_BUNDLE", None)
+
+    import ssl as _ssl
+    context = _ssl.create_default_context(cafile=llm.ca_bundle())
+    assert len(context.get_ca_certs()) >= 1, "годный сертификат потерян из-за негодного"
+    print("OK: негодный файл пропущен, годный сохранён")
 
 
 def test_tls_failure_says_what_to_do_not_just_what_broke():

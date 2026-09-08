@@ -18,9 +18,11 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +66,52 @@ CERTS_DIR = Path(os.environ.get(
 _CERT_SUFFIXES = (".pem", ".crt", ".cer")
 
 
+def _as_pem(raw: bytes) -> bytes:
+    """Сертификат в виде PEM, откуда бы он ни пришёл.
+
+    Официальная выгрузка удостоверяющего центра для Windows — файлы `.cer`
+    в двоичном виде (DER). Склеенные как есть, они дают набор, который
+    OpenSSL не читает, и проверка молча остаётся сломанной. Здесь формат
+    определяется по содержимому, а не по расширению, и двоичный
+    преобразуется в текстовый.
+    """
+    if b"-----BEGIN" in raw[:200]:
+        pem = raw if raw.endswith(b"\n") else raw + b"\n"
+    else:
+        try:
+            pem = ssl.DER_cert_to_PEM_cert(raw).encode("ascii")
+        except Exception as exc:  # noqa: BLE001 — негодный файл не роняет запуск
+            print(f"файл не похож на сертификат и пропущен ({exc})", file=sys.stderr)
+            return b""
+    # Проверка тем же разбором, каким набор будут читать потом. Без неё
+    # мусорный файл превращался в правдоподобный блок PEM (перекодировка
+    # содержимого проверок не делает), и ВЕСЬ набор переставал читаться —
+    # один посторонний файл в каталоге ломал проверку сертификатов
+    # целиком. Найдено тестом.
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(
+            cadata=pem.decode("ascii"))
+    except Exception as exc:  # noqa: BLE001 — пропускаем один файл, не весь каталог
+        print(f"файл не является сертификатом и пропущен ({exc})", file=sys.stderr)
+        return b""
+    return pem
+
+
+def _certificates_from_archive(path: Path) -> list[bytes]:
+    """Сертификаты прямо из архива: с сайта их отдают именно так, и
+    распаковывать вручную ради этого незачем."""
+    out: list[bytes] = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for name in sorted(archive.namelist()):
+                if Path(name).suffix.lower() not in _CERT_SUFFIXES:
+                    continue
+                out.append(_as_pem(archive.read(name)))
+    except Exception as exc:  # noqa: BLE001 — битый архив не роняет запуск
+        print(f"архив с сертификатами не прочитан ({exc}): {path}", file=sys.stderr)
+    return out
+
+
 def _bundle_from_certs_dir() -> str | None:
     """Склеенный набор «системные корни + всё из certs/», или None."""
     if not CERTS_DIR.is_dir():
@@ -75,11 +123,19 @@ def _bundle_from_certs_dir() -> str | None:
     # отпечаток менялся на каждом вызове — то есть набор пересобирался
     # бесконечно.
     found = sorted(p for p in CERTS_DIR.iterdir()
-                   if p.suffix.lower() in _CERT_SUFFIXES
+                   if p.suffix.lower() in _CERT_SUFFIXES + (".zip",)
                    and p.is_file() and not p.name.startswith("."))
     if not found:
         return None
-    blobs = [p.read_bytes() for p in found]
+    blobs: list[bytes] = []
+    for path in found:
+        if path.suffix.lower() == ".zip":
+            blobs.extend(_certificates_from_archive(path))
+        else:
+            blobs.append(_as_pem(path.read_bytes()))
+    blobs = [b for b in blobs if b]
+    if not blobs:
+        return None
     try:
         import certifi
         blobs.insert(0, Path(certifi.where()).read_bytes())
