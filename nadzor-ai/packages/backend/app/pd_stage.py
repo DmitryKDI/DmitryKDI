@@ -25,6 +25,14 @@ from .norms_registry import (
     render_norms_section,
 )
 from .requirement_registry import Requirement, _normalize_for_dedup
+from .section_profile import (
+    KIND_NORM,
+    KIND_TABLE,
+    KIND_TERM,
+    collect_terms,
+    observe,
+    render_profile,
+)
 from .set_overview import official_section_label
 
 
@@ -113,6 +121,59 @@ def attach_norms(requirements: list[Requirement], text_facts: list[dict],
     if config is not None and pending:
         link_by_meaning(pending, norms, config)
     return norms, render_norms_section(norms, requirements)
+
+
+def record_profile(requirements: list[Requirement], volumes=(), norms=()) -> None:
+    """Пополнить профиль разделов тем, что дал этот прогон (Г.105).
+
+    Программа идёт по томам одинаково и ничего не знает ни об одном разделе
+    заранее. Знание накапливается здесь: разобрали том — профиль его раздела
+    пополнился, следующий том того же раздела разбирается с подсказкой,
+    собранной на предыдущих.
+
+    Наблюдения трёх видов и все три — побочный продукт уже сделанной работы,
+    отдельных вызовов модели не требующий: устойчивые обороты требований,
+    нормативы из перечня тома, реально встреченные типы таблиц.
+
+    Единица счёта — ТОМ: наблюдения группируются по документу, и повторный
+    разбор того же файла счётчик не увеличивает (см. `section_profile`).
+    Сбой пополнения не роняет прогон — профиль это ускорение, а не результат.
+    """
+    try:
+        by_document: dict[tuple[str, str | None], list[str]] = {}
+        for req in requirements:
+            by_document.setdefault((req.document, req.section), []).append(
+                req.summary or req.sentence)
+        for (document, section), texts in by_document.items():
+            terms = collect_terms(texts)
+            if terms:
+                observe(section, KIND_TERM, terms, document=document)
+
+        for volume in volumes:
+            if volume.tables_by_kind:
+                observe(volume.section, KIND_TABLE,
+                        [(kind, kind) for kind, _ in volume.tables_by_kind],
+                        document=volume.name)
+
+        by_norm_document: dict[tuple[str, str | None], list[tuple[str, str]]] = {}
+        for norm in norms:
+            by_norm_document.setdefault((norm.document, norm.section), []).append(
+                (norm.designation, norm.designation))
+        for (document, section), values in by_norm_document.items():
+            observe(section, KIND_NORM, values, document=document)
+    except Exception as exc:  # noqa: BLE001 — профиль это ускорение, не результат
+        print(f"профиль разделов не пополнен: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
+def render_section_knowledge(sections) -> str:
+    """Что программа успела узнать о разделах этого прогона."""
+    seen: list[str] = []
+    for section in sections:
+        key = section or ""
+        if key in seen:
+            continue
+        seen.append(key)
+    return "\n".join(render_profile(s) for s in seen)
 
 
 def _group_repeated(items: list[Requirement]) -> list[list[Requirement]]:

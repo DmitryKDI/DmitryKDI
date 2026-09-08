@@ -271,6 +271,7 @@ def extract_requirements_llm(
     timeout: float = 120.0,
     on_chunk_error: Callable[[int, Exception], None] | None = None,
     on_norms: Callable[[list[dict]], None] | None = None,
+    hint_for_section: Callable[[str | None], str] | None = None,
 ) -> list[Requirement]:
     """Требования из ЛЮБОЙ прозы ПД — постранично пачками под потолок
     символов, каждая пачка отдельным вызовом ЛЛМ. Сбой одной пачки (сеть,
@@ -281,6 +282,12 @@ def extract_requirements_llm(
     `discipline` — код раздела (ОВ, ЭОМ, КР…), если известен: фильтрует
     блок известных нарушений в промпте (`known_violations.json`) до
     относящихся к этому разделу и общих; без него — только общие (`*`).
+
+    `hint_for_section` — накопленная подсказка по разделу ЭТОЙ пачки
+    (Г.105). Промпт собирается на КАЖДУЮ пачку, а не один раз на прогон:
+    в одном прогоне бывают тома разных разделов, и общий промпт означал бы
+    подсказку от чужого раздела. Подсказка ничего не подтверждает — факт
+    по-прежнему обязан быть на странице.
 
     `on_norms` — перечень нормативных документов, если он оказался на
     странице этой пачки (Г.103). Собирается ПОПУТНО, без отдельного прохода:
@@ -305,9 +312,12 @@ def extract_requirements_llm(
     # нужны именно привязанные к помещению (`cross_check_requirements`,
     # сверка с РД по номеру), фильтруют список на своей стороне — там, где
     # это их контракт, а не здесь, где это потеря данных.
-    system_prompt = requirement_extraction_system_prompt(discipline)
     out: list[Requirement] = []
     for chunk in _chunk_text_facts(text_facts, max_chars_per_call):
+        chunk_section = discipline or (chunk[0].get("section") if chunk else None)
+        system_prompt = requirement_extraction_system_prompt(chunk_section)
+        if hint_for_section is not None:
+            system_prompt += hint_for_section(chunk_section)
         user_text = _render_chunk(chunk)
         try:
             result = call_llm_json(config, system_prompt, user_text, timeout=timeout)
@@ -320,7 +330,13 @@ def extract_requirements_llm(
         if on_norms:
             found = result.get("norms")
             if isinstance(found, list) and found:
-                on_norms(found)
+                # Откуда пришёл перечень, знает только эта пачка: у соседнего
+                # тома своя нумерация страниц, и без имени файла привязать
+                # норматив к разделу потом уже нечем (тот же довод, что Г.86).
+                source = chunk[0] if chunk else {}
+                on_norms([{**item, "document": source.get("document", ""),
+                           "section": source.get("section")}
+                          for item in found if isinstance(item, dict)])
         for item in result.get("requirements", []):
             rooms = item.get("rooms") or []
             if not isinstance(rooms, list):

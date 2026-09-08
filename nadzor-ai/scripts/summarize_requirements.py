@@ -52,7 +52,12 @@ from app.document_composition import (  # noqa: E402
 # Г.94 — рендер сводки и предполётная проверка живут в пакете приложения:
 # их же вызывает HTTP-эндпоинт разбора ПД. Здесь только обвязка CLI.
 from app.llm import LlmConfig, check_llm_reachable  # noqa: E402
-from app.pd_stage import attach_norms, render_summary  # noqa: E402
+from app.pd_stage import (  # noqa: E402
+    attach_norms,
+    record_profile,
+    render_section_knowledge,
+    render_summary,
+)
 from app.pd_store import save_run  # noqa: E402
 from app.requirement_registry import extract_general_requirements  # noqa: E402
 from app.set_overview import official_section_label  # noqa: E402
@@ -199,8 +204,13 @@ def main() -> None:
         # параметр (Г.101). Считается ДО сводки, потому что сводка печатает
         # привязку рядом с требованием.
         _emit("=== Шаг 4. Нормативная база ===")
-        _, norms_section = attach_norms(requirements, pd_text_facts, llm_config, llm_norms)
+        norms, norms_section = attach_norms(requirements, pd_text_facts, llm_config, llm_norms)
         _emit(norms_section)
+        _emit("")
+
+        # Шаг 4б — профиль раздела: чем этот прогон пополнил накопленное (Г.105).
+        record_profile(requirements, volumes, norms)
+        _emit(render_section_knowledge(v.section for v in volumes))
         _emit("")
 
         # Шаг 5 — сводка: то, ради чего всё запускалось.

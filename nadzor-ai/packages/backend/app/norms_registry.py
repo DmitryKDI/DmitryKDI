@@ -84,6 +84,9 @@ class Norm:
     title: str = ""         # наименование из кавычек, если оно есть
     page: int = 0
     document: str = ""
+    # Раздел тома, в котором перечень найден. Нужен профилю раздела (Г.105):
+    # без него норматив накапливался бы «вообще», а не «в разделе таком-то».
+    section: str | None = None
     aliases: list[str] = field(default_factory=list)
 
     def label(self) -> str:
@@ -136,7 +139,8 @@ def _inside(pos: int, spans: list[tuple[int, int]]) -> bool:
     return any(a <= pos < b for a, b in spans)
 
 
-def parse_norms(text: str, page: int = 0, document: str = "") -> list[Norm]:
+def parse_norms(text: str, page: int = 0, document: str = "",
+                section: str | None = None) -> list[Norm]:
     """Нормативы со страницы перечня: обозначение, наименование, псевдонимы.
 
     Два случая, из-за которых наивный разбор ломается, найдены замером на
@@ -172,7 +176,7 @@ def parse_norms(text: str, page: int = 0, document: str = "") -> list[Norm]:
         title = " ".join(title_match.group(1).split()) if title_match else ""
         seen.add(key)
         out.append(Norm(designation=designation, title=title, page=page,
-                        document=document, aliases=aliases))
+                        document=document, section=section, aliases=aliases))
     return out
 
 
@@ -206,7 +210,8 @@ def norms_from_llm(items: list[dict], document: str = "") -> list[Norm]:
         out.append(Norm(designation=raw,
                         title=" ".join(str(item.get("title") or "").split())[:300],
                         page=page if isinstance(page, int) else 0,
-                        document=document))
+                        document=str(item.get("document") or document),
+                        section=item.get("section")))
     return out
 
 
@@ -230,7 +235,8 @@ def find_norms(text_facts: list[dict]) -> list[Norm]:
         if len(_DESIGNATION_RE.findall(text)) < MIN_DESIGNATIONS:
             continue  # лист содержания: заголовок есть, самих нормативов нет
         for norm in parse_norms(text, page=int(fact.get("page") or 0),
-                                document=str(fact.get("document") or "")):
+                                document=str(fact.get("document") or ""),
+                                section=fact.get("section")):
             if _normalize(norm.designation) not in seen:
                 seen.add(_normalize(norm.designation))
                 out.append(norm)

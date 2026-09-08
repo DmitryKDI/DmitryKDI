@@ -28,10 +28,12 @@ from .documents import extract_document_facts
 from .level_pages import augment_room_index_with_level_fallback
 from .llm import LlmConfig, check_llm_reachable
 from .matching import DocumentInput, match_page_pairs
-from .pd_stage import attach_norms, load_text_facts, render_summary
+from .pd_stage import (attach_norms, load_text_facts, record_profile,
+                       render_section_knowledge, render_summary)
 from .pd_store import load_run, save_run
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_text_verify import verify_general_requirements_llm
+from .section_profile import hint_block
 from .stamp_vision import read_stamp_ocr
 from .triangulated_pipeline import run_triangulated_analysis
 from .vision import (
@@ -616,12 +618,20 @@ def _run_pd(run_id: int) -> None:
         # которым идёт выжимка: отдельного прохода по документу не нужно.
         llm_norms: list[dict] = []
         requirements = extract_requirements_llm(
-            text_facts, config=config, on_norms=llm_norms.extend)
+            text_facts, config=config, on_norms=llm_norms.extend,
+            # Г.105 — подсказка по разделу пачки: накопленное на прежних томах
+            # того же раздела. Ничего не подтверждает, факт по-прежнему должен
+            # быть на странице.
+            hint_for_section=hint_block)
         # Г.101 — норматив ИЗ ПЕРЕЧНЯ ЭТОГО ТОМА проставляется до сохранения:
         # иначе привязка не попадёт ни в сводку, ни в датасет, ни в стадию
         # сверки, и её пришлось бы считать заново на каждом шаге.
-        _, norms_section = attach_norms(requirements, text_facts, config, llm_norms)
-        run.summary = render_summary(requirements) + "\n" + norms_section
+        norms, norms_section = attach_norms(requirements, text_facts, config, llm_norms)
+        # Г.105 — профиль пополняется ПОСЛЕ разбора и до сборки отчёта: в
+        # отчёт должно попасть уже накопленное, включая этот том.
+        record_profile(requirements, volumes, norms)
+        knowledge = render_section_knowledge(v.section for v in volumes)
+        run.summary = render_summary(requirements) + "\n" + norms_section + "\n" + knowledge
         run.requirements_total = len(requirements)
         run.extractor = "llm"
         if run.side == "before":
