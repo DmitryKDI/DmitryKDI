@@ -194,6 +194,12 @@ def check_compliance(
         seen: dict | None = None
         for pdf_path, page_no in pages:
             try:
+                # Г.106 — модели передаётся `req.rooms`, а НЕ `anchor_rooms`:
+                # подсказка по названию выбирает, какой лист открыть, но сама
+                # в вопрос к модели не входит. Иначе догадка «похоже, речь об
+                # этих помещениях» пришла бы к модели утверждением, и её
+                # ответ подтверждал бы не требование ПД, а нашу же гипотезу.
+                # Тест: test_vision_is_not_told_the_guessed_rooms.
                 seen = vision_check(pdf_path, page_no, req.sentence, req.rooms, config)
             except Exception as exc:  # noqa: BLE001 — один лист не роняет прогон
                 seen = {"verdict": "unclear", "reason": f"{type(exc).__name__}: {exc}"}

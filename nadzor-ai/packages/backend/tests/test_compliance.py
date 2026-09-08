@@ -169,3 +169,32 @@ def test_candidate_sheets_are_reported_even_when_vision_is_not_available():
     assert item.pages_to_check == [("/tmp/rd.pdf", 12)], "лист назван"  # noqa: S108
     assert "просмотр изображения не выполнялся" in item.detail
     assert "не найдено" not in item.detail, "невыполненный шаг не выдаётся за пустой поиск"
+
+
+def test_vision_is_not_told_the_guessed_rooms():
+    """Г.106 — граница между «источником листов» и «привязкой».
+
+    Подсказка по названию решает, КАКОЙ лист открыть, но в вопрос к модели
+    не входит: модели уходит `req.rooms` (номера, названные документом), и у
+    требования без номеров это пустой список. Иначе догадка «похоже, речь об
+    этих помещениях» пришла бы к модели утверждением, и её «подтверждено»
+    относилось бы к нашей же гипотезе, а не к требованию ПД.
+    """
+    req = Requirement(rooms=[], rooms_by_name=["147", "198"], page=15,
+                      sentence="Воздуховоды вытяжных шкафов — коррозионностойкие.")
+    asked: list[list[str]] = []
+
+    def vision(pdf_path, page_no, sentence, rooms, config):
+        asked.append(list(rooms))
+        return {"verdict": "unclear", "reason": "не разобрать"}
+
+    result = check_compliance(
+        requirements=[req], rd_text_facts=[{"text": "лист без текста"}],
+        rd_sources=[(FAKE_RD_PATH, "рд.pdf")], config=object(),
+        llm_verify=lambda reqs, facts, cfg: [],
+        vision_check=vision,
+        candidate_pages=lambda rooms, sources: [(FAKE_RD_PATH, 19)],
+    )
+    assert asked == [[]], f"догадка ушла в вопрос к модели: {asked}"
+    assert result.items[0].pages_to_check == [(FAKE_RD_PATH, 19)], "лист подобран по подсказке"
+    print("OK: подсказка выбирает лист, но модели как факт не передаётся")
