@@ -919,6 +919,7 @@ def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
     требования из прозы ПД нет строки реестра, которая указала бы лист
     (Г.35). Битый файл пропускается с причиной, а не роняет прогон."""
     index: dict[str, list[dict]] = {}
+    page_texts = {}
     for source in sources:
         path, name = source[0], source[1]
         try:
@@ -926,6 +927,7 @@ def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
         except Exception as exc:  # noqa: BLE001 — один файл не роняет сверку
             print(f"реестр помещений РД не построен ({exc}): {name}", file=sys.stderr)
             continue
+        page_texts.update({(path, f["page"]): f.get("text", "") for f in facts.text_facts})
         for fact in facts.room_facts:
             key = str(fact.get("key") or "")
             if key:
@@ -943,6 +945,9 @@ def _rd_room_index(sources: list[tuple[str, str]]) -> dict[str, list[dict]]:
                                                                [(s[0], s[1]) for s in sources]])
     except Exception as exc:  # noqa: BLE001 — резерв не обязан работать всегда
         print(f"резерв по отметке этажа не построен: {exc}", file=sys.stderr)
+    for entries in index.values():
+        for entry in entries:
+            entry["text"] = page_texts.get((entry["path"], entry["page"]), "")
     return index
 
 
@@ -1029,15 +1034,6 @@ def _run_compliance(run_id: int) -> None:
         run.stage = "сверяю требования с рабочей документацией"
         db.commit()
 
-        def _candidates(rooms: list[str], _sources) -> list[tuple[str, int]]:
-            pages: list[tuple[str, int]] = []
-            for room in rooms:
-                for entry in room_index.get(str(room), []):
-                    pair = (entry["path"], entry["page"])
-                    if pair not in pages:
-                        pages.append(pair)
-            return pages
-
         # Название последней напечатанной ступени. Печатается ТОЛЬКО смена
         # ступени, а не каждое требование: иначе окно сервера заливает
         # тысячей строк, и полезное в нём тонет (Г.116).
@@ -1075,13 +1071,14 @@ def _run_compliance(run_id: int) -> None:
             llm_verify=(lambda reqs, facts, cfg: verify_general_requirements_llm(reqs, facts, cfg))
             if has_key else None,
             vision_check=check_requirement_on_page if has_key else None,
-            candidate_pages=_candidates if has_key else None,
+            room_index=room_index,
         )
         # Отчёт склеивается из трёх частей в порядке пользы инспектору:
         # сверка требований, отдельная сверка ведомостей и — последним —
         # перечень исходных данных расчёта, которые не сверялись вовсе.
         # Последнее показано, а не выброшено: молчание значило бы, что этих
         # строк в проекте нет (Г.10).
+        print(f"сверка #{run_id}: диагностика {result.diagnostics}", file=sys.stderr)
         parts = [render_compliance_report(result)]
         spec_text = spec_compare.render(spec_result)
         if spec_text:

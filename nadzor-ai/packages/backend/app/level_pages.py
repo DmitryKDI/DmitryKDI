@@ -96,5 +96,6 @@ def augment_room_index_with_level_fallback(
     for room_key in room_levels:
         fallback = level_fallback_candidates(room_key, room_levels, level_drawing_pages)
         if fallback:
-            room_index[room_key] = room_index.get(room_key, []) + fallback
+            room_index[room_key] = room_index.get(room_key, []) + [
+                {**entry, "level_fallback": True} for entry in fallback]
     return room_index

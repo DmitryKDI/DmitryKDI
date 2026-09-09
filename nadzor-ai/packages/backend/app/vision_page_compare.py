@@ -96,72 +96,69 @@ def check_requirement_on_page(
         system_prompt = requirement_check_system_prompt(discipline)
         result = call_llm_json(config, system_prompt, user_text, images=[img], timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — сбой одного листа (сеть, провайдер, рендер) не должен ронять весь прогон, см. registry_diff._verify_group
-        return {"verdict": "unclear", "reason": f"ОШИБКА: {exc}", "where": ""}
-    if not result or "verdict" not in result:
-        return {"verdict": "unclear", "reason": "ИИ не дал разбираемый ответ", "where": ""}
+        return {"verdict": "unclear", "reason": f"ОШИБКА: {exc}", "where": "", "error": True}
+    if not isinstance(result, dict) or result.get("verdict") not in {"confirmed", "absent", "unclear"}:
+        return {"verdict": "unclear", "reason": "ИИ не дал разбираемый ответ", "where": "", "error": True}
     return result
 
 
-def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pages: int) -> list[dict]:
-    """Страницы-кандидаты РД для списка помещений — В ШИРИНУ по помещениям,
-    не в глубину по одному: сначала первая известная страница каждого
-    помещения из списка, потом (если бюджет ещё есть) вторая страница
-    каждого, и так далее. Одно и то же помещение с десятками упоминаний не
-    исчерпывает лимit листов раньше, чем проверка доберётся до следующего
-    помещения требования (при нескольких помещениях) — но требование с
-    ОДНИМ помещением всё равно может получить вторую попытку на другом
-    листе того же помещения, если первый лист оказался "unclear" (реальный
-    случай: план и узел одного помещения на разных листах одного раздела).
-    Без дублей по (path, page), с общим потолком на находку.
+def select_candidate_pages(
+    rooms: list[str], room_index: dict[str, list[dict]], max_pages: int,
+    sentence: str = "",
+) -> list[dict]:
+    """Ранжирование без отсева: прямой якорь, текст, разнообразие при равенстве.
 
-    Г.52: несколько кандидатных страниц одного помещения могут быть из
-    РАЗНЫХ файлов одной дисциплины, покрывающих разные подсистемы (реальный
-    случай — два тома разных подсистем под одним кодом раздела).
-    Слепой прогон на живом комплекте показал: требование про тёплые полы
-    было видно только на листе ИЗ ТРЕТЬЕГО файла для этого якоря — при
-    бюджете в 2-3 листа наивная сортировка «первая страница каждого
-    помещения» рисковала исчерпать бюджет на страницах ОДНОГО (не того)
-    файла раньше, чем очередь дошла бы до единственного релевантного.
-    Поэтому на каждом шаге предпочитается страница из файла, ещё НЕ
-    представленного среди уже отобранных кандидатов — и только если у
-    помещения таких нет, берётся следующая по порядку (старое поведение)."""
-    seen_pages: set[tuple[str, int]] = set()
-    seen_files: set[str] = set()
-    pages: list[dict] = []
-    lists = [room_index.get(room, []) for room in rooms]
-    cursors = [0] * len(lists)
-    while len(pages) < max_pages:
-        added_this_round = False
-        for i, lst in enumerate(lists):
-            if len(pages) >= max_pages:
-                break
-            pick_idx: Optional[int] = None
-            fallback_idx: Optional[int] = None
-            j = cursors[i]
-            while j < len(lst):
-                entry = lst[j]
-                key = (entry["path"], entry["page"])
-                if key not in seen_pages:
-                    if fallback_idx is None:
-                        fallback_idx = j
-                    if entry["path"] not in seen_files:
-                        pick_idx = j
-                        break
-                j += 1
-            if pick_idx is None:
-                pick_idx = fallback_idx
-            if pick_idx is None:
-                cursors[i] = len(lst)
-                continue
-            entry = lst[pick_idx]
-            seen_pages.add((entry["path"], entry["page"]))
-            seen_files.add(entry["path"])
-            pages.append(entry)
-            cursors[i] = pick_idx + 1
-            added_this_round = True
-        if not added_this_round:
+    Вес слова вычисляется по кандидатным страницам, без отраслевого словаря
+    и подобранного порога. Пустой текст не исключает страницу. Пропущенные
+    ради другого файла страницы остаются в очереди до исчерпания бюджета.
+    """
+    import re
+    from collections import Counter
+
+    lists = [room_index.get(str(room), []) for room in dict.fromkeys(rooms)]
+    entries = {}
+    for group in lists:
+        for entry in group:
+            key = (entry["path"], entry["page"])
+            if key not in entries or not entry.get("level_fallback"):
+                entries[key] = entry
+    words = {key: set(re.findall(r"\w+", str(e.get("text") or "").casefold()))
+             for key, e in entries.items()}
+    frequencies = Counter(word for tokens in words.values() for word in tokens)
+    query = set(re.findall(r"\w+", sentence.casefold()))
+    scores = {key: sum(1 / frequencies[word] for word in sorted(tokens & query))
+              for key, tokens in words.items()}
+    tiers = {key: (bool(e.get("level_fallback")), -scores[key])
+             for key, e in entries.items()}
+    seen_pages = set()
+    seen_files = set()
+    pages = []
+    for tier in sorted(set(tiers.values())):
+        if len(pages) >= max_pages:
             break
+        queues = [[(e["path"], e["page"]) for e in group
+                   if tiers[(e["path"], e["page"])] == tier] for group in lists]
+        while len(pages) < max_pages:
+            added = False
+            for queue in queues:
+                if len(pages) >= max_pages:
+                    break
+                remaining = [key for key in queue if key not in seen_pages]
+                if not remaining:
+                    continue
+                key = next((key for key in remaining if key[0] not in seen_files), remaining[0])
+                seen_pages.add(key)
+                seen_files.add(key[0])
+                pages.append(entries[key])
+                added = True
+            if not added:
+                break
     return pages
+
+
+def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pages: int) -> list[dict]:
+    """Совместимость с прежними вызывающими; общий подбор без текста требования."""
+    return select_candidate_pages(rooms, room_index, max_pages)
 
 
 def check_visual_candidates(
@@ -202,7 +199,7 @@ def check_visual_candidates(
     for f in findings:
         if getattr(f, "finding_type", None) != "no_code_visual_check_needed":
             continue
-        pages = _candidate_pages(f.rooms, room_index, max_pages_per_finding)
+        pages = select_candidate_pages(f.rooms, room_index, max_pages_per_finding, f.sentence_pd)
         if not pages:
             entry_result = {
                 "rooms": f.rooms, "sentence": f.sentence_pd,

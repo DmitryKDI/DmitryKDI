@@ -44,6 +44,9 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
+
+from .vision_page_compare import select_candidate_pages
 
 from .llm import LlmConfig
 from .requirement_cross_check import _extract_token, _token_present_in
@@ -79,6 +82,8 @@ class ComplianceResult:
     # Путь файла -> имя тома. В отчёте инспектору нужно имя: путь вида
     # `uploads/632379a0e5….pdf` не открыть и не найти (Г.117).
     display_names: dict[str, str] = field(default_factory=dict)
+    # Диагностика отдельно от пользовательских статусов и HTTP-схемы.
+    diagnostics: dict[str, int | float] = field(default_factory=dict)
 
 
 def check_compliance(
@@ -92,6 +97,8 @@ def check_compliance(
     max_visual_pages: int = DEFAULT_MAX_VISUAL_PAGES,
     on_progress: Callable[[int, int, str], None] | None = None,
     display_names: dict[str, str] | None = None,
+    *,
+    room_index: dict[str, list[dict]] | None = None,
 ) -> ComplianceResult:
     """Прогоняет список требований ПД по лестнице проверок против РД.
 
@@ -101,6 +108,13 @@ def check_compliance(
     когда ключа нет.
     """
     result = ComplianceResult(display_names=dict(display_names or {}))
+    result.diagnostics = dict.fromkeys((
+        "candidates_available", "candidates_selected", "unique_candidate_pages",
+        "vision_calls", "unique_vision_pages", "repeated_vision_pairs",
+        "vision_errors", "vision_unclear", "vision_seconds"), 0)
+    candidate_keys = set()
+    vision_keys = set()
+    vision_pairs = set()
     rd_text = "\n".join(f.get("text", "") for f in rd_text_facts)
 
     # Ход работы наружу: сколько требований уже получили ответ из скольких.
@@ -214,8 +228,19 @@ def check_compliance(
         by_name = not req.rooms and bool(req.rooms_by_name)
         anchor_note = (" (помещения подсказаны по названию, номер в требовании не назван)"
                        if by_name else "")
-        if anchor_rooms and candidate_pages is not None:
-            pages = list(candidate_pages(anchor_rooms, rd_sources))[:max_visual_pages]
+        if anchor_rooms and room_index is not None:
+            available = {(e["path"], e["page"]) for room in anchor_rooms
+                         for e in room_index.get(str(room), [])}
+            result.diagnostics["candidates_available"] += len(available)
+            pages = [(e["path"], e["page"]) for e in select_candidate_pages(
+                anchor_rooms, room_index, max_visual_pages, req.sentence)]
+        elif anchor_rooms and candidate_pages is not None:
+            available = list(dict.fromkeys(candidate_pages(anchor_rooms, rd_sources)))
+            result.diagnostics["candidates_available"] += len(available)
+            pages = available[:max(0, max_visual_pages)]
+        result.diagnostics["candidates_selected"] += len(pages)
+        candidate_keys.update(pages)
+        result.diagnostics["unique_candidate_pages"] = len(candidate_keys)
 
         if pages and vision_check is None:
             # Г.106 — листы подобраны, но смотреть их нечем. Раньше этого
@@ -246,7 +271,16 @@ def check_compliance(
             continue
 
         seen: dict | None = None
+        errors = 0
         for pdf_path, page_no in pages:
+            _report("просмотр листов РД")
+            result.diagnostics["vision_calls"] += 1
+            vision_keys.add((pdf_path, page_no))
+            result.diagnostics["unique_vision_pages"] = len(vision_keys)
+            pair = (pdf_path, page_no, req.sentence, tuple(req.rooms))
+            result.diagnostics["repeated_vision_pairs"] += int(pair in vision_pairs)
+            vision_pairs.add(pair)
+            started = perf_counter()
             try:
                 # Г.106 — модели передаётся `req.rooms`, а НЕ `anchor_rooms`:
                 # подсказка по названию выбирает, какой лист открыть, но сама
@@ -256,7 +290,20 @@ def check_compliance(
                 # Тест: test_vision_is_not_told_the_guessed_rooms.
                 seen = vision_check(pdf_path, page_no, req.sentence, req.rooms, config)
             except Exception as exc:  # noqa: BLE001 — один лист не роняет прогон
-                seen = {"verdict": "unclear", "reason": f"{type(exc).__name__}: {exc}"}
+                seen = {"verdict": "unclear", "reason": f"{type(exc).__name__}: {exc}",
+                        "error": True}
+            finally:
+                result.diagnostics["vision_seconds"] += perf_counter() - started
+            if not isinstance(seen, dict) or seen.get("verdict") not in {
+                "confirmed", "absent", "unclear"
+            }:
+                seen = {"verdict": "unclear", "error": True}
+            if seen.get("error"):
+                errors += 1
+                result.diagnostics["vision_errors"] += 1
+                continue
+            if seen.get("verdict") == "unclear":
+                result.diagnostics["vision_unclear"] += 1
             if seen.get("verdict") == "confirmed":
                 result.items.append(ComplianceItem(
                     requirement=req, status=STATUS_CONFIRMED,
@@ -266,10 +313,19 @@ def check_compliance(
                 ))
                 break
         else:
+            if errors == len(pages):
+                detail = "просмотр листов не выполнялся успешно — ошибка зрения; проверить вручную"
+                status = STATUS_NOT_CHECKED
+            elif errors:
+                detail = "листы просмотрены частично: часть вызовов завершилась ошибкой; проверить вручную"
+                status = STATUS_NEEDS_CHECK
+            else:
+                detail = "на просмотренных листах подтверждения нет — посмотреть глазами"
+                status = STATUS_NEEDS_CHECK
+            if errors:
+                result.not_run.append(f"просмотр листов: ошибок {errors} из {len(pages)}")
             result.items.append(ComplianceItem(
-                requirement=req, status=STATUS_NEEDS_CHECK,
-                detail="на просмотренных листах подтверждения нет — посмотреть глазами",
-                pages_to_check=pages,
+                requirement=req, status=status, detail=detail, pages_to_check=pages,
             ))
     return _finish(result)
 
