@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   backendApi, CORRECTION_KINDS, pageImageUrl, type BackendDocument, type BackendFinding,
-  type BackendComplianceRun, type BackendPdRun, type BackendSettings, type LlmCheck,
+  type BackendComplianceRun, type BackendPdRun, type BackendSettings, type LlmCheck, type LlmMetrics,
   type ReviewMessage,
 } from '../backendApi'
 import { useApp, type PendingUpload } from '../store'
@@ -24,17 +24,49 @@ const PROVIDER_LABELS: Record<BackendSettings['provider'], string> = {
 // по-прежнему можно (input + datalist), пустое поле берёт дефолт провайдера.
 const MODEL_OPTIONS: Record<BackendSettings['provider'], string[]> = {
   anthropic: ['claude-sonnet-5', 'claude-opus-5', 'claude-haiku-4-5-20251001'],
-  gigachat: ['GigaChat-2-Pro', 'GigaChat-2-Max', 'GigaChat-2'],
+  gigachat: ['GigaChat-3-Ultra', 'GigaChat-2-Pro', 'GigaChat-2-Max', 'GigaChat-2'],
 }
 
 const PROVIDER_DEFAULT_MODEL: Record<BackendSettings['provider'], string> = {
-  anthropic: 'claude-sonnet-5', gigachat: 'GigaChat-2-Pro',
+  anthropic: 'claude-sonnet-5', gigachat: 'GigaChat-3-Ultra',
 }
 
 const CLASSIFICATION_SOURCE_LABELS: Record<string, string> = {
   filename: 'по имени файла', title_page: 'по титульному листу', stamp_text: 'по штампу (текст)',
   stamp_vision: 'по штампу (зрение)', none: 'не определён', manual: 'указан вручную',
   filename_section_number: 'по номеру раздела в имени',
+}
+
+function formatMetricDuration(milliseconds: number | null): string {
+  if (milliseconds == null) return 'нет данных'
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(milliseconds / 1000) + ' с'
+}
+
+function formatMetric(value: number | null, suffix = ''): string {
+  if (value == null) return 'нет данных'
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value) + suffix
+}
+
+/** Метрики выводим только когда их подготовил сервер. Ноль — измеренный ноль,
+ * а «нет данных» не маскируется под ноль. */
+function LlmPerformanceSummary({ metrics }: { metrics: LlmMetrics }) {
+  return (
+    <div className="rounded-md border border-surface-line bg-surface-muted/40 p-3 text-xs text-ink-muted">
+      <div className="mb-2 font-medium text-ink">Работа ИИ</div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+        <span>запросы: {formatMetric(metrics.requests)}</span>
+        <span>повторы: {formatMetric(metrics.retries)}</span>
+        <span>429: {formatMetric(metrics.rate_limit_429)}</span>
+        <span>средний ответ: {formatMetricDuration(metrics.avg_latency_ms)}</span>
+        <span>текстовая пачка: {formatMetric(metrics.text_batch_chars, ' знаков')}</span>
+        <span>время прогона: {formatMetricDuration(metrics.run_elapsed_ms)}</span>
+        <span>изображения: {formatMetric(metrics.image_uploads)}</span>
+        <span>повторно не загружены: {formatMetric(metrics.image_reuses)}</span>
+        <span>кэш: {formatMetric(metrics.cache_hits)} попаданий, {formatMetric(metrics.cache_misses)} промахов</span>
+      </div>
+      {metrics.errors > 0 && <p className="mt-2 text-amber-700">Ошибки обращений: {metrics.errors}. Ошибка не означает отсутствия расхождений.</p>}
+    </div>
+  )
 }
 
 /**
@@ -627,7 +659,7 @@ function StorageCard() {
                               оригинал под загруженным документом не удаляется
                               вообще, и кнопка, которая всегда отказывает, —
                               хуже её отсутствия. */}
-                          {!f.in_use && (
+                          {f.cached && (
                             <button type="button" disabled={drop.isPending}
                               onClick={() => drop.mutate(f.digest)}
                               className="rounded border border-surface-line px-2 py-0.5 hover:text-danger disabled:opacity-50">
@@ -669,6 +701,15 @@ export default function NewAnalysis() {
   const settings = useQuery({ queryKey: ['backend-settings'], queryFn: backendApi.getSettings })
   const [form, setForm] = useState<BackendSettings>({ provider: 'gigachat', base_url: '', model: '' })
   useEffect(() => { if (settings.data) setForm(settings.data) }, [settings.data])
+  // Старые серверы не отдают настройку параллельности, поэтому и метрики у
+  // них не запрашиваем. Это сохраняет обратную совместимость и не превращает
+  // отсутствие нового API в тревогу у инспектора.
+  const llmMetrics = useQuery({
+    queryKey: ['llm-metrics'],
+    queryFn: backendApi.getLlmMetrics,
+    enabled: settings.data?.llm_concurrency !== undefined,
+    retry: false,
+  })
 
   const saveSettings = useMutation({
     mutationFn: () => backendApi.updateSettings(form),
@@ -691,6 +732,7 @@ export default function NewAnalysis() {
       try {
         const doc = await backendApi.uploadDocument(side, fileList[i])
         await queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY })
+        await queryClient.invalidateQueries({ queryKey: ['backend-storage'] })
         if (doc.status === 'error') {
           pushToast(`«${doc.name}»: не удалось разобрать документ`, 'error')
         }
@@ -711,6 +753,7 @@ export default function NewAnalysis() {
     // Список перечитывается с сервера, а не правится в браузере: иначе
     // неудавшееся удаление выглядело бы как удавшееся (Г.114).
     await queryClient.invalidateQueries({ queryKey: DOCUMENTS_KEY })
+    await queryClient.invalidateQueries({ queryKey: ['backend-storage'] })
   }
 
   const run = useMutation({
@@ -1031,7 +1074,17 @@ function ReviewDialog({ runId }: { runId: number }) {
           )}
         </SectionCard>
 
-        <SectionCard title="Оценка расхождений" subtitle="Автоматический подбор пар листов по разделу (шифру), затем сравнение — без разбивки по помещениям">
+        <SectionCard title="Оценка расхождений" subtitle="ИИ работает по двум направлениям: текстовая часть документа и графические материалы листов">
+          <div className="mb-3 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-md border border-surface-line bg-surface-muted/40 px-3 py-2 text-xs text-ink-muted">
+              <span className="font-medium text-ink">Текстовая часть</span><br />
+              Проверка требований и обозначений в текстовом слое PDF.
+            </div>
+            <div className="rounded-md border border-surface-line bg-surface-muted/40 px-3 py-2 text-xs text-ink-muted">
+              <span className="font-medium text-ink">Графические материалы</span><br />
+              Визуальная проверка листов чертежей, когда текста недостаточно.
+            </div>
+          </div>
           {runId === null && <p className="text-sm text-ink-muted">Запустите анализ, чтобы увидеть расхождения.</p>}
           {/* Данные о работе ИИ — какой провайдер считал и сколько пар реально
               дошло до ответа, — а не только итоговый список находок: без
@@ -1042,7 +1095,6 @@ function ReviewDialog({ runId }: { runId: number }) {
               <p>
                 ИИ: <span className="font-medium text-ink">{PROVIDER_LABELS[runStatus.provider as BackendSettings['provider']] ?? runStatus.provider}</span>
                 {runStatus.model && <> · {runStatus.model}</>}
-                {' · '}пар листов сверено: {runStatus.pairs_llm_ok} из {runStatus.pairs_total || '…'}
                 {runStatus.pairs_llm_error > 0 && (
                   <span className="ml-1 font-medium text-critical">· сбоев ИИ: {runStatus.pairs_llm_error}</span>
                 )}
@@ -1088,9 +1140,6 @@ function ReviewDialog({ runId }: { runId: number }) {
           {runId !== null && runStatus && runStatus.status === 'running' && (
             <div>
               <Skeleton rows={3} />
-              <p className="mt-2 text-xs text-ink-faint">
-                Обработано пар листов: {runStatus.pairs_done} из {runStatus.pairs_total || '…'}
-              </p>
             </div>
           )}
           {runId !== null && runStatus?.status === 'error' && (
@@ -1164,13 +1213,33 @@ function ReviewDialog({ runId }: { runId: number }) {
             <datalist id="model-suggestions">
               {MODEL_OPTIONS[form.provider].map((m) => <option key={m} value={m} />)}
             </datalist>
+            {form.llm_concurrency !== undefined && (
+              <>
+                <label className="block text-xs text-ink-faint">Одновременные обращения к ИИ</label>
+                <input className="input" type="number" inputMode="numeric"
+                  value={form.llm_concurrency}
+                  onChange={(e) => setForm({
+                    ...form,
+                    llm_concurrency: e.target.value === '' ? undefined : Number(e.target.value),
+                  })} />
+                <p className="text-xs text-ink-faint">
+                  Сервер ограничивает независимые запросы и уменьшает параллельность при ответе 429.
+                </p>
+              </>
+            )}
             <button className="btn-primary w-full justify-center" disabled={saveSettings.isPending}
               onClick={() => saveSettings.mutate()}>
               {saveSettings.isPending ? 'Сохранение…' : 'Сохранить'}
             </button>
             <p className="text-xs text-ink-faint">
-              Локальная модель по умолчанию — данные не покидают компьютер. Внешний API — быстрее, но данные уходят наружу.
+              Для GigaChat документы и фрагменты, нужные для проверки, передаются провайдеру по настройкам вашего контура.
             </p>
+            {llmMetrics.data && <LlmPerformanceSummary metrics={llmMetrics.data} />}
+            {llmMetrics.error && (
+              <p className="text-xs text-amber-700">
+                Сводка работы ИИ недоступна: {llmMetrics.error instanceof Error ? llmMetrics.error.message : 'неизвестная ошибка'}.
+              </p>
+            )}
           </div>
         </SectionCard>
 

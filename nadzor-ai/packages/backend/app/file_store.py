@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import DateTime, Integer, LargeBinary, String, create_engine, func, select
+from sqlalchemy import DateTime, Integer, LargeBinary, String, create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -76,13 +76,27 @@ class StoreStats:
 _engine = None
 _Session = None
 _engine_path: Path | None = None
+SQLITE_BUSY_TIMEOUT_SEC = 30
+SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _configure_sqlite(connection, _record) -> None:
+    """Ставим ожидание блокировки и WAL, чтобы параллельные загрузки не падали сразу."""
+    cursor = connection.cursor()
+    cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    cursor.execute("PRAGMA journal_mode = WAL")
+    cursor.close()
 
 
 def _session() -> Session:
     global _engine, _Session, _engine_path
     if _engine is None or _engine_path != STORE_PATH:
         STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(f"sqlite:///{STORE_PATH}")
+        _engine = create_engine(
+            f"sqlite:///{STORE_PATH}",
+            connect_args={"timeout": SQLITE_BUSY_TIMEOUT_SEC},
+        )
+        event.listen(_engine, "connect", _configure_sqlite)
         Base.metadata.create_all(_engine)
         _Session = sessionmaker(bind=_engine)
         _engine_path = STORE_PATH

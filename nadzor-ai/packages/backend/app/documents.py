@@ -15,6 +15,7 @@ from .equipment import extract_equipment_facts
 from .material import non_project_reason
 from .rooms import extract_room_facts
 from .stamp import read_stamp
+from .yandex_ocr import YandexOcrConfig, load_config, recognize_page
 
 
 @dataclass
@@ -37,6 +38,14 @@ class DocumentFacts:
     # Видимое состояние, а не молчаливый пропуск: пользователь должен понимать,
     # почему по этому листу нет находок.
     excluded: dict[int, str] = field(default_factory=dict)
+    # OCR запускается только на листах без текстового слоя. Состояние и ошибки
+    # хранятся рядом с результатом, чтобы сбой облачного сервиса не выглядел
+    # как доказанное отсутствие текста (Г.10).
+    ocr_status: str = "not_required"
+    ocr_pages_total: int = 0
+    ocr_pages_done: list[int] = field(default_factory=list)
+    ocr_text_pages: list[int] = field(default_factory=list)
+    ocr_errors: dict[int, str] = field(default_factory=dict)
 
 
 def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
@@ -49,11 +58,28 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
         page_kinds = {}
         sheet_info = {}
         excluded = {}
+        ocr_config: YandexOcrConfig | None = load_config()
+        ocr_pages_total = 0
+        ocr_pages_done = []
+        ocr_text_pages = []
+        ocr_errors = {}
         for i in range(doc.page_count):
             page = doc[i]
             page_no = i + 1
             text = page.get_text("text").strip()
             page_kinds[page_no] = classify_page_kind(page)
+
+            if not text:
+                ocr_pages_total += 1
+                if ocr_config is not None:
+                    ocr = recognize_page(page, ocr_config)
+                    if ocr.error:
+                        ocr_errors[page_no] = ocr.error
+                    else:
+                        ocr_pages_done.append(page_no)
+                        text = ocr.text
+                        if text:
+                            ocr_text_pages.append(page_no)
 
             reason = non_project_reason(text) if text else None
             if reason:
@@ -75,9 +101,20 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
             if not stamp.is_empty():
                 sheet_info[page_no] = {"shifr": stamp.shifr, "sheet_no": stamp.sheet_no,
                                        "sheet_name": stamp.sheet_name}
+        if not ocr_pages_total:
+            ocr_status = "not_required"
+        elif ocr_config is None:
+            ocr_status = "not_configured"
+        elif ocr_errors:
+            ocr_status = "error"
+        else:
+            ocr_status = "done"
         return DocumentFacts(name=name, pages=doc.page_count, text_facts=text_facts,
                               room_facts=room_facts, page_kinds=page_kinds,
                               equipment_facts=equipment_facts, balance_facts=balance_facts,
-                              sheet_info=sheet_info, excluded=excluded)
+                              sheet_info=sheet_info, excluded=excluded,
+                              ocr_status=ocr_status, ocr_pages_total=ocr_pages_total,
+                              ocr_pages_done=ocr_pages_done, ocr_text_pages=ocr_text_pages,
+                              ocr_errors=ocr_errors)
     finally:
         doc.close()

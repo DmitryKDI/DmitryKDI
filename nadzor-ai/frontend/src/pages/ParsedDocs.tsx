@@ -44,6 +44,35 @@ function List({ title, items, total }: { title: string; items: string[]; total?:
 }
 
 /**
+ * Две независимые дорожки разбора тома. Текстовый слой читается локально,
+ * графика ждёт отдельной визуальной сверки; смешивать их в один «разобрано»
+ * нельзя, потому что отсутствие текста на скане не говорит об отсутствии
+ * сведений на листе.
+ */
+function ProcessingBreakdown({ digest }: { digest: import('../backendApi').BackendDocumentDigest }) {
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      <div className="rounded border border-surface-line bg-surface-muted/40 px-3 py-2 text-xs text-ink-muted">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-ink">Текстовая часть</span>
+          <Chip tone="neutral">{digest.text_pages} стр. с текстом</Chip>
+        </div>
+        <p className="mt-1">Текстовый слой извлечён локально. {digest.pages_without_text > 0
+          ? `${digest.pages_without_text} стр. без слоя не участвуют в текстовой проверке.`
+          : 'Все страницы доступны для текстовой проверки.'}</p>
+      </div>
+      <div className="rounded border border-surface-line bg-surface-muted/40 px-3 py-2 text-xs text-ink-muted">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-ink">Графические материалы</span>
+          <Chip tone="neutral">{digest.drawings} чертежей</Chip>
+        </div>
+        <p className="mt-1">Визуальная сверка выполняется отдельно после подбора пары листов; это не результат текстовой проверки.</p>
+      </div>
+    </div>
+  )
+}
+
+/**
  * Состояние переданного комплекта, а не оценка его нормативной полноты.
  *
  * Сервер пока не сообщает ожидаемый состав документации, поэтому интерфейс
@@ -170,6 +199,8 @@ function DocumentCard({
             <Number_ label="помещений" value={digest.data.rooms_total} />
             <Number_ label="позиций оборудования" value={digest.data.equipment_total} />
           </div>
+
+          <ProcessingBreakdown digest={digest.data} />
 
           {digest.data.pages_without_text > 0 && (
             <p className="mt-2 text-xs text-amber-700">

@@ -48,7 +48,7 @@ from time import perf_counter
 from .vision_page_compare import select_candidate_pages
 
 from .llm import LlmConfig
-from .requirement_text_verify import validated_confirmation_evidence
+from .requirement_text_verify import validated_verdict_evidence
 from .requirement_registry import Requirement
 
 STATUS_CONFIRMED = "подтверждено"
@@ -183,21 +183,34 @@ def check_compliance(
     text_notes: dict[int, str] = {}
     for idx, req in enumerate(pending, 1):
         v = verdicts.get(idx)
-        if v and (v.get("failed_chunks") or (v.get("verdict") == "absent"
-                                             and v.get("evidence"))):
+        evidence = validated_verdict_evidence(v, rd_text_facts) if v else []
+        requires_attention = v and (
+            v.get("failed_chunks")
+            or (v.get("verdict") in ("absent", "conflicting") and evidence)
+        )
+        if requires_attention:
+            citations = "; ".join(
+                f"{e.get('document') or 'РД'}, стр.{e['page']} [F{e['fact_id']}]: «{e['quote']}»"
+                for e in evidence
+            )
+            if v.get("verdict") == "conflicting":
+                detail = f"текст РД содержит противоречивые сведения: {v.get('reason', '')}"
+            else:
+                detail = f"требуется ручная проверка по тексту РД: {v.get('reason', '')}"
+            if citations:
+                detail += f". {citations}"
             result.items.append(ComplianceItem(
                 requirement=req, status=(STATUS_NOT_CHECKED
                     if v.get("failed_chunks") and not v.get("chunks_checked")
                     else STATUS_NEEDS_CHECK),
-                detail=f"требуется ручная проверка по тексту РД: {v.get('reason', '')}",
+                detail=detail, evidence=citations,
             ))
             if v.get("failed_chunks"):
                 result.not_run.append(
                     f"смысловая сверка текста РД: ошибок {v['failed_chunks']}; "
                     "часть корпуса не проверена")
             continue
-        evidence = validated_confirmation_evidence(v, rd_text_facts) if v else []
-        if evidence:
+        if v and v.get("verdict") == "confirmed" and evidence:
             citations = "; ".join(
                 f"{e.get('document') or 'РД'}, стр.{e['page']} [F{e['fact_id']}]: «{e['quote']}»"
                 for e in evidence

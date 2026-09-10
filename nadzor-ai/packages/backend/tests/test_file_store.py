@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from sqlalchemy import text
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ["FILE_STORE_DB"] = tempfile.mktemp(suffix=".db")
@@ -30,6 +32,17 @@ def test_same_content_is_stored_once():
     file_store.put(b"%PDF-1.4 other bytes", pages=1)
     assert file_store.stats().files == 2
     print("OK: одинаковое содержимое хранится один раз")
+
+
+def test_sqlite_waits_on_locks_and_uses_wal():
+    """Хранилище больших PDF должно ждать освобождения записи, а не падать на первой гонке."""
+    _fresh()
+    with file_store._session() as db:
+        timeout_ms = db.execute(text("PRAGMA busy_timeout")).scalar_one()
+        journal_mode = db.execute(text("PRAGMA journal_mode")).scalar_one()
+    assert timeout_ms == file_store.SQLITE_BUSY_TIMEOUT_MS
+    assert str(journal_mode).lower() == "wal"
+    print("OK: SQLite в file_store ждёт блокировку и работает через WAL")
 
 
 def test_cache_is_derived_and_restores_itself():
@@ -90,6 +103,7 @@ def test_forget_removes_both_base_and_cache():
 
 if __name__ == "__main__":
     test_same_content_is_stored_once()
+    test_sqlite_waits_on_locks_and_uses_wal()
     test_cache_is_derived_and_restores_itself()
     test_retention_never_removes_a_referenced_original()
     test_retention_disabled_removes_nothing()

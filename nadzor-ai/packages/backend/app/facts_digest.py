@@ -64,7 +64,24 @@ def digest_of(facts: DocumentFacts) -> dict:
         "sheets": sheets[:EXAMPLES],
         "systems": systems[:EXAMPLES],
         "text_chars": sum(len(str(f.get("text") or "")) for f in facts.text_facts),
+        "ocr": {
+            "status": facts.ocr_status,
+            "pages_total": facts.ocr_pages_total,
+            "pages_done": len(facts.ocr_pages_done),
+            "message": _ocr_message(facts),
+        },
     }
+
+
+def _ocr_message(facts: DocumentFacts) -> str:
+    if facts.ocr_status == "not_required":
+        return "на всех страницах доступен текстовый слой"
+    if facts.ocr_status == "not_configured":
+        return "Yandex Vision OCR не настроен; страницы без текстового слоя не распознаны"
+    if facts.ocr_status == "error":
+        return (f"распознано {len(facts.ocr_pages_done)} из {facts.ocr_pages_total}; "
+                f"технических ошибок: {len(facts.ocr_errors)}")
+    return f"Yandex Vision OCR обработал страниц: {len(facts.ocr_pages_done)}"
 
 
 def page_rows(facts: DocumentFacts) -> list[dict]:

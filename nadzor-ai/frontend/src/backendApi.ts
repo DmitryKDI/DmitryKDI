@@ -397,6 +397,25 @@ export interface BackendSettings {
   max_upload_kb?: number
   max_pages?: number
   part_kb?: number
+  /** Ограничение независимых обращений к модели. Поле появляется только на
+   *  сервере, который умеет им управлять. */
+  llm_concurrency?: number
+}
+
+/** Измерения сервера за текущий запуск или выбранный прогон. Цифры приходят
+ *  только с сервера: браузер не восстанавливает их по догадке. */
+export interface LlmMetrics {
+  requests: number
+  retries: number
+  rate_limit_429: number
+  avg_latency_ms: number | null
+  text_batch_chars: number | null
+  image_uploads: number
+  image_reuses: number
+  run_elapsed_ms: number | null
+  cache_hits: number
+  cache_misses: number
+  errors: number
 }
 
 export const backendApi = {
@@ -479,6 +498,7 @@ export const backendApi = {
   getDocumentPages: (id: number) =>
     request<BackendDocumentPage[]>(`/documents/${id}/pages`),
   checkLlm: () => request<LlmCheck>('/llm-check'),
+  getLlmMetrics: () => request<LlmMetrics>('/llm-metrics'),
 
   /** Кнопка «Сверить РД с требованиями ПД» — по сохранённому разбору ПД. */
   createComplianceRun: (pdRunId: number, rdDocumentIds: number[]) =>

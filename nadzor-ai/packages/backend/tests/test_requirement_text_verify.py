@@ -103,28 +103,30 @@ def test_unresolved_requirement_stays_unclear_not_dropped():
     print("OK: нерешённое требование остаётся unclear, а не пропадает из отчёта")
 
 
-def test_resolved_requirement_is_not_sent_to_later_chunks():
-    """Как только требование получило confirmed/absent, оно НЕ должно
-    попадать в список «нерешённых» на следующей пачке — экономия вызовов
-    (первый небезразличный вердикт останавливает перебор для этого
-    требования, тот же принцип, что vision_page_compare.check_visual_candidates).
-    Второе требование остаётся нерешённым после первой пачки, поэтому
-    вторая пачка всё равно обрабатывается — но уже без R1."""
+def test_later_chunk_can_reveal_conflict_with_early_confirmation():
+    """Первый небезразличный вердикт не завершает проверку корпуса:
+    следующий фрагмент может прямо противоречить подтверждению (Г.119)."""
     facts = [
         {"page": 1, "text": "первая пачка"},
         {"page": 2, "text": "вторая пачка"},
     ]
-    reqs = [req("Требование А."), req("Требование Б.")]
+    reqs = [req("Требование А.")]
     calls = []
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
         calls.append(user_text)
+        assert "R1" in user_text
         if len(calls) == 1:
-            assert "R1" in user_text and "R2" in user_text
-            return {"verdicts": [{"id": "R1", "verdict": "absent", "reason": "не сделано"}]}
-        # вторая пачка: R1 уже решено и не должно снова попасть в список
-        assert "R1" not in user_text and "R2" in user_text
-        return {"verdicts": []}
+            return {"verdicts": [{
+                "id": "R1", "verdict": "confirmed", "coverage": "full",
+                "reason": "выполнено", "evidence": [
+                    {"fact_id": 1, "page": 1, "quote": "первая пачка"}],
+            }]}
+        return {"verdicts": [{
+            "id": "R1", "verdict": "absent", "coverage": "full",
+            "reason": "отменено", "evidence": [
+                {"fact_id": 2, "page": 2, "quote": "вторая пачка"}],
+        }]}
 
     original = _patch(requirement_text_verify, "call_llm_json", fake_call_llm_json)
     try:
@@ -133,12 +135,10 @@ def test_resolved_requirement_is_not_sent_to_later_chunks():
         requirement_text_verify.call_llm_json = original
 
     assert len(calls) == 2, "обе пачки должны были обработаться"
-    by_sentence = {r["sentence"]: r for r in results}
-    assert by_sentence["Требование А."]["verdict"] == "absent"
-    assert by_sentence["Требование А."]["chunks_checked"] == 1
-    assert by_sentence["Требование Б."]["verdict"] == "unclear"
-    assert by_sentence["Требование Б."]["chunks_checked"] == 2
-    print("OK: решённое требование не отправляется на следующие пачки")
+    assert results[0]["verdict"] == "conflicting"
+    assert results[0]["chunks_checked"] == 2
+    assert len(results[0]["evidence"]) == 2
+    print("OK: поздний фрагмент превращает раннее подтверждение в противоречие")
 
 
 def test_malformed_model_response_is_ignored_not_crashed():
@@ -185,10 +185,12 @@ def test_render_text_verify_report_groups_by_verdict():
         {"sentence": "А", "page": 1, "verdict": "absent", "reason": "не сделано", "chunks_checked": 1},
         {"sentence": "Б", "page": 2, "verdict": "confirmed", "reason": "сделано", "chunks_checked": 1},
         {"sentence": "В", "page": 3, "verdict": "unclear", "reason": "нет оснований", "chunks_checked": 2},
+        {"sentence": "Г", "page": 4, "verdict": "conflicting", "reason": "данные расходятся", "chunks_checked": 2},
     ]
     report = render_text_verify_report(results)
-    assert "Проверено требований: 3" in report
+    assert "Проверено требований: 4" in report
     assert "absent (1)" in report and "confirmed (1)" in report and "unclear (1)" in report
+    assert "conflicting (1)" in report
     print("OK: отчёт группирует находки по вердикту")
 
 
@@ -198,7 +200,7 @@ if __name__ == "__main__":
     test_chunk_text_facts_respects_char_budget()
     test_single_chunk_confirms_one_requirement()
     test_unresolved_requirement_stays_unclear_not_dropped()
-    test_resolved_requirement_is_not_sent_to_later_chunks()
+    test_later_chunk_can_reveal_conflict_with_early_confirmation()
     test_malformed_model_response_is_ignored_not_crashed()
     test_on_result_callback_fires_for_each_resolved_requirement()
     test_render_text_verify_report_groups_by_verdict()

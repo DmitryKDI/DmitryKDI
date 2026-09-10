@@ -36,11 +36,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .documents import DocumentFacts, extract_document_facts
+from .yandex_ocr import is_configured as yandex_ocr_is_configured
 
 # Версия разборщика. Поднимается при ЛЮБОМ изменении того, что и как
 # извлекается из страницы: иначе сохранённый разбор молча отдавался бы по
 # старым правилам, и новое поведение проверялось бы на старых данных (Г.10).
-FACTS_VERSION = 1
+FACTS_VERSION = 2
 
 STORE_PATH = Path(os.environ.get(
     "FACTS_STORE_DB",
@@ -108,6 +109,11 @@ def _to_payload(facts: DocumentFacts) -> str:
         "balance_facts": facts.balance_facts,
         "sheet_info": facts.sheet_info,
         "excluded": facts.excluded,
+        "ocr_status": facts.ocr_status,
+        "ocr_pages_total": facts.ocr_pages_total,
+        "ocr_pages_done": facts.ocr_pages_done,
+        "ocr_text_pages": facts.ocr_text_pages,
+        "ocr_errors": facts.ocr_errors,
     }, ensure_ascii=False)
 
 
@@ -126,6 +132,11 @@ def _from_payload(name: str, pages: int, payload: str) -> DocumentFacts:
         balance_facts=raw.get("balance_facts", []),
         sheet_info={int(k): v for k, v in raw.get("sheet_info", {}).items()},
         excluded={int(k): v for k, v in raw.get("excluded", {}).items()},
+        ocr_status=str(raw.get("ocr_status") or "not_required"),
+        ocr_pages_total=int(raw.get("ocr_pages_total") or 0),
+        ocr_pages_done=[int(v) for v in raw.get("ocr_pages_done", [])],
+        ocr_text_pages=[int(v) for v in raw.get("ocr_text_pages", [])],
+        ocr_errors={int(k): str(v) for k, v in raw.get("ocr_errors", {}).items()},
     )
 
 
@@ -142,10 +153,18 @@ def stored(digest: str, *, touch: bool = True) -> DocumentFacts | None:
         return facts
 
 
-def put(digest: str, facts: DocumentFacts) -> None:
+def put(digest: str, facts: DocumentFacts, *, replace: bool = False) -> None:
     """Сохранить разбор. Повторная запись того же ключа не ошибка."""
     with _session() as db:
-        if db.get(StoredFacts, (digest, FACTS_VERSION)) is not None:
+        existing = db.get(StoredFacts, (digest, FACTS_VERSION))
+        if existing is not None:
+            if not replace:
+                return
+            existing.name = facts.name
+            existing.pages = facts.pages
+            existing.payload = _to_payload(facts)
+            existing.used_at = dt.datetime.utcnow()
+            db.commit()
             return
         db.add(StoredFacts(digest=digest, version=FACTS_VERSION, name=facts.name,
                            pages=facts.pages, payload=_to_payload(facts)))
@@ -165,14 +184,19 @@ def facts_for(path: str | Path, name: str, digest: str | None = None) -> Documen
     """
     key = digest or digest_of_file(path)
     remembered = stored(key)
-    if remembered is not None:
+    should_refresh_ocr = (
+        remembered is not None
+        and remembered.ocr_status == "not_configured"
+        and yandex_ocr_is_configured()
+    )
+    if remembered is not None and not should_refresh_ocr:
         # Имя берётся из запроса, а не из памяти: один и тот же файл может
         # быть загружен под разными именами, а показывать нужно то, под
         # которым его загрузили сейчас.
         remembered.name = name
         return remembered
     facts = extract_document_facts(str(path), name)
-    put(key, facts)
+    put(key, facts, replace=should_refresh_ocr)
     return facts
 
 

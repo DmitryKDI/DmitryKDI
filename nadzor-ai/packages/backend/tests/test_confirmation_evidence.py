@@ -56,3 +56,34 @@ def test_all_failed_calls_are_not_checked(monkeypatch):
     assert result.items[0].status == STATUS_NOT_CHECKED
     assert result.not_run
     print("OK: полный сбой не выдан за выполненную проверку")
+
+
+def test_conflicting_text_evidence_requires_manual_check(monkeypatch):
+    facts = [
+        {"page": 2, "document": "том А", "text": "Элемент установлен."},
+        {"page": 5, "document": "том Б", "text": "Установка элемента отменена."},
+    ]
+    calls = []
+
+    def answer(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"verdicts": [confirmation()]}
+        return {"verdicts": [{
+            "id": "R1", "verdict": "absent", "coverage": "full",
+            "reason": "решение отменено", "evidence": [
+                {"fact_id": 2, "page": 5, "quote": "Установка элемента отменена."}],
+        }]}
+
+    monkeypatch.setattr(verifier, "call_llm_json", answer)
+    result = check_compliance(
+        [Requirement(rooms=[], page=1, sentence="Установить элемент.")],
+        facts, [], object(),
+        llm_verify=lambda reqs, text, cfg: verifier.verify_general_requirements_llm(
+            reqs, text, cfg, max_chars_per_call=20),
+    )
+
+    assert result.items[0].status != STATUS_CONFIRMED
+    assert "противореч" in result.items[0].detail.lower()
+    assert "том А" in result.items[0].detail and "том Б" in result.items[0].detail
+    print("OK: противоречивые цитаты не превращаются в подтверждение")

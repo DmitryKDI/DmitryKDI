@@ -339,7 +339,10 @@ def extract_requirements_llm(
             if on_progress:
                 on_progress(done, total)  # сорванная пачка — тоже пройденная
             continue
-        if not result:
+        if not isinstance(result, dict) or not isinstance(result.get("requirements"), list):
+            exc = ValueError("модель не вернула обязательный массив requirements")
+            if on_chunk_error:
+                on_chunk_error(chunk[0]["page"] if chunk else -1, exc)
             if on_progress:
                 on_progress(done, total)
             continue

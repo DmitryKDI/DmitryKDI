@@ -226,6 +226,13 @@ class RunCancelOut(BaseModel):
     detail: str
 
 
+class OcrSummary(BaseModel):
+    status: str
+    pages_total: int = 0
+    pages_done: int = 0
+    message: str = ""
+
+
 class DocumentDigest(BaseModel):
     """ВЫЖИМКА разбора документа — то, что показывают вместо всего подряд."""
     name: str
@@ -244,6 +251,7 @@ class DocumentDigest(BaseModel):
     sheets: list[str] = []
     systems: list[str] = []
     text_chars: int = 0
+    ocr: OcrSummary
 
 
 class DocumentPageRow(BaseModel):

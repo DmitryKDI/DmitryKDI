@@ -8,7 +8,9 @@
 # удалён вместе со всей CRM-витриной; остался один движок.
 # Работает на SQLite, поэтому ни Docker, ни PostgreSQL не нужны.
 # Закрытие окна или Ctrl+C останавливает всё разом.
-set -euo pipefail
+# Некоторые установки WSL запускают урезанный Bash без опции pipefail.
+# Для запуска сервисов достаточно строгих режимов errexit и nounset.
+set -eu
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 # shellcheck source=lib.sh

@@ -10,6 +10,15 @@ from app import llm as llm_module
 from app.llm import LlmConfig, call_llm_json, extract_json_object, png_bytes_to_data_url
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime(monkeypatch):
+    """Каждый тест моделирует отдельный процесс, включая общий cooldown."""
+    from app import llm_runtime
+    monkeypatch.setattr(llm_runtime, "GIGACHAT_LIMITER", llm_runtime.AdaptiveLimiter(2))
+    llm_runtime.RESULT_CACHE.clear()
+    llm_runtime.IMAGE_CACHE.clear()
+
+
 def test_extract_json_object_strips_think_block():
     text = "<think>рассуждаю о нормализации данных...</think>{\"significant\": [], \"checked_total\": 3}"
     result = extract_json_object(text)

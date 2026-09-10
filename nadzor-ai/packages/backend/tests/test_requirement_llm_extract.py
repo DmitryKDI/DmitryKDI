@@ -364,3 +364,35 @@ if __name__ == "__main__":
     test_page_without_sentence_breaks_is_still_split()
     test_short_pages_are_untouched_by_splitting()
     print("ALL PASS")
+def test_unparseable_response_marks_chunk_as_failed(monkeypatch):
+    """None от JSON-разборщика — технический сбой, а не пустой документ."""
+    import app.requirement_llm_extract as module
+
+    monkeypatch.setattr(module, "call_llm_json", lambda *args, **kwargs: None)
+    errors = []
+    result = module.extract_requirements_llm(
+        [{"page": 1, "text": "Проектом задано проверяемое условие."}],
+        config=module.LlmConfig(provider="gigachat", api_key="test"),
+        on_chunk_error=lambda page, exc: errors.append((page, str(exc))),
+    )
+    assert result == []
+    assert errors and errors[0][0] == 1
+    assert "requirements" in errors[0][1]
+    print("OK: неразбираемый ответ отмечает пачку как непроверенную")
+
+
+def test_valid_empty_requirements_is_successful_empty_chunk(monkeypatch):
+    """Явный пустой список остаётся корректным ответом модели."""
+    import app.requirement_llm_extract as module
+
+    monkeypatch.setattr(
+        module, "call_llm_json", lambda *args, **kwargs: {"requirements": [], "norms": []})
+    errors = []
+    result = module.extract_requirements_llm(
+        [{"page": 1, "text": "Служебный текст без требований."}],
+        config=module.LlmConfig(provider="gigachat", api_key="test"),
+        on_chunk_error=lambda page, exc: errors.append((page, str(exc))),
+    )
+    assert result == []
+    assert errors == []
+    print("OK: явный пустой список требований не считается технической ошибкой")

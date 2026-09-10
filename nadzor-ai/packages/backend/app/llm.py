@@ -21,6 +21,7 @@ import re
 import ssl
 import sys
 import time
+import threading
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -28,13 +29,15 @@ from pathlib import Path
 
 import httpx
 
+from . import llm_runtime as runtime
+
 PROVIDER_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-5",
     # Базовая GigaChat-2 отвечает 422 "Model does not support image" на
     # vision-запрос (реальный случай) — раз сравнение листов всегда идёт
     # картинками, дефолт обязан быть Pro/Max-тиром, иначе каждое сравнение
     # молча падает.
-    "gigachat": "GigaChat-2-Pro",
+    "gigachat": "GigaChat-3-Ultra",
 }
 
 # GigaChat: OAuth-эндпоинт и сама API — разные хосты, оба фиксированы
@@ -260,10 +263,26 @@ def ca_bundle_description() -> str:
     return f"набор сертификатов: {value}"
 
 _gigachat_token_cache: dict[str, tuple[str, float]] = {}  # api_key -> (token, истекает_в_monotonic)
+_TOKEN_LOCK = threading.RLock()
 
 
 def _gigachat_upload_image(access_token: str, png_bytes: bytes) -> str:
     """Загрузить картинку в хранилище GigaChat и вернуть file_id для attachments."""
+    # Токен входит в ключ: обновление авторизации ограничивает срок локального
+    # переиспользования file_id и разделяет аккаунты без хранения секрета в ключе.
+    key = runtime.request_cache_key(token=access_token, api=GIGACHAT_API_BASE,
+                                    digest=hashlib.sha256(png_bytes).hexdigest())
+    with runtime.IMAGE_CACHE.single_flight(key):
+        cached = runtime.IMAGE_CACHE.get(key)
+        if cached is not None and os.environ.get("NADZOR_LLM_CACHE", "1") != "0":
+            runtime.record("image_cache_hits")
+            return cached
+        file_id = _upload_image_uncached(access_token, png_bytes)
+        runtime.IMAGE_CACHE.put(key, file_id)
+        return file_id
+
+
+def _upload_image_uncached(access_token: str, png_bytes: bytes) -> str:
     resp = _post_json(
         f"{GIGACHAT_API_BASE}/v1/files",
         files={"file": ("page.png", png_bytes, "image/png")},
@@ -275,6 +294,11 @@ def _gigachat_upload_image(access_token: str, png_bytes: bytes) -> str:
 
 
 def _gigachat_token(client_id: str, client_secret: str) -> str:
+    with _TOKEN_LOCK:
+        return _gigachat_token_locked(client_id, client_secret)
+
+
+def _gigachat_token_locked(client_id: str, client_secret: str) -> str:
     """Токен живёт 30 минут — кэшируем по паре client_id:client_secret с запасом
     в 10 минут, чтобы не получать новый на каждый вызов внутри одного прогона."""
     cache_key = f"{client_id}:{client_secret}"
@@ -365,31 +389,42 @@ _RATE_LIMIT_MAX_DELAY = 30.0
 
 
 def _post_json(url: str, **kwargs) -> httpx.Response:
-    """httpx.post + raise_for_status, но с телом ответа в тексте ошибки —
-    провайдер обычно объясняет причину 4xx (неверная модель, формат запроса),
-    а голый код без текста превращает диагностику в гадание вслепую (реальный
-    случай: 400 от Ollama на vision-запросе, причина ясна только из тела).
-
-    429 (Too Many Requests) — отдельная ветка: несколько попыток с
-    задержкой (`Retry-After` от провайдера, если есть, иначе экспоненциально
-    растущая пауза) вместо немедленного отказа — см. Г.78."""
+    """Ограниченные повторы; тело ошибки может содержать документ и не логируется."""
+    from contextlib import nullcontext
+    gigachat = url.startswith(GIGACHAT_API_BASE + "/") or url == GIGACHAT_OAUTH_URL
     attempt = 0
     while True:
-        resp = httpx.post(url, **kwargs)
-        if resp.status_code == 429 and attempt < _RATE_LIMIT_MAX_RETRIES:
-            retry_after = resp.headers.get("Retry-After")
+        with runtime.GIGACHAT_LIMITER.slot() if gigachat else nullcontext():
+            runtime.record("requests")
+            if url.endswith("/files"):
+                runtime.record("image_uploads")
+            started = time.monotonic()
             try:
-                delay = float(retry_after) if retry_after else _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
-            except ValueError:
-                delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
-            delay = min(delay, _RATE_LIMIT_MAX_DELAY)
-            time.sleep(delay)
+                resp = httpx.post(url, **kwargs)
+            except Exception:
+                runtime.record("errors")
+                raise
+            finally:
+                runtime.record("response_seconds", time.monotonic() - started)
+                runtime.record("responses")
+        if resp.status_code >= 400:
+            runtime.record("errors")
+        if resp.status_code == 429:
+            runtime.record("rate_limits")
+            delay = runtime.retry_after_seconds(resp.headers.get("Retry-After"),
+                                                 _RATE_LIMIT_BASE_DELAY * (2 ** attempt))
+            if gigachat:
+                runtime.GIGACHAT_LIMITER.rate_limited(delay)
+        if resp.status_code == 429 and attempt < _RATE_LIMIT_MAX_RETRIES:
+            time.sleep(min(delay, _RATE_LIMIT_MAX_DELAY))
+            # Длинный Retry-After нельзя обрезать и немедленно повторить запрос:
+            # завершаем этот вызов технической ошибкой, сохраняя бюджет ожидания.
+            if delay > _RATE_LIMIT_MAX_DELAY:
+                raise RuntimeError("GigaChat Retry-After превышает бюджет ожидания; проверка не выполнена")
+            runtime.record("retries")
             attempt += 1
             continue
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise httpx.HTTPStatusError(f"{e}\nОтвет провайдера: {resp.text[:2000]}", request=e.request, response=e.response) from e
+        resp.raise_for_status()
         return resp
 
 
@@ -399,6 +434,51 @@ def call_llm_json(
     user_text: str,
     images: list[str] | None = None,
     timeout: float = 120.0,
+    *,
+    operation: str | None = None,
+    source_digest: str = "",
+    prompt_version: str = "v1",
+    use_cache: bool = True,
+) -> dict | None:
+    """Кэш учитывает полный контекст, а проверка цитат выполняется вызывающим кодом."""
+    from contextlib import nullcontext
+    selected_operation = operation or ("vision" if images else "text_verify")
+    cacheable = (config.provider == "gigachat" and use_cache and bool(operation or source_digest)
+                 and os.environ.get("NADZOR_LLM_CACHE", "1") != "0")
+    key = runtime.request_cache_key(
+        account=hashlib.sha256(config.api_key.encode()).hexdigest(), api=GIGACHAT_API_BASE,
+        scope=GIGACHAT_SCOPE,
+        model=config.resolved_model(), operation=selected_operation, prompt_version=prompt_version,
+        source_digest=source_digest, system=system_prompt, text=user_text,
+        images=[hashlib.sha256(img.encode()).hexdigest() for img in images or []],
+        max_tokens=runtime.output_tokens(selected_operation))
+    with runtime.RESULT_CACHE.single_flight(key) if cacheable else nullcontext():
+        if cacheable:
+            cached = runtime.RESULT_CACHE.get(key)
+            if cached is not None:
+                runtime.record("result_cache_hits")
+                return cached
+        runtime.record("text_batches")
+        runtime.record("text_characters", len(user_text))
+        try:
+            result = _call_llm_json_uncached(config, system_prompt, user_text, images, timeout,
+                                             selected_operation)
+        except ValueError:
+            runtime.record("invalid_results")
+            runtime.record("errors")
+            raise
+        if not isinstance(result, dict):
+            runtime.record("invalid_results")
+            runtime.record("errors")
+            raise ValueError("LLM не вернула JSON-объект; проверка не выполнена")
+        if cacheable:
+            runtime.RESULT_CACHE.put(key, result)
+        return result
+
+
+def _call_llm_json_uncached(
+    config: LlmConfig, system_prompt: str, user_text: str,
+    images: list[str] | None, timeout: float, operation: str,
 ) -> dict | None:
     """Синхронный structured-JSON вызов. images — список data-URL (png/jpeg)."""
     provider = config.provider
@@ -411,7 +491,7 @@ def call_llm_json(
             content.append(_anthropic_image_block(img))
         body = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": runtime.output_tokens(operation),
             "system": system_prompt,
             "messages": [{"role": "user", "content": content}],
         }
@@ -453,14 +533,33 @@ def call_llm_json(
             message["attachments"] = attachments
         body = {
             "model": model,
+            "max_tokens": runtime.output_tokens(operation),
             "messages": [{"role": "system", "content": system_prompt}, message],
         }
-        resp = _post_json(
-            f"{GIGACHAT_API_BASE}/v1/chat/completions",
-            json=body, headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            timeout=timeout, verify=ca_bundle(),
-        )
+        try:
+            resp = _post_json(
+                f"{GIGACHAT_API_BASE}/v1/chat/completions", json=body,
+                headers={"Authorization": f"Bearer {access_token}",
+                         "Content-Type": "application/json"},
+                timeout=timeout, verify=ca_bundle())
+        except httpx.HTTPStatusError as exc:
+            if not attachments or exc.response.status_code != 404:
+                raise
+            # Файл мог быть удалён у провайдера вне приложения. Один повтор
+            # с новым file_id; повторная ошибка остаётся техническим сбоем.
+            runtime.IMAGE_CACHE.clear()
+            message["attachments"] = [
+                _gigachat_upload_image(access_token, base64.b64decode(img.split(",", 1)[1]))
+                for img in images]
+            runtime.record("retries")
+            resp = _post_json(
+                f"{GIGACHAT_API_BASE}/v1/chat/completions", json=body,
+                headers={"Authorization": f"Bearer {access_token}",
+                         "Content-Type": "application/json"},
+                timeout=timeout, verify=ca_bundle())
         data = resp.json()
+        if data["choices"][0].get("finish_reason") in ("length", "error", "blacklist"):
+            raise ValueError("Ответ GigaChat не завершён; проверка не выполнена")
         text = data["choices"][0]["message"]["content"]
         return extract_json_object(text)
 
