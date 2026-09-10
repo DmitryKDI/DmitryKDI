@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-import threading
 import sys
+import threading
 from pathlib import Path
 
 import pymupdf
@@ -19,16 +19,25 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, 
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import (facts_digest, facts_store, file_store, models, requirement_kind,
-               review_dialog, run_control, schemas, spec_compare)
+from . import (
+    facts_digest,
+    facts_store,
+    file_store,
+    models,
+    requirement_kind,
+    review_dialog,
+    run_control,
+    schemas,
+    spec_compare,
+)
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
 from .document_composition import describe_volume, name_unread_sheets, render_composition
+from .document_coverage import CoverageReport, CoverageRequest, build_coverage
 from .document_split import split_pdf
 from .level_pages import augment_room_index_with_level_fallback
-from .llm import (LlmConfig, ca_bundle_description, check_llm_reachable,
-                  credentials_from_file)
+from .llm import LlmConfig, ca_bundle_description, check_llm_reachable, credentials_from_file
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import (
     attach_norms,
@@ -332,6 +341,14 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
 def list_documents(db: Session = Depends(get_session)):
     rows = db.query(models.Document).order_by(models.Document.uploaded_at.desc()).all()
     return [_document_out(d) for d in rows]
+
+
+@app.post("/documents/coverage", response_model=CoverageReport)
+def document_coverage(body: CoverageRequest, db: Session = Depends(get_session)):
+    """Покрытие выбранного набора без повторного разбора и вызовов модели."""
+    rows = db.query(models.Document).filter(models.Document.id.in_(body.document_ids)).all()
+    return build_coverage(body.document_ids, {doc.id: doc for doc in rows},
+                          lambda digest: facts_store.stored(digest, touch=False))
 
 
 @app.delete("/documents/{document_id}")
@@ -801,6 +818,17 @@ def _run_pd(run_id: int) -> None:
         # Г.103 — перечень нормативов собирается ПОПУТНО тем же вызовом,
         # которым идёт выжимка: отдельного прохода по документу не нужно.
         llm_norms: list[dict] = []
+        failed_chunks = 0
+
+        def _chunk_error(page: int, exc: Exception) -> None:
+            nonlocal failed_chunks
+            failed_chunks += 1
+            # Ошибка видна ещё во время прогона; текст исключения провайдера
+            # наружу не копируем, чтобы не раскрыть служебные данные запроса.
+            run.error = (f"Извлечение требований неполное: ошибок пачек {failed_chunks}. "
+                         "Непрочитанные пачки не означают отсутствие требований.")
+            db.commit()
+
         def _progress(done: int, total: int) -> None:
             # Пишем ход прямо в запись прогона: интерфейс читает её опросом
             # и потому переживает переход на другую вкладку и перезагрузку
@@ -818,7 +846,7 @@ def _run_pd(run_id: int) -> None:
 
         requirements = extract_requirements_llm(
             text_facts, config=config, on_norms=llm_norms.extend,
-            on_progress=_progress,
+            on_progress=_progress, on_chunk_error=_chunk_error,
             # Г.105 — подсказка по разделу пачки: накопленное на прежних томах
             # того же раздела. Ничего не подтверждает, факт по-прежнему должен
             # быть на странице.
@@ -839,6 +867,8 @@ def _run_pd(run_id: int) -> None:
         record_profile(requirements, volumes, norms)
         knowledge = render_section_knowledge(v.section for v in volumes)
         run.summary = render_summary(requirements) + "\n" + norms_section + "\n" + knowledge
+        if failed_chunks:
+            run.summary = (run.error or "Извлечение требований неполное.") + "\n\n" + run.summary
         run.requirements_total = len(requirements)
         run.extractor = "llm"
         if run.side == "before":
@@ -849,10 +879,10 @@ def _run_pd(run_id: int) -> None:
             # потом гадать, чей это разбор.
             run.store_run_id = save_run(
                 requirements, documents=[d.name for _, d in docs], extractor="llm",
-                provider=config.provider, model=config.model,
+                provider=config.provider, model=config.model, failed_chunks=failed_chunks,
             )
         run.stage = ""
-        run.status = "done"
+        run.status = "error" if failed_chunks else "done"
         db.commit()
     except run_control.RunCancelled:
         # Остановка по просьбе инспектора — не сбой, и называться должна
@@ -991,6 +1021,13 @@ def _run_compliance(run_id: int) -> None:
             run.status = "error"
             run.error = ("разбор ПД не найден или не сохранён — сначала выполните разбор "
                          "проектной документации")
+            db.commit()
+            return
+
+        if pd_run.status != "done":
+            run.status = "error"
+            run.error = ("Разбор исходных требований не завершён успешно; "
+                         "сверка по неполному результату не запускалась.")
             db.commit()
             return
 

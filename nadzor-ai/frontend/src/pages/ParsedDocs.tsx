@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { backendApi, type BackendDocument } from '../backendApi'
+import {
+  backendApi, type BackendCoverageReport, type BackendDocument,
+  type BackendDocumentCoverage,
+} from '../backendApi'
 import { useDocuments } from '../useDocuments'
 import { Chip, Empty, SectionCard, Skeleton, Table, formatDate } from '../components/ui'
 
@@ -40,7 +43,82 @@ function List({ title, items, total }: { title: string; items: string[]; total?:
   )
 }
 
-function DocumentCard({ doc }: { doc: BackendDocument }) {
+/**
+ * Состояние переданного комплекта, а не оценка его нормативной полноты.
+ *
+ * Сервер пока не сообщает ожидаемый состав документации, поэтому интерфейс
+ * может честно показать только наличие томов и готовность их разбора. Это
+ * всё же позволяет сразу увидеть недостающую сторону сопоставления и файл,
+ * который не вошёл в обработку.
+ */
+function InputCompleteness({
+  docs, coverage, loading, error,
+}: {
+  docs: BackendDocument[]
+  coverage?: BackendCoverageReport
+  loading: boolean
+  error: Error | null
+}) {
+  const sides: Array<{ key: BackendDocument['side']; title: string }> = [
+    { key: 'before', title: 'Проектная документация' },
+    { key: 'after', title: 'Рабочая и исполнительная документация' },
+  ]
+  return (
+    <div className="mb-4 grid gap-2 sm:grid-cols-2">
+      {sides.map(({ key, title }) => {
+        const sideDocs = docs.filter((doc) => doc.side === key)
+        const ids = new Set(sideDocs.map((doc) => doc.id))
+        const rows = coverage?.documents.filter((row) => ids.has(row.document_id)) ?? []
+        const ready = rows.filter((row) => row.status === 'processed')
+        const partial = rows.filter((row) => row.status === 'partial')
+        const failedCoverage = rows.filter((row) => row.status === 'error' || row.status === 'missing')
+        const parsing = sideDocs.filter((doc) => doc.status === 'parsing')
+        const failed = sideDocs.filter((doc) => doc.status === 'error')
+        const fullyCovered = sideDocs.length > 0 && rows.length === sideDocs.length
+          && ready.length === sideDocs.length
+        return (
+          <div key={key} className="rounded border border-surface-line p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-ink">{title}</span>
+              {sideDocs.length === 0
+                ? <Chip tone="warn">не загружена</Chip>
+                : loading
+                  ? <Chip tone="neutral">проверяется…</Chip>
+                  : error
+                    ? <Chip tone="warn">покрытие неизвестно</Chip>
+                    : <Chip tone={fullyCovered ? 'accent' : 'warn'}>
+                        {ready.length} из {sideDocs.length} полностью обработаны
+                      </Chip>}
+            </div>
+            {sideDocs.length === 0 ? (
+              <p className="mt-1 text-xs text-ink-muted">В этой части комплекта нет переданных документов.</p>
+            ) : (
+              <p className="mt-1 text-xs text-ink-muted">
+                {loading && 'Сервер проверяет сохранённое покрытие страниц. '}
+                {error && `Отчёт покрытия недоступен: ${error.message}. `}
+                {parsing.length > 0 && `разбираются: ${parsing.length}. `}
+                {failed.length > 0 && `не обработаны: ${failed.map((doc) => doc.name).join(', ')}. `}
+                {partial.length > 0 && `частично обработаны: ${partial.length}. `}
+                {failedCoverage.length > 0 && `ошибки покрытия: ${failedCoverage.length}. `}
+                {fullyCovered && 'Все страницы переданных документов учтены первичным разбором.'}
+              </p>
+            )}
+          </div>
+        )
+      })}
+      <p className="sm:col-span-2 text-xs text-ink-faint">
+        Это состояние переданных файлов, а не вывод о нормативной комплектности: ожидаемый состав сервер не сообщает.
+      </p>
+    </div>
+  )
+}
+
+function DocumentCard({
+  doc, coverage,
+}: {
+  doc: BackendDocument
+  coverage?: BackendDocumentCoverage
+}) {
   const [openPages, setOpenPages] = useState(false)
   const ready = doc.status === 'ok'
   const digest = useQuery({
@@ -67,7 +145,9 @@ function DocumentCard({ doc }: { doc: BackendDocument }) {
       </div>
 
       {doc.status === 'error' && (
-        <p className="mt-2 text-xs text-amber-700">{doc.classification_source}</p>
+        <p className="mt-2 text-xs text-amber-700">
+          Сервер отметил ошибку разбора, но причину для этого документа не передал. Файл не вошёл в результаты разбора.
+        </p>
       )}
       {!ready && doc.status === 'parsing' && (
         <p className="mt-2 text-xs text-ink-faint">
@@ -76,6 +156,11 @@ function DocumentCard({ doc }: { doc: BackendDocument }) {
       )}
 
       {ready && digest.isLoading && <Skeleton rows={2} />}
+      {ready && digest.error && (
+        <p className="mt-2 text-xs text-danger">
+          Не удалось загрузить сводку разбора: {digest.error instanceof Error ? digest.error.message : 'неизвестная ошибка'}
+        </p>
+      )}
       {ready && digest.data && (
         <>
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -111,15 +196,40 @@ function DocumentCard({ doc }: { doc: BackendDocument }) {
 
           <button className="mt-3 text-xs text-accent underline"
             onClick={() => setOpenPages((v) => !v)}>
-            {openPages ? 'скрыть постранично' : 'показать постранично'}
+            {openPages ? 'скрыть постраничное покрытие' : 'показать постраничное покрытие'}
           </button>
           {openPages && pages.isLoading && <Skeleton rows={4} />}
+          {openPages && pages.error && (
+            <p className="mt-2 text-xs text-danger">
+              Не удалось загрузить постраничную сводку: {pages.error instanceof Error ? pages.error.message : 'неизвестная ошибка'}
+            </p>
+          )}
           {openPages && pages.data && (
             <div className="mt-2 max-h-96 overflow-auto">
-              <Table head={['Лист', 'Вид', 'Название по штампу', 'Помещения', 'Позиций', 'Знаков']}>
+              {coverage ? (
+                <p className="mb-2 text-xs text-ink-muted">
+                  Обработано: {coverage.pages.filter((row) => row.status === 'processed').length}
+                  {' из '}{coverage.page_count ?? 'неизвестного числа'} листов.
+                  {' '}Не обработано: {coverage.pages.filter((row) => row.status === 'unprocessed').length}.
+                  {' '}Исключено: {coverage.pages.filter((row) => row.status === 'excluded').length}.
+                  {' '}Без текста: {coverage.pages.filter((row) => row.text_status === 'unavailable').length}.
+                </p>
+              ) : (
+                <p className="mb-2 text-xs text-amber-700">
+                  Отчёт покрытия недоступен; количество строк ниже не доказывает полноту разбора.
+                </p>
+              )}
+              <Table head={['Лист', 'Покрытие', 'Вид', 'Название по штампу', 'Помещения', 'Позиций', 'Знаков']}>
                 {pages.data.map((row) => (
                   <tr key={row.page} className="border-t border-surface-line">
                     <td className="px-2 py-1">{row.page}</td>
+                    <td className="px-2 py-1 text-ink-faint">
+                      {coverage?.pages.find((item) => item.page === row.page)?.status === 'processed'
+                        ? 'обработан'
+                        : coverage?.pages.find((item) => item.page === row.page)?.status === 'excluded'
+                          ? 'исключён'
+                          : coverage ? 'не обработан' : 'неизвестно'}
+                    </td>
                     <td className="px-2 py-1 text-ink-faint">
                       {row.kind === 'drawing' ? 'чертёж' : row.kind === 'text' ? 'текст' : '—'}
                     </td>
@@ -188,6 +298,15 @@ function RunCard({ runId }: { runId: number }) {
 
 export default function ParsedDocs() {
   const { docs, isLoading } = useDocuments()
+  const documentIds = docs.map((doc) => doc.id).sort((a, b) => a - b)
+  const coverage = useQuery({
+    queryKey: ['document-coverage', documentIds],
+    queryFn: () => backendApi.getDocumentCoverage(documentIds),
+    enabled: documentIds.length > 0,
+  })
+  const coverageById = new Map(
+    (coverage.data?.documents ?? []).map((row) => [row.document_id, row]),
+  )
   const runs = useQuery({ queryKey: ['pd-runs'], queryFn: backendApi.listPdRuns })
 
   return (
@@ -199,8 +318,18 @@ export default function ParsedDocs() {
           <Empty title="Документы не загружены"
             hint="Загрузите тома на экране «Новый анализ» — разбор начнётся сам, в фоне" />
         )}
+        {docs.length > 0 && (
+          <InputCompleteness
+            docs={docs}
+            coverage={coverage.data}
+            loading={coverage.isLoading}
+            error={coverage.error instanceof Error ? coverage.error : null}
+          />
+        )}
         <div className="space-y-3">
-          {docs.map((doc) => <DocumentCard key={doc.id} doc={doc} />)}
+          {docs.map((doc) => (
+            <DocumentCard key={doc.id} doc={doc} coverage={coverageById.get(doc.id)} />
+          ))}
         </div>
       </SectionCard>
 

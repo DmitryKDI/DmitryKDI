@@ -251,6 +251,48 @@ export interface BackendDocumentPage {
   excluded: string
 }
 
+export interface BackendCoveragePage {
+  page: number
+  status: 'processed' | 'unprocessed' | 'excluded'
+  text_status: 'available' | 'unavailable' | 'not_processed'
+  reason: string
+}
+
+export interface BackendDocumentCoverage {
+  document_id: number
+  present: boolean
+  name: string
+  side: string | null
+  discipline_code: string | null
+  status: 'processed' | 'partial' | 'unprocessed' | 'error' | 'missing'
+  page_count: number | null
+  pages: BackendCoveragePage[]
+  reasons: string[]
+}
+
+export interface BackendCoverageReport {
+  scope: 'document_ingestion'
+  documents: BackendDocumentCoverage[]
+  documents_requested: number
+  documents_present: number
+  documents_processed: number
+  documents_partial: number
+  documents_unprocessed: number
+  documents_error: number
+  documents_missing: number
+  documents_unknown_page_count: number
+  pages_known: number
+  pages_processed: number
+  pages_unprocessed: number
+  pages_excluded: number
+  pages_without_text: number
+  ingestion_complete: boolean
+  text_extraction_complete: boolean
+  package_completeness: 'not_assessed'
+  comparison_status: 'not_assessed'
+  limitations: string[]
+}
+
 /** Требование, извлечённое из проектной документации. */
 export interface BackendRequirement {
   page: number
@@ -364,6 +406,12 @@ export const backendApi = {
     return request<BackendDocument>(`/documents?side=${side}`, { method: 'POST', body: form })
   },
   listDocuments: () => request<BackendDocument[]>('/documents'),
+  getDocumentCoverage: (documentIds: number[]) =>
+    request<BackendCoverageReport>('/documents/coverage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_ids: documentIds }),
+    }),
   deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, { method: 'DELETE' }),
   /** Ручной выбор раздела; null возвращает автоопределение (Г.97). */
   updateDocumentSection: (id: number, disciplineCode: string | null) =>

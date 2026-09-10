@@ -1,5 +1,7 @@
 name = "qa_security"
 description = "Независимый read-only аудитор тестов, регрессий, CI, безопасности, приватности и подгонки под примеры."
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 
 developer_instructions = """
@@ -16,4 +18,3 @@ developer_instructions = """
 сценарием воспроизведения, тяжестью и безопасным направлением исправления.
 Явно перечисляй проверки, которые не удалось выполнить.
 """
-

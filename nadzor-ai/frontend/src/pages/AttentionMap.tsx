@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
   backendApi, type EscalationTicket, type TriangulationConfirmation,
@@ -7,6 +7,7 @@ import {
 import { useApp } from '../store'
 import { useDocuments } from '../useDocuments'
 import { Chip, Empty, SectionCard, Skeleton } from '../components/ui'
+import { coverageAllowsAnalysis } from '../documentCoverage'
 
 const DOMAIN_LABELS: Record<string, string> = {
   room: 'Помещение', equipment: 'Позиция оборудования', document: 'Документ', requirement_code: 'Код требования',
@@ -43,11 +44,24 @@ export default function AttentionMap() {
   })
 
   const readyDocs = beforeDocs.some((d) => d.status === 'ok') && afterDocs.some((d) => d.status === 'ok')
+  const readyBeforeIds = beforeDocs.filter((d) => d.status === 'ok').map((d) => d.id)
+  const readyAfterIds = afterDocs.filter((d) => d.status === 'ok').map((d) => d.id)
+  const coverageIds = [...readyBeforeIds, ...readyAfterIds].sort((a, b) => a - b)
+  const coverage = useQuery({
+    queryKey: ['document-coverage', coverageIds],
+    queryFn: () => backendApi.getDocumentCoverage(coverageIds),
+    enabled: readyDocs,
+  })
+  const coverageComplete = coverageAllowsAnalysis(coverage.data)
+  // В запуск передаются только готовые документы. Не скрываем остальные:
+  // частичный комплект меняет границы результата, даже если карта всё ещё
+  // полезна для уже разобранных томов.
+  const unavailableDocs = [...beforeDocs, ...afterDocs].filter((d) => d.status !== 'ok')
 
   const run = useMutation({
     mutationFn: () => backendApi.createTriangulatedRun(
-      beforeDocs.filter((d) => d.status === 'ok').map((d) => d.id),
-      afterDocs.filter((d) => d.status === 'ok').map((d) => d.id),
+      readyBeforeIds,
+      readyAfterIds,
     ),
     onSuccess: (data) => setTriangulatedRunId(data.id),
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось построить карту внимания', 'error'),
@@ -82,6 +96,30 @@ export default function AttentionMap() {
             hint="Карта внимания строится по документам, загруженным на экране «Новый анализ»."
             action={<Link className="btn-primary mt-2" to="/analysis/new">Загрузить документы</Link>} />
         )}
+        {readyDocs && unavailableDocs.length > 0 && (
+          <p className="mb-3 rounded-md border border-major/40 bg-major-soft p-2 text-xs text-major">
+            В текущий запуск не войдут документы, которые ещё разбираются или завершились ошибкой: {unavailableDocs.map((d) => d.name).join(', ')}.
+            {' '}Карта будет относиться только к {beforeDocs.filter((d) => d.status === 'ok').length} из {beforeDocs.length} документам ПД
+            {' '}и {afterDocs.filter((d) => d.status === 'ok').length} из {afterDocs.length} документам РД/ИД.
+          </p>
+        )}
+        {readyDocs && coverage.isLoading && (
+          <p className="mb-3 rounded-md border border-surface-line bg-surface-muted p-2 text-xs text-ink-muted">
+            Проверяется техническое покрытие всех переданных страниц…
+          </p>
+        )}
+        {readyDocs && coverage.error && (
+          <p className="mb-3 rounded-md border border-danger/40 bg-danger-soft p-2 text-xs text-danger">
+            Не удалось проверить покрытие документов. Карта не будет запущена, пока состояние страниц неизвестно.
+          </p>
+        )}
+        {readyDocs && coverage.data && !coverageComplete && (
+          <p className="mb-3 rounded-md border border-major/40 bg-major-soft p-2 text-xs text-major">
+            Первичный разбор неполный: обработано {coverage.data.pages_processed} из {coverage.data.pages_known} известных страниц,
+            {' '}не обработано {coverage.data.pages_unprocessed}, исключено {coverage.data.pages_excluded}.
+            {' '}Карта не запускается, чтобы неполный результат не выглядел как отсутствие расхождений.
+          </p>
+        )}
 
         {readyDocs && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-surface-line bg-surface-muted/60 px-3 py-2 text-xs text-ink-muted no-print">
@@ -89,7 +127,8 @@ export default function AttentionMap() {
               ПД: {beforeDocs.filter((d) => d.status === 'ok').map((d) => d.name).join(', ') || '—'}
               {' · '}РД: {afterDocs.filter((d) => d.status === 'ok').map((d) => d.name).join(', ') || '—'}
             </span>
-            <button className="btn-primary px-3 py-1 text-xs" disabled={run.isPending || runStatus?.status === 'running'}
+            <button className="btn-primary px-3 py-1 text-xs"
+              disabled={!coverageComplete || run.isPending || runStatus?.status === 'running'}
               onClick={() => run.mutate()}>
               {run.isPending || runStatus?.status === 'running' ? 'Считаю…' : runId === null ? 'Построить карту внимания' : 'Пересчитать'}
             </button>

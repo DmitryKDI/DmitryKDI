@@ -10,6 +10,9 @@ import os
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 TEST_DB = "/tmp/nadzor_pd_run_test.db"  # noqa: S108 — временная БД теста, как в test_api_integration
 Path(TEST_DB).unlink(missing_ok=True)
@@ -102,6 +105,56 @@ def test_missing_document_is_named_not_silently_skipped(tmp_path, monkeypatch):
     body = _wait(client.post("/pd-runs", json={"document_ids": [999999]}).json()["id"])
     assert body["status"] == "error"
     assert "999999" in (body["error"] or "")
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_failed_extraction_chunks_are_not_saved_as_a_successful_run(tmp_path, monkeypatch, partial):
+    doc_id = _upload(tmp_path, text="Document requirements")
+    monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "мок"))
+    saved = Mock(return_value=101)
+    monkeypatch.setattr(main_module, "save_run", saved)
+    monkeypatch.setattr(main_module, "attach_rooms_by_name", lambda *args: None)
+    monkeypatch.setattr(main_module, "attach_norms", lambda *args: ([], ""))
+    monkeypatch.setattr(main_module, "record_profile", lambda *args: None)
+    monkeypatch.setattr(main_module, "render_section_knowledge", lambda *args: "")
+
+    def extract(facts, config, **callbacks):
+        callbacks["on_chunk_error"](1, RuntimeError("служебные подробности"))
+        return [Requirement(rooms=[], page=1, sentence="Требование", code=None,
+                            document="pd.pdf", section=None)] if partial else []
+
+    monkeypatch.setattr(main_module, "extract_requirements_llm", extract)
+    body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id]}).json()["id"])
+    assert body["status"] == "error", body
+    assert body["requirements_total"] == int(partial)
+    assert "ошибок пачек 1" in body["error"]
+    assert "неполное" in body["summary"]
+    assert "служебные подробности" not in body["error"]
+    assert saved.call_args.kwargs["failed_chunks"] == 1
+    print("OK: полный и частичный сбои извлечения явно ошибочны, найденное сохранено")
+
+
+def test_incomplete_saved_extraction_cannot_start_comparison(monkeypatch):
+    from app import models
+    from app.db import get_session
+
+    with next(get_session()) as db:
+        source = models.PdRun(status="error", store_run_id=101, document_ids=[])
+        db.add(source)
+        db.flush()
+        run = models.ComplianceRun(pd_run_id=source.id, rd_document_ids=[])
+        db.add(run)
+        db.commit()
+        run_id = run.id
+    loaded = Mock(side_effect=AssertionError("Неполный разбор не читать для сверки"))
+    monkeypatch.setattr(main_module, "load_run", loaded)
+    main_module._run_compliance(run_id)
+    with next(get_session()) as db:
+        result = db.get(models.ComplianceRun, run_id)
+        assert result.status == "error"
+        assert "не запускалась" in result.error
+    loaded.assert_not_called()
+    print("OK: сверка не выдаёт неполный разбор за полную исходную документацию")
 
 
 def test_llm_check_endpoint_reports_state_for_the_button(monkeypatch):

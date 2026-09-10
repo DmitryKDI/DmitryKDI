@@ -31,8 +31,7 @@ import json
 import os
 from pathlib import Path
 
-from sqlalchemy import (DateTime, Integer, String, Text, create_engine, func,
-                        select)
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -130,15 +129,16 @@ def _from_payload(name: str, pages: int, payload: str) -> DocumentFacts:
     )
 
 
-def stored(digest: str) -> DocumentFacts | None:
-    """Готовый разбор по отпечатку, или None."""
+def stored(digest: str, *, touch: bool = True) -> DocumentFacts | None:
+    """Готовый разбор по отпечатку, или None; отчёт с touch=False не меняет used_at."""
     with _session() as db:
         row = db.get(StoredFacts, (digest, FACTS_VERSION))
         if row is None:
             return None
-        row.used_at = dt.datetime.utcnow()
         facts = _from_payload(row.name, row.pages, row.payload)
-        db.commit()
+        if touch:
+            row.used_at = dt.datetime.utcnow()
+            db.commit()
         return facts
 
 
