@@ -35,9 +35,8 @@ def _req(sentence: str, rooms=None, summary="", page=1) -> Requirement:
                        document="пд.pdf", section="ОВ", summary=summary or sentence[:60])
 
 
-def test_token_found_in_rd_text_confirms_without_spending_a_call():
-    """Первая ступень — самая дешёвая: нормативный номер или марка из
-    требования ищется прямо в тексте РД. Нашлась — вызов модели не нужен."""
+def test_token_found_without_model_does_not_confirm_whole_requirement():
+    """Старый тест закреплял ложное подтверждение по отдельному обозначению."""
     reqs = [_req("Регистры из бесшовных труб по ГОСТ 8732-78.")]
     rd_text = [{"page": 4,
                 "text": "Трубы стальные бесшовные ГОСТ 8732-78, поставка по спецификации."}]
@@ -47,9 +46,10 @@ def test_token_found_in_rd_text_confirms_without_spending_a_call():
                               config=None, llm_verify=lambda *a, **kw: calls.append(1) or [])
 
     assert len(result.items) == 1
-    assert result.items[0].status == STATUS_CONFIRMED
-    assert "ГОСТ 8732-78" in result.items[0].evidence
-    assert not calls, "при совпадении токена модель не вызывается"
+    assert result.items[0].status == STATUS_NOT_CHECKED
+    assert not result.items[0].evidence
+    assert not calls, "без ключа модель не вызывается"
+    print("OK: совпадение токена без модели не подтверждает требование")
 
 
 def test_absent_in_text_is_never_called_a_violation():

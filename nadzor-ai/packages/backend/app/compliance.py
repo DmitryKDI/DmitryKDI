@@ -24,9 +24,8 @@
 
 ## Лестница проверки — от дешёвого к дорогому
 
-1. **Токен в тексте РД.** Нормативный номер, марка или класс из требования
-   ищется прямо в тексте (`requirement_cross_check._extract_token`, Г.48).
-   Нашлось — вызова модели не нужно вовсе.
+1. Совпадение обозначения само по себе не подтверждает требование:
+   параметры, место применения и условия проверяются по смыслу.
 2. **Смысловая сверка текста РД моделью** (`requirement_text_verify`, Г.49):
    пачками, вызов на пачку со списком ещё нерешённых требований, а не на
    каждое требование отдельно.
@@ -49,9 +48,8 @@ from time import perf_counter
 from .vision_page_compare import select_candidate_pages
 
 from .llm import LlmConfig
-from .requirement_cross_check import _extract_token, _token_present_in
+from .requirement_text_verify import validated_confirmation_evidence
 from .requirement_registry import Requirement
-from . import spec_compare
 
 STATUS_CONFIRMED = "подтверждено"
 STATUS_NEEDS_CHECK = "требует проверки"
@@ -115,7 +113,6 @@ def check_compliance(
     candidate_keys = set()
     vision_keys = set()
     vision_pairs = set()
-    rd_text = "\n".join(f.get("text", "") for f in rd_text_facts)
 
     # Ход работы наружу: сколько требований уже получили ответ из скольких.
     # Через него же вызывающий останавливает прогон — исключением из
@@ -135,38 +132,9 @@ def check_compliance(
         if on_progress is not None:
             on_progress(len(result.items), total, note)
 
-    # --- Ступень 1: токен в тексте РД (без модели) ---
-    pending: list[Requirement] = []
-    rd_marks = spec_compare.normalize(rd_text)
-    for req in requirements:
-        # Если в требовании названа МАРКА изделия, подтвердить его может
-        # только она сама. Иначе засчитывается имя завода из кавычек:
-        # наблюдалось на реальном прогоне — «KDV DU 400-80A-3х10» считалась
-        # подтверждённой, потому что где-то в РД встречалось слово «KORF»
-        # (Г.117). Присутствие бренда не доказывает присутствие изделия.
-        marks = spec_compare.designations(req.sentence)
-        if marks:
-            found = next((m for m in marks if m in rd_marks), None)
-            if found:
-                result.items.append(ComplianceItem(
-                    requirement=req, status=STATUS_CONFIRMED,
-                    detail=f"обозначение «{found}» найдено в тексте рабочей документации",
-                    evidence=found,
-                ))
-            else:
-                pending.append(req)
-            continue
-        token = _extract_token(req.sentence)
-        if token and _token_present_in(token, rd_text):
-            result.items.append(ComplianceItem(
-                requirement=req, status=STATUS_CONFIRMED,
-                detail=f"обозначение «{token}» найдено в тексте рабочей документации",
-                evidence=token,
-            ))
-        else:
-            pending.append(req)
-
-    _report("сверка по обозначениям")
+    # Обозначение может встретиться у другого элемента или в другом месте.
+    # Поэтому все требования проходят содержательную проверку.
+    pending = list(requirements)
     if not pending:
         return _finish(result)
 
@@ -174,14 +142,14 @@ def check_compliance(
         for req in pending:
             result.items.append(ComplianceItem(
                 requirement=req, status=STATUS_NOT_CHECKED,
-                detail="ключ ИИ не задан — доступна только сверка по обозначению; "
+                detail="ключ ИИ не задан; совпадение обозначения не подтверждает требование; "
                        "смысловая сверка текста и просмотр листов не выполнялись",
             ))
         result.not_run.append("смысловая сверка текста РД и просмотр листов — нет ключа ИИ")
         return _finish(result)
 
     # --- Ступень 2: смысловая сверка текста РД моделью ---
-    verdicts: dict[str, dict] = {}
+    verdicts: dict[int, dict] = {}
     if llm_verify is None:
         # Г.107 — ключ есть, а смысловая сверка не подключена: шаг просто не
         # выполнялся. Без этой строки прогон выглядел бы так, будто модель
@@ -192,7 +160,16 @@ def check_compliance(
         _report("смысловая сверка текста РД моделью")
         try:
             for v in llm_verify(pending, rd_text_facts, config):
-                verdicts[str(v.get("sentence", ""))] = v
+                idx = v.get("requirement_id")
+                if type(idx) is int and 1 <= idx <= len(pending):
+                    verdicts[idx] = v
+                else:
+                    # Старые адаптеры без id допустимы только при однозначном соответствии.
+                    matches = [i for i, r in enumerate(pending, 1)
+                               if r.sentence == v.get("sentence")
+                               and ("page" not in v or r.page == v["page"])]
+                    if len(matches) == 1:
+                        verdicts[matches[0]] = v
         except Exception as exc:  # noqa: BLE001 — сбой не должен стать «в РД нет»
             for req in pending:
                 result.items.append(ComplianceItem(
@@ -203,15 +180,36 @@ def check_compliance(
             return _finish(result)
 
     still_pending: list[Requirement] = []
-    for req in pending:
-        v = verdicts.get(req.sentence)
-        if v is not None and v.get("verdict") == "confirmed":
+    text_notes: dict[int, str] = {}
+    for idx, req in enumerate(pending, 1):
+        v = verdicts.get(idx)
+        if v and (v.get("failed_chunks") or (v.get("verdict") == "absent"
+                                             and v.get("evidence"))):
+            result.items.append(ComplianceItem(
+                requirement=req, status=(STATUS_NOT_CHECKED
+                    if v.get("failed_chunks") and not v.get("chunks_checked")
+                    else STATUS_NEEDS_CHECK),
+                detail=f"требуется ручная проверка по тексту РД: {v.get('reason', '')}",
+            ))
+            if v.get("failed_chunks"):
+                result.not_run.append(
+                    f"смысловая сверка текста РД: ошибок {v['failed_chunks']}; "
+                    "часть корпуса не проверена")
+            continue
+        evidence = validated_confirmation_evidence(v, rd_text_facts) if v else []
+        if evidence:
+            citations = "; ".join(
+                f"{e.get('document') or 'РД'}, стр.{e['page']} [F{e['fact_id']}]: «{e['quote']}»"
+                for e in evidence
+            )
             result.items.append(ComplianceItem(
                 requirement=req, status=STATUS_CONFIRMED,
-                detail=f"подтверждено по тексту РД: {v.get('reason', '')}".strip(),
-                evidence=str(v.get("reason", "")),
+                detail=f"подтверждено по тексту РД: {v.get('reason', '')}. {citations}",
+                evidence=citations,
             ))
         else:
+            if v and v.get("reason"):
+                text_notes[id(req)] = str(v["reason"])
             still_pending.append(req)
 
     _report("смысловая сверка текста РД")
@@ -327,6 +325,9 @@ def check_compliance(
             result.items.append(ComplianceItem(
                 requirement=req, status=status, detail=detail, pages_to_check=pages,
             ))
+    for item in result.items:
+        if id(item.requirement) in text_notes:
+            item.detail += "; результат текстовой проверки: " + text_notes[id(item.requirement)]
     return _finish(result)
 
 

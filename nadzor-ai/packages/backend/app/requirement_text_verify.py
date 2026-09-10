@@ -52,8 +52,7 @@ _TEXT_VERIFY_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора проверить,
 отражено ли в тексте рабочей документации (РД) требование из проектной
 документации (ПД) — ПО СМЫСЛУ, а не по совпадению отдельного слова или
-короткого обозначения (это уже проверено раньше отдельным, более узким
-способом). Одно и то же действие/элемент/параметр в РД может быть описано
+короткого обозначения. Одно и то же действие/элемент/параметр в РД может быть описано
 другими словами, другим порядком, с другим набором деталей — читай так,
 как читал бы инспектор, а не ищи повтор фразы.
 
@@ -74,6 +73,13 @@ _TEXT_VERIFY_TEMPLATE = f"""\
                 показывает, что требуемое НЕ сделано или сделано иначе.
 
 Если фрагмент вообще не затрагивает требование — НЕ включай его в ответ.
+Для confirmed необходимо подтвердить ВСЁ требование: объект, место применения,
+каждый параметр и условие. Совпадение марки, норматива или отдельного слова
+недостаточно. Другое помещение, иное значение, неподтверждённое условие —
+это не полное подтверждение. coverage="partial" или "unknown" не подтверждает.
+Приведи evidence: дословные цитаты из РД с системным fact_id и страницей.
+Цитаты должны обосновывать всё требование; reason объясняет связь, но не
+заменяет цитаты. Не исправляй и не дописывай текст цитат.
 Не пытайся дать вердикт по каждому требованию на каждом фрагменте — так
 теряется смысл постраничной проверки; отвечай только там, где текст
 фрагмента прямо даёт основание судить.
@@ -85,7 +91,10 @@ _TEXT_VERIFY_TEMPLATE = f"""\
 {{{{"verdicts": [
   {{{{"id": "R<номер требования из списка>",
    "verdict": "confirmed"|"absent",
-   "reason": "одна-две строки — что именно в тексте РД даёт такой вывод"}}}}
+   "reason": "одна-две строки — что именно в тексте РД даёт такой вывод",
+   "coverage": "full"|"partial"|"unknown",
+   "evidence": [{{{{"fact_id": "системный номер F без буквы, целое число",
+                   "page": "номер страницы, целое число", "quote": "дословная цитата"}}}}]}}}}
 ]}}}}
 Если этот фрагмент не даёт оснований ни по одному требованию — верни
 {{{{"verdicts": []}}}}."""
@@ -123,8 +132,40 @@ def _render_chunk(chunk: list[dict]) -> str:
     `vision.compare_text_pair`): без него текст РД шёл модели вплотную к
     служебным заголовкам пользовательского сообщения, и строка внутри
     документа могла притвориться такой же служебной разметкой."""
-    body = "\n\n".join(f"--- Страница {fact['page']} ---\n{fact['text']}" for fact in chunk)
-    return f"<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n{body}\n</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
+    return "\n\n".join(
+        f"F{fact['fact_id']} — Страница {fact['page']}\n"
+        f"<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\nДокумент: {fact.get('document', '')}; "
+        f"раздел: {fact.get('section', '')}\n{fact['text']}\n</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
+        for fact in chunk
+    )
+
+
+def validated_confirmation_evidence(item: dict, facts: list[dict]) -> list[dict]:
+    """Проверяем происхождение цитат, а не заменяем смысловую оценку модели.
+
+    Индекс факта различает страницы разных томов с одинаковым номером.
+    Путь/название берётся из источника, не из ответа модели.
+    """
+    if item.get("verdict") != "confirmed" or item.get("coverage") != "full":
+        return []
+    evidence = item.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        return []
+    sources = {f.get("fact_id", idx): f for idx, f in enumerate(facts, 1)}
+    validated = []
+    for entry in evidence:
+        if not isinstance(entry, dict) or type(entry.get("fact_id")) is not int:
+            return []
+        fact = sources.get(entry["fact_id"])
+        quote = entry.get("quote")
+        if (fact is None or type(entry.get("page")) is not int
+                or entry["page"] != fact.get("page")
+                or not isinstance(quote, str) or not quote.strip()
+                or quote not in fact.get("text", "")):
+            return []
+        validated.append({"fact_id": entry["fact_id"], "page": entry["page"],
+                          "quote": quote, "document": fact.get("document", "")})
+    return validated
 
 
 def _render_requirements_block(pending: list[tuple[int, Requirement]]) -> str:
@@ -132,7 +173,9 @@ def _render_requirements_block(pending: list[tuple[int, Requirement]]) -> str:
     не менее недоверенная, чем РД: контейнер отделяет её от служебного
     номера «R<n>», по которому модель отвечает."""
     return "\n".join(
-        f"R{idx}: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{req.sentence}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
+        f"R{idx}: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{req.sentence}\n"
+        f"Документ: {req.document}; раздел: {req.section}; помещения: {req.rooms}"
+        "</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
         for idx, req in pending
     )
 
@@ -176,7 +219,8 @@ def verify_general_requirements_llm(
     на успешный вызов, и `unclear` из-за 401 печатался тем же текстом, что
     и настоящий «текст РД не даёт оснований»)."""
     system_prompt = text_verify_system_prompt(discipline)
-    chunks = _chunk_text_facts(rd_text_facts, max_chars_per_call)
+    indexed_facts = [dict(f, fact_id=idx) for idx, f in enumerate(rd_text_facts, 1)]
+    chunks = _chunk_text_facts(indexed_facts, max_chars_per_call)
 
     pending: dict[int, Requirement] = {i: req for i, req in enumerate(general_requirements, 1)}
     resolved: dict[int, dict] = {}
@@ -199,14 +243,16 @@ def verify_general_requirements_llm(
                 failed_count[idx] += 1
                 last_error[idx] = repr(exc)
             continue
-        for idx in pending:
-            checked_count[idx] += 1
-        if not result:
+        if not isinstance(result, dict) or not isinstance(result.get("verdicts"), list):
             for idx in pending:
                 failed_count[idx] += 1
                 last_error[idx] = "модель не дала разбираемый JSON"
             continue
+        for idx in pending:
+            checked_count[idx] += 1
         for item in result.get("verdicts", []):
+            if not isinstance(item, dict):
+                continue
             raw_id = str(item.get("id", ""))
             if not raw_id.startswith("R"):
                 continue
@@ -219,10 +265,18 @@ def verify_general_requirements_llm(
             verdict = item.get("verdict")
             if verdict not in ("confirmed", "absent"):
                 continue
+            evidence = validated_confirmation_evidence(
+                dict(item, verdict="confirmed", coverage="full")
+                if verdict == "absent" else item, chunk)
+            if verdict == "confirmed" and not evidence:
+                last_error[idx] = "подтверждение отклонено: нет полной оценки с проверяемыми цитатами"
+                continue
             req = pending.pop(idx)
             resolved[idx] = {
+                "requirement_id": idx,
                 "sentence": req.sentence, "page": req.page,
                 "verdict": verdict, "reason": item.get("reason", ""),
+                "coverage": item.get("coverage"), "evidence": evidence,
                 "chunks_checked": checked_count[idx], "failed_chunks": failed_count[idx],
             }
             if on_result:
@@ -237,7 +291,10 @@ def verify_general_requirements_llm(
                       f"({failed_count[idx]} вызов(ов) дополнительно упали — часть корпуса могла не проверяться)")
         else:
             reason = "ни один фрагмент текста РД не дал оснований для вывода"
+        if last_error.get(idx) and not failed_count[idx]:
+            reason += "; " + last_error[idx]
         entry = {
+            "requirement_id": idx,
             "sentence": req.sentence, "page": req.page, "verdict": "unclear",
             "reason": reason,
             "chunks_checked": checked_count[idx], "failed_chunks": failed_count[idx],

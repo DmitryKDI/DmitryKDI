@@ -65,7 +65,10 @@ def test_single_chunk_confirms_one_requirement():
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
         assert "R1" in user_text
         assert "завес" in user_text.lower()
-        return {"verdicts": [{"id": "R1", "verdict": "confirmed", "reason": "завеса упомянута в тексте РД"}]}
+        return {"verdicts": [{"id": "R1", "verdict": "confirmed", "coverage": "full",
+                             "reason": "подтверждены элемент и место установки",
+                             "evidence": [{"fact_id": 1, "page": 10,
+                                           "quote": facts[0]["text"]}]}]}
 
     original = _patch(requirement_text_verify, "call_llm_json", fake_call_llm_json)
     try:
@@ -163,7 +166,9 @@ def test_on_result_callback_fires_for_each_resolved_requirement():
     seen = []
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
-        return {"verdicts": [{"id": "R1", "verdict": "confirmed", "reason": "видно в тексте"}]}
+        return {"verdicts": [{"id": "R1", "verdict": "confirmed", "coverage": "full",
+                             "reason": "видно в тексте", "evidence": [
+                                 {"fact_id": 1, "page": 1, "quote": facts[0]["text"]}]}]}
 
     original = _patch(requirement_text_verify, "call_llm_json", fake_call_llm_json)
     try:
