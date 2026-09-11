@@ -324,9 +324,24 @@ def run_triangulated_analysis(
     candidates = candidates_only(confirmations)
     tickets = build_tickets(candidates)
 
+    # Сводный LLM-вердикт нужен только там, где уже есть минимум два
+    # независимых источника. Одиночный candidate от этого не получает новой
+    # независимой информации: прежняя схема делала по одному LLM-вызову на
+    # каждый такой ключ и на реальном мини-бенчмарке породила 95 вызовов для
+    # 95 кандидатов при 0 подтверждённых объектах. Кандидаты остаются в
+    # escalation_tickets и ждут второго источника (vision/mo/routing), а
+    # дорогой synthesis запускается только после настоящей триангуляции.
     verdicts: list[KeyVerdict] = []
-    if use_llm and signals:
-        verdicts = synthesize_all(signals, llm_config)  # type: ignore[arg-type]
+    confirmed_keys = {(item.domain, item.key) for item in confirmed}
+    if use_llm and confirmed_keys:
+        verdicts = synthesize_all(  # type: ignore[arg-type]
+            signals, llm_config, only_keys=confirmed_keys,
+        )
+    elif use_llm:
+        not_run.append(
+            "verdict_synthesis (Г.61): нет объектов, подтверждённых 2+ независимыми "
+            "источниками — одиночные кандидаты оставлены в очереди без повторного LLM-вызова"
+        )
     else:
         not_run.append("verdict_synthesis (Г.61): требует ключа ИИ — сводный вердикт не построен")
 
