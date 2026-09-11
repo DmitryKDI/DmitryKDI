@@ -8,6 +8,7 @@ on:
     paths:
       - 'nadzor-ai/frontend/**'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
+      - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
@@ -29,11 +30,14 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  runtime-syntax:
+  backend-syntax:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m py_compile nadzor-ai/packages/backend/app/llm_runtime.py
+      - name: Compile changed LLM modules
+        run: |
+          python -m py_compile nadzor-ai/packages/backend/app/llm_runtime.py
+          python -m py_compile nadzor-ai/packages/backend/app/requirement_llm_extract.py
