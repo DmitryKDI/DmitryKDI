@@ -121,12 +121,18 @@ export default function Workspace() {
   const qc = useQueryClient()
   const { before, after, isLoading } = useDocuments()
   const {
+    analysisRunId,
     setAnalysisRunId,
     analysisRunStatus,
+    triangulatedRunId,
     setTriangulatedRunId,
     triangulatedRunStatus,
+    pdRunId,
     setPdRunId,
     pdRunStatus,
+    rdRunId,
+    rdRunStatus,
+    complianceRunId,
     setComplianceRunId,
     complianceRunStatus,
     pushToast,
@@ -134,6 +140,7 @@ export default function Workspace() {
   const [uploading, setUploading] = useState<'before' | 'after' | null>(null)
   const autoCompliancePdId = useRef<number | null>(null)
   const complianceStartedForPd = useRef<number | null>(null)
+  const cancelRequested = useRef(false)
 
   const readyBefore = useMemo(() => before.filter((doc) => doc.status === 'ok'), [before])
   const readyAfter = useMemo(() => after.filter((doc) => doc.status === 'ok'), [after])
@@ -142,6 +149,7 @@ export default function Workspace() {
     analysisRunStatus?.status === 'running'
     || triangulatedRunStatus?.status === 'running'
     || pdRunStatus?.status === 'running'
+    || rdRunStatus?.status === 'running'
     || complianceRunStatus?.status === 'running'
   )
 
@@ -169,6 +177,7 @@ export default function Workspace() {
 
   const fullAnalysis = useMutation({
     mutationFn: async () => {
+      cancelRequested.current = false
       const beforeIds = readyBefore.map((doc) => doc.id)
       const afterIds = readyAfter.map((doc) => doc.id)
       return Promise.allSettled([
@@ -202,15 +211,56 @@ export default function Workspace() {
     onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось запустить анализ', 'error'),
   })
 
+  const cancelFullAnalysis = useMutation({
+    mutationFn: async () => {
+      cancelRequested.current = true
+      autoCompliancePdId.current = null
+      complianceStartedForPd.current = pdRunId
+
+      const requests: Promise<unknown>[] = []
+      if (analysisRunId != null && analysisRunStatus?.status === 'running') {
+        requests.push(backendApi.cancelAnalysisRun(analysisRunId))
+      }
+      if (triangulatedRunId != null && triangulatedRunStatus?.status === 'running') {
+        requests.push(backendApi.cancelTriangulatedRun(triangulatedRunId))
+      }
+      if (pdRunId != null && pdRunStatus?.status === 'running') {
+        requests.push(backendApi.cancelPdRun(pdRunId))
+      }
+      if (rdRunId != null && rdRunStatus?.status === 'running') {
+        requests.push(backendApi.cancelPdRun(rdRunId))
+      }
+      if (complianceRunId != null && complianceRunStatus?.status === 'running') {
+        requests.push(backendApi.cancelComplianceRun(complianceRunId))
+      }
+      if (requests.length === 0) return []
+      return Promise.allSettled(requests)
+    },
+    onSuccess: (results) => {
+      const accepted = results.filter((result) => result.status === 'fulfilled').length
+      if (accepted > 0) {
+        pushToast(`Остановка запрошена для ${accepted} активных этапов. Они завершатся на ближайшей безопасной точке.`)
+      } else {
+        pushToast('Активных этапов для остановки не найдено')
+      }
+    },
+    onError: (e) => pushToast(e instanceof Error ? e.message : 'Не удалось запросить остановку анализа', 'error'),
+  })
+
   useEffect(() => {
     const pdId = autoCompliancePdId.current
+    if (cancelRequested.current) return
     if (!pdId || pdRunStatus?.id !== pdId || !pdRunStatus.store_run_id) return
-    if (pdRunStatus.status === 'running' || complianceStartedForPd.current === pdId) return
+    if (pdRunStatus.status !== 'done' || complianceStartedForPd.current === pdId) return
     if (readyAfter.length === 0) return
 
     complianceStartedForPd.current = pdId
     void backendApi.createComplianceRun(pdId, readyAfter.map((doc) => doc.id))
       .then((run) => {
+        if (cancelRequested.current) {
+          void backendApi.cancelComplianceRun(run.id)
+          return
+        }
         setComplianceRunId(run.id)
         pushToast('Сверка требований с РД запущена автоматически')
       })
@@ -273,7 +323,18 @@ export default function Workspace() {
 
       <SectionCard
         title="Ход проверки"
-        subtitle="Один запуск — четыре понятных инспектору этапа. Сверка требований стартует сама после извлечения ПД.">
+        subtitle="Один запуск — четыре понятных инспектору этапа. Сверка требований стартует сама после извлечения ПД."
+        right={busy ? (
+          <button
+            type="button"
+            className="rounded-lg border border-critical/30 px-3 py-1.5 text-xs font-medium text-critical transition hover:bg-critical/5 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={cancelFullAnalysis.isPending}
+            onClick={() => cancelFullAnalysis.mutate()}
+          >
+            {cancelFullAnalysis.isPending ? 'Запрашиваю остановку…' : 'Остановить анализ'}
+          </button>
+        ) : undefined}
+      >
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <Progress
             label="Сравнение листов"
