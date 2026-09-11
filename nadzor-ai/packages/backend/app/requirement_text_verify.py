@@ -42,9 +42,10 @@
 отчёта."""
 from __future__ import annotations
 
-from typing import Optional
+import hashlib
 
 from .llm import LlmConfig, call_llm_json
+from .llm_runtime import parallel_map
 from .requirement_registry import Requirement
 from .vision import UNTRUSTED_INPUT_RULE, known_violations_block
 
@@ -102,7 +103,7 @@ _TEXT_VERIFY_TEMPLATE = f"""\
 {{{{"verdicts": []}}}}."""
 
 
-def text_verify_system_prompt(discipline: Optional[str] = None) -> str:
+def text_verify_system_prompt(discipline: str | None = None) -> str:
     """Промпт семантической сверки плюс блок известных нарушений
     (`known_violations.json`, applies_to="text") — тот же механизм, что
     уже используют остальные ЛЛМ-промпты пакета."""
@@ -201,7 +202,7 @@ def verify_general_requirements_llm(
     general_requirements: list[Requirement],
     rd_text_facts: list[dict],
     config: LlmConfig,
-    discipline: Optional[str] = None,
+    discipline: str | None = None,
     max_chars_per_call: int = 6000,
     timeout: float = 120.0,
     on_result=None,
@@ -242,23 +243,39 @@ def verify_general_requirements_llm(
         i: {"confirmed": [], "absent": []} for i in requirements
     }
 
+    prepared: list[tuple[list[dict], str]] = []
+    requirements_block = _render_requirements_block(sorted(requirements.items()))
     for chunk in chunks:
-        requirements_block = _render_requirements_block(sorted(requirements.items()))
         user_text = (
             f"Список требований ПД:\n{requirements_block}\n\n"
             f"Фрагмент текста РД:\n{_render_chunk(chunk)}"
         )
+        prepared.append((chunk, user_text))
+
+    def _verify_chunk(item: tuple[list[dict], str]):
+        chunk, user_text = item
         try:
-            result = call_llm_json(config, system_prompt, user_text, timeout=timeout)
+            cache_args = ({
+                "operation": "text_verify",
+                "source_digest": hashlib.sha256(user_text.encode("utf-8")).hexdigest(),
+                "prompt_version": "text-verify-v2",
+            } if config is not None else {})
+            result = call_llm_json(config, system_prompt, user_text, timeout=timeout, **cache_args)
         except Exception as exc:  # noqa: BLE001 — сбой одной пачки не должен ронять сверку по остальным
-            for idx in requirements:
-                failed_count[idx] += 1
-                last_error[idx] = repr(exc)
-            continue
+            return chunk, None, exc
         if not isinstance(result, dict) or not isinstance(result.get("verdicts"), list):
+            return chunk, None, ValueError("модель не дала разбираемый JSON")
+        return chunk, result, None
+
+    # Пачки РД независимы: итог собирается после всех ответов, поэтому
+    # параллельное выполнение не меняет правило, что поздний фрагмент может
+    # добавить противоречие. `parallel_map` сохраняет порядок, а ограничитель
+    # GigaChat не позволяет превысить заданную параллельность.
+    for chunk, result, error in parallel_map(_verify_chunk, prepared):
+        if error is not None:
             for idx in requirements:
                 failed_count[idx] += 1
-                last_error[idx] = "модель не дала разбираемый JSON"
+                last_error[idx] = repr(error)
             continue
         for idx in requirements:
             checked_count[idx] += 1

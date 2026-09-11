@@ -30,10 +30,12 @@
 БЕЗ ключа ЛЛМ: тогда сводка выдаётся сырой, но программа не встаёт."""
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 
 from .llm import LlmConfig, call_llm_json
+from .llm_runtime import parallel_map
 from .requirement_registry import Requirement
 from .vision import UNTRUSTED_INPUT_RULE, known_violations_block
 
@@ -324,27 +326,43 @@ def extract_requirements_llm(
     total = len(chunks)
     if on_progress:
         on_progress(0, total)
-    out: list[Requirement] = []
-    for done, chunk in enumerate(chunks, start=1):
+    # Формируем сообщения в главном потоке: `hint_for_section` может читать
+    # профиль раздела и не должен вызываться из рабочих потоков. Сами
+    # запросы независимы — каждая пачка содержит собственные страницы — и
+    # поэтому безопасно выполняются параллельно под единым лимитером
+    # GigaChat. Результаты `parallel_map` идут в исходном порядке, так что
+    # номера страниц, нормы и потоковая запись прогресса не меняются.
+    prepared: list[tuple[list[dict], str, str]] = []
+    for chunk in chunks:
         chunk_section = discipline or (chunk[0].get("section") if chunk else None)
         system_prompt = requirement_extraction_system_prompt(chunk_section)
         if hint_for_section is not None:
             system_prompt += hint_for_section(chunk_section)
         user_text = _render_chunk(chunk)
+        prepared.append((chunk, system_prompt, user_text))
+
+    def _call_prepared(item: tuple[list[dict], str, str]):
+        chunk, system_prompt, user_text = item
         try:
-            result = call_llm_json(config, system_prompt, user_text, timeout=timeout)
+            cache_args = ({
+                "operation": "extraction",
+                "source_digest": hashlib.sha256(user_text.encode("utf-8")).hexdigest(),
+                "prompt_version": "requirements-v2",
+            } if config is not None else {})
+            result = call_llm_json(config, system_prompt, user_text, timeout=timeout, **cache_args)
         except Exception as exc:  # noqa: BLE001 — сбой одной пачки не должен ронять извлечение по остальным
+            return chunk, None, exc
+        if not isinstance(result, dict) or not isinstance(result.get("requirements"), list):
+            return chunk, None, ValueError("модель не вернула обязательный массив requirements")
+        return chunk, result, None
+
+    out: list[Requirement] = []
+    for done, (chunk, result, error) in enumerate(parallel_map(_call_prepared, prepared), start=1):
+        if error is not None:
             if on_chunk_error:
-                on_chunk_error(chunk[0]["page"] if chunk else -1, exc)
+                on_chunk_error(chunk[0]["page"] if chunk else -1, error)
             if on_progress:
                 on_progress(done, total)  # сорванная пачка — тоже пройденная
-            continue
-        if not isinstance(result, dict) or not isinstance(result.get("requirements"), list):
-            exc = ValueError("модель не вернула обязательный массив requirements")
-            if on_chunk_error:
-                on_chunk_error(chunk[0]["page"] if chunk else -1, exc)
-            if on_progress:
-                on_progress(done, total)
             continue
         if on_norms:
             found = result.get("norms")

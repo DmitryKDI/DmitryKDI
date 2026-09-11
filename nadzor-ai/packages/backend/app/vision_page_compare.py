@@ -22,9 +22,10 @@
 «не могу сказать» и следующая попытка на другом листе."""
 from __future__ import annotations
 
-from typing import Optional
+import hashlib
 
 from .llm import LlmConfig, call_llm_json
+from .llm_runtime import parallel_map
 from .vision import UNTRUSTED_INPUT_RULE, known_violations_block, render_page_to_data_url
 
 _REQUIREMENT_CHECK_TEMPLATE = f"""\
@@ -60,7 +61,7 @@ _REQUIREMENT_CHECK_TEMPLATE = f"""\
  "where": "координатный ориентир на листе (оси, номер помещения, зона), если применимо"}}}}"""
 
 
-def requirement_check_system_prompt(discipline: Optional[str] = None) -> str:
+def requirement_check_system_prompt(discipline: str | None = None) -> str:
     """Промпт проверки требования по листу плюс блок известных нарушений
     (`known_violations.json`, applies_to="drawing") — тот же механизм
     few-shot-примеров, что `vision_system_prompt` в vision.py (см. тот же
@@ -74,7 +75,7 @@ def check_requirement_on_page(
     requirement_text: str,
     rooms: list[str],
     config: LlmConfig,
-    discipline: Optional[str] = None,
+    discipline: str | None = None,
     timeout: float = 120.0,
 ) -> dict:
     """Один лист, одно требование. Возвращает {verdict, reason, where} —
@@ -94,7 +95,16 @@ def check_requirement_on_page(
     try:
         img = render_page_to_data_url(rd_pdf_path, rd_page_no)
         system_prompt = requirement_check_system_prompt(discipline)
-        result = call_llm_json(config, system_prompt, user_text, images=[img], timeout=timeout)
+        cache_args = ({
+            "operation": "vision",
+            "source_digest": hashlib.sha256(
+                f"{rd_pdf_path}:{rd_page_no}:{requirement_text}:{rooms_str}".encode()
+            ).hexdigest(),
+            "prompt_version": "requirement-page-v2",
+        } if config is not None else {})
+        result = call_llm_json(
+            config, system_prompt, user_text, images=[img], timeout=timeout, **cache_args
+        )
     except Exception as exc:  # noqa: BLE001 — сбой одного листа (сеть, провайдер, рендер) не должен ронять весь прогон, см. registry_diff._verify_group
         return {"verdict": "unclear", "reason": f"ОШИБКА: {exc}", "where": "", "error": True}
     if not isinstance(result, dict) or result.get("verdict") not in {"confirmed", "absent", "unclear"}:
@@ -165,7 +175,7 @@ def check_visual_candidates(
     findings: list,
     room_index: dict[str, list[dict]],
     config: LlmConfig,
-    discipline: Optional[str] = None,
+    discipline: str | None = None,
     max_pages_per_finding: int = 3,
     on_result=None,
 ) -> list[dict]:
@@ -195,21 +205,17 @@ def check_visual_candidates(
     — по записи на находку, не на страницу: если хотя бы одна проверенная
     страница даёт "confirmed"/"absent", это и есть итог находки (первый
     небезразличный вердикт побеждает "unclear" от предыдущих страниц)."""
-    out: list[dict] = []
-    for f in findings:
-        if getattr(f, "finding_type", None) != "no_code_visual_check_needed":
-            continue
+    candidates = [f for f in findings
+                  if getattr(f, "finding_type", None) == "no_code_visual_check_needed"]
+
+    def _check_finding(f):
         pages = select_candidate_pages(f.rooms, room_index, max_pages_per_finding, f.sentence_pd)
         if not pages:
-            entry_result = {
+            return {
                 "rooms": f.rooms, "sentence": f.sentence_pd,
                 "verdict": "unclear", "reason": "ни одно из помещений требования не найдено в реестре РД — нет листа для проверки",
                 "where": "", "pages_checked": 0,
             }
-            out.append(entry_result)
-            if on_result:
-                on_result(entry_result)
-            continue
         verdict = "unclear"
         reason = ""
         where = ""
@@ -221,10 +227,16 @@ def check_visual_candidates(
                 verdict, reason, where = result["verdict"], result.get("reason", ""), result.get("where", "")
                 break
             reason = result.get("reason", reason)
-        entry_result = {
+        return {
             "rooms": f.rooms, "sentence": f.sentence_pd,
             "verdict": verdict, "reason": reason, "where": where, "pages_checked": checked,
         }
+
+    # Находки независимы: worker не обращается к БД и не вызывает UI.
+    # Callback выполняется здесь, в главном потоке, поэтому порядок и
+    # потоковая запись сохраняются, а запросы используют общий лимит.
+    out: list[dict] = []
+    for entry_result in parallel_map(_check_finding, candidates):
         out.append(entry_result)
         if on_result:
             on_result(entry_result)

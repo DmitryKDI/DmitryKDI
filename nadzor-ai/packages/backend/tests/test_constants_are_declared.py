@@ -79,6 +79,13 @@ DECLARED: dict[str, str] = {
     "routing_graph._MAX_PHRASE_WORDS": BUDGET,
     "section_profile.HINT_MIN_DOCUMENTS": BUDGET,
     "triangulation.DEFAULT_MIN_SOURCES": BUDGET,
+    "llm_runtime.DEFAULT_CACHE_ENTRIES": BUDGET,
+    "llm_runtime.DEFAULT_CLASSIFICATION_TOKENS": BUDGET,
+    "llm_runtime.DEFAULT_CONCURRENCY": BUDGET,
+    "llm_runtime.DEFAULT_EXTRACTION_TOKENS": BUDGET,
+    "llm_runtime.DEFAULT_TEXT_VERIFY_TOKENS": BUDGET,
+    "llm_runtime.DEFAULT_VISION_TOKENS": BUDGET,
+    "llm_runtime.DEFAULT_WAIT_BUDGET": BUDGET,
 
     # --- свойства языка и формы документа ---
     "requirement_registry._ROOM_KEYWORD_MIN_WORD_LEN": LANGUAGE,
