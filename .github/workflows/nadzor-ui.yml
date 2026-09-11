@@ -8,6 +8,8 @@ on:
     paths:
       - 'nadzor-ai/frontend/**'
       - 'nadzor-ai/packages/backend/app/anchors.py'
+      - 'nadzor-ai/packages/backend/app/entity_control.py'
+      - 'nadzor-ai/packages/backend/app/room_entity_check.py'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/packages/backend/app/run_logger.py'
@@ -27,6 +29,7 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_triangulated_pipeline.py'
       - 'nadzor-ai/packages/backend/tests/test_triangulated_synthesis_budget.py'
       - 'nadzor-ai/packages/backend/tests/test_control_pair_vision.py'
+      - 'nadzor-ai/packages/backend/tests/test_entity_control.py'
       - 'nadzor-ai/packages/backend/tests/test_anchors.py'
       - 'nadzor-ai/packages/backend/tests/test_vision_grounding.py'
       - 'nadzor-ai/packages/backend/tests/test_blind_runtime.py'
@@ -71,6 +74,8 @@ jobs:
       - name: Compile changed runtime modules
         run: |
           python -m py_compile app/anchors.py
+          python -m py_compile app/entity_control.py
+          python -m py_compile app/room_entity_check.py
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/requirement_llm_extract.py
           python -m py_compile app/run_logger.py
@@ -92,6 +97,7 @@ jobs:
           tests/test_triangulated_pipeline.py
           tests/test_triangulated_synthesis_budget.py
           tests/test_control_pair_vision.py
+          tests/test_entity_control.py
           tests/test_anchors.py
           tests/test_vision_grounding.py
           tests/test_blind_runtime.py
