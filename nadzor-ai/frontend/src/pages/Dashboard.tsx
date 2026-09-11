@@ -5,10 +5,11 @@ import { Chip, Empty, SectionCard, SeverityChip, Skeleton } from '../components/
 import { useApp } from '../store'
 import { useDocuments } from '../useDocuments'
 
-function Kpi({ label, value, hint, tone = 'neutral' }: {
+function Kpi({ label, value, hint, to, tone = 'neutral' }: {
   label: string
   value: number | string
   hint?: string
+  to: string
   tone?: 'neutral' | 'critical' | 'major' | 'ok'
 }) {
   const toneClass = tone === 'critical'
@@ -19,11 +20,18 @@ function Kpi({ label, value, hint, tone = 'neutral' }: {
         ? 'text-minor'
         : 'text-ink'
   return (
-    <div className="rounded-xl border border-surface-line bg-surface p-4 shadow-sm">
+    <Link
+      to={to}
+      aria-label={`${label}: ${value}`}
+      className="group rounded-xl border border-surface-line bg-surface p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/35 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent/30"
+    >
       <div className={`text-2xl font-semibold tracking-tight ${toneClass}`}>{value}</div>
-      <div className="mt-1 text-sm font-medium text-ink">{label}</div>
+      <div className="mt-1 flex items-center gap-1 text-sm font-medium text-ink">
+        <span>{label}</span>
+        <span className="text-xs text-ink-faint transition group-hover:translate-x-0.5 group-hover:text-accent">→</span>
+      </div>
       {hint && <div className="mt-1 text-xs text-ink-faint">{hint}</div>}
-    </div>
+    </Link>
   )
 }
 
@@ -99,11 +107,11 @@ export default function Dashboard() {
       </section>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <Kpi label="Проверено листов" value={isLoading ? '—' : pages} hint={`${processed} документов готовы`} />
-        <Kpi label="Критических точек" value={critical} hint={critical ? 'в первую очередь' : 'не выявлено'} tone="critical" />
-        <Kpi label="Существенных" value={major} hint="требуют внимания" tone="major" />
-        <Kpi label="Требуют проверки" value={tickets} hint="очередь инспектора" tone="major" />
-        <Kpi label="Подтверждено источниками" value={confirmed} hint="2+ независимых сигнала" tone="ok" />
+        <Kpi to="/documents" label="Проверено листов" value={isLoading ? '—' : pages} hint={`${processed} документов готовы`} />
+        <Kpi to="/evidence" label="Критических точек" value={critical} hint={critical ? 'в первую очередь' : 'не выявлено'} tone="critical" />
+        <Kpi to="/evidence" label="Существенных" value={major} hint="требуют внимания" tone="major" />
+        <Kpi to="/attention" label="Требуют проверки" value={tickets} hint="очередь инспектора" tone="major" />
+        <Kpi to="/attention" label="Подтверждено источниками" value={confirmed} hint="2+ независимых сигнала" tone="ok" />
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
