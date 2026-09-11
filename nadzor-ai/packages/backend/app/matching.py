@@ -1,25 +1,17 @@
 """Автоматическое сопоставление листов ПД и РД/ИД для сравнения.
 
-Порт matchPagePairs из nadzor-browser/app.js — жадное сопоставление листов по
-пересечению значимых токенов текста листа (Jaccard), с гейтингом по коду
-раздела (см. classification.py) и позиционным резервом для листов, которые
-не удалось сопоставить ни по тексту, ни по разделу.
+Сопоставление строится каскадом сигналов, которые уже извлечены из документа:
+тип листа -> раздел -> подсистема -> номера помещений/оборудования -> текст.
+Номер помещения и позиция оборудования считаются инженерными якорями и
+должны перевешивать повторяющуюся лексику штампа и общие слова раздела.
 
-Отличие от браузерной версии: там discipline_code вычислялся внутри самой
-функции по textFacts/имени файла. Здесь код раздела приходит уже вычисленным
-на DocumentInput — потому что в бэкенде он может быть получен и через
-vision-fallback (см. classification.classify_document), а matching.py не
-должен знать про LLM/vision вообще, только сопоставлять по готовым данным.
+Слабое текстовое совпадение не выдаётся за достоверную пару: оно получает
+``matched_by='review'``. Такой лист по-прежнему можно показать vision-модели,
+чтобы не потерять покрытие, но интерфейс/отчёт видит, что matching требует
+проверки. Позиционный резерв остаётся отдельным ``matched_by='position'``.
 
-Второй, независимый от раздела гейтинг — по типу листа (чертёж/текст, см.
-classification.classify_page_kind). Объём ПД и РД/ИД внутри одного раздела
-почти никогда не совпадает именно потому, что в один PDF подшиты вперемешку
-сами чертежи и текстовые приложения (акты, спецификации, содержание тома) —
-сравнивать чертёж с текстовым актом визуально бессмысленно. Поэтому перед
-сопоставлением листы делятся на два независимых пула по типу, и весь
-алгоритм (текстовое сопоставление + позиционный резерв) прогоняется отдельно
-внутри каждого пула — чертежи сравниваются только с чертежами, текст только
-с текстом.
+Раздел и тип листа приходят уже вычисленными на ``DocumentInput`` — этот
+модуль не обращается к LLM и остаётся детерминированным.
 """
 from __future__ import annotations
 
@@ -30,8 +22,16 @@ from .classification import PAGE_KIND_TEXT
 from .diffing import jaccard, norm_word
 from .subsystem import subsystem_lean
 
+# Нижняя граница, при которой пару вообще имеет смысл рассматривать.
 MIN_PAGE_MATCH_SIMILARITY = 0.12
+# Ниже этого значения пара сохраняется для покрытия, но явно маркируется
+# review: на мини-бенчмарке прежние ложные пары имели score около 0.26-0.34.
+CONFIDENT_PAGE_MATCH_SIMILARITY = 0.35
 SUBSYSTEM_MISMATCH_PENALTY = 0.4
+SUBSYSTEM_MATCH_BONUS = 0.08
+# Совпадение инженерного идентификатора должно быть сильнее общих слов.
+ROOM_ANCHOR_FLOOR = 0.55
+EQUIPMENT_ANCHOR_FLOOR = 0.50
 
 
 @dataclass
@@ -56,7 +56,8 @@ class _PageRef:
     tokens: set[str]
     kind: str
     room_keys: set[str] = field(default_factory=set)
-    lean: Optional[str] = None  # ключ подсистемы из subsystem.subsystem_lean, если раздел её различает
+    equipment_keys: set[str] = field(default_factory=set)
+    lean: Optional[str] = None  # ключ подсистемы из subsystem.subsystem_lean
 
 
 @dataclass
@@ -66,19 +67,18 @@ class PagePair:
     after_file_idx: int
     after_page: int
     score: float
-    matched_by: str  # 'text' | 'position'
+    matched_by: str  # 'text' | 'review' | 'position'
     page_kind: str  # 'drawing' | 'text'
     discipline_mismatch: bool = False
 
+    @property
+    def needs_review(self) -> bool:
+        """Пара выбрана не по достаточно сильному содержательному сигналу."""
+        return self.matched_by in {"review", "position"} or self.discipline_mismatch
+
 
 def _cover_pairs(before_list: list[_PageRef], after_list: list[_PageRef]) -> list[tuple[_PageRef, _PageRef]]:
-    """Позиционные пары так, чтобы КАЖДЫЙ лист с обеих сторон попал хотя бы в
-    одну пару — а не так, как раньше: пар получалось min(before, after), и
-    если, скажем, РД (712 листов) вдвое объёмнее ПД (177), лишние ~535
-    листов РД молча не проверялись вообще (реальный случай, найденный на
-    настоящих документах пользователя). Меньшая сторона переиспользуется
-    пропорционально — качество такой пары ниже текстовой, но лист хотя бы
-    попадает на визуальную проверку, а не пропадает."""
+    """Позиционные пары так, чтобы каждый лист обеих сторон имел покрытие."""
     if not before_list or not after_list:
         return []
     n = max(len(before_list), len(after_list))
@@ -121,15 +121,56 @@ def page_token_set(entry: DocumentInput, page_no: int) -> set[str]:
 
 
 def room_key_set(entry: DocumentInput, page_no: int) -> set[str]:
-    return {f["key"] for f in entry.room_facts if f["page"] == page_no and f.get("key")}
+    return {str(f["key"]) for f in entry.room_facts
+            if f["page"] == page_no and f.get("key")}
 
 
 def equipment_key_set(entry: DocumentInput, page_no: int) -> set[str]:
-    return {f["key"] for f in entry.equipment_facts if f["page"] == page_no and f.get("key")}
+    return {str(f["key"]) for f in entry.equipment_facts
+            if f["page"] == page_no and f.get("key")}
 
 
 def _page_text(entry: DocumentInput, page_no: int) -> str:
     return next((f["text"] for f in entry.text_facts if f["page"] == page_no), "")
+
+
+def _candidate_score(b: _PageRef, a: _PageRef) -> tuple[float, int, float]:
+    """Вернуть (итоговый score, число общих инженерных якорей, text_score).
+
+    Мы не складываем все признаки линейно: на инженерном листе один точный
+    номер помещения полезнее десятков общих слов. Поэтому сильный якорь
+    задаёт нижнюю границу score, а текст используется для ранжирования там,
+    где якорей нет или несколько кандидатов имеют одинаковые якоря.
+    """
+    text_score = jaccard(b.tokens, a.tokens)
+    score = text_score
+    anchors = 0
+
+    if b.room_keys and a.room_keys:
+        common_rooms = b.room_keys & a.room_keys
+        anchors += len(common_rooms)
+        room_score = jaccard(b.room_keys, a.room_keys)
+        if common_rooms:
+            score = max(score, ROOM_ANCHOR_FLOOR + (1.0 - ROOM_ANCHOR_FLOOR) * room_score)
+
+    if b.equipment_keys and a.equipment_keys:
+        common_equipment = b.equipment_keys & a.equipment_keys
+        anchors += len(common_equipment)
+        equipment_score = jaccard(b.equipment_keys, a.equipment_keys)
+        if common_equipment:
+            score = max(
+                score,
+                EQUIPMENT_ANCHOR_FLOOR
+                + (1.0 - EQUIPMENT_ANCHOR_FLOOR) * equipment_score,
+            )
+
+    if b.lean and a.lean:
+        if b.lean == a.lean:
+            score = min(1.0, score + SUBSYSTEM_MATCH_BONUS)
+        else:
+            score *= SUBSYSTEM_MISMATCH_PENALTY
+
+    return score, anchors, text_score
 
 
 def _match_pool(
@@ -138,55 +179,41 @@ def _match_pool(
     before_codes: list[Optional[str]],
     after_codes: list[Optional[str]],
 ) -> list[PagePair]:
-    """Основной алгоритм сопоставления (текстовое + позиционный резерв),
-    независимый от типа листа — вызывается отдельно для пула чертежей и
-    отдельно для пула текстовых листов."""
+    """Основной каскад matching для одного типа листов."""
     after_code_set = {c for c in after_codes if c}
 
-    candidates = []
+    candidates: list[tuple[float, int, float, _PageRef, _PageRef]] = []
     for b in before_pages:
-        if not b.tokens:
+        if not b.tokens and not b.room_keys and not b.equipment_keys:
             continue
         b_code = before_codes[b.file_idx]
         gate_by_discipline = bool(b_code) and b_code in after_code_set
         for a in after_pages:
-            if not a.tokens:
+            if not a.tokens and not a.room_keys and not a.equipment_keys:
                 continue
             if gate_by_discipline and after_codes[a.file_idx] != b_code:
                 continue
-            score = jaccard(b.tokens, a.tokens)
-            if b.room_keys and a.room_keys:
-                # Номер помещения — куда более специфичный сигнал, чем общая
-                # лексика листа (заголовки штампа, названия систем и т.п.
-                # повторяются на сотнях листов раздела): экспликация листа с
-                # десятками случайных общих слов может набрать балл выше, чем
-                # лист, где буквально совпадает то самое помещение, где
-                # находится нарушение (см. CLAUDE.md — реальный случай на
-                # на реальном комплекте). Поэтому берём лучший из двух сигналов, а не
-                # смешиваем — один хороший сигнал не должен тонуть в другом.
-                score = max(score, jaccard(b.room_keys, a.room_keys))
-            if b.lean and a.lean and b.lean != a.lean:
-                # Оба тома одного раздела, но по словам явно разные
-                # подсистемы раздела (см. subsystem.py) — не блокируем совсем
-                # (эвристика по словам ненадёжна на 100%), но совпадение
-                # номеров помещений в общем техническом подполье не должно
-                # перевешивать явный текстовый признак другой подсистемы.
-                score *= SUBSYSTEM_MISMATCH_PENALTY
+            score, anchors, text_score = _candidate_score(b, a)
             if score >= MIN_PAGE_MATCH_SIMILARITY:
-                candidates.append((score, b, a))
+                candidates.append((score, anchors, text_score, b, a))
 
-    candidates.sort(key=lambda c: -c[0])
+    # Сначала инженерные якоря/score, потом текстовый сигнал. Номера страниц
+    # используются лишь последним стабильным tie-breaker, не как доказательство.
+    candidates.sort(key=lambda c: (-c[0], -c[1], -c[2], c[3].page, c[4].page))
     used_before: set[tuple[int, int]] = set()
     used_after: set[tuple[int, int]] = set()
     pairs: list[PagePair] = []
-    for score, b, a in candidates:
+    for score, _anchors, _text_score, b, a in candidates:
         b_key = (b.file_idx, b.page)
         a_key = (a.file_idx, a.page)
         if b_key in used_before or a_key in used_after:
             continue
         used_before.add(b_key)
         used_after.add(a_key)
-        pairs.append(PagePair(b.file_idx, b.page, a.file_idx, a.page, score, "text", b.kind))
+        matched_by = "text" if score >= CONFIDENT_PAGE_MATCH_SIMILARITY else "review"
+        pairs.append(PagePair(
+            b.file_idx, b.page, a.file_idx, a.page, score, matched_by, b.kind,
+        ))
 
     remaining_before = [b for b in before_pages if (b.file_idx, b.page) not in used_before]
     remaining_after = [a for a in after_pages if (a.file_idx, a.page) not in used_after]
@@ -214,8 +241,6 @@ def _match_pool(
             for b, a in _cover_pairs(gb, ga):
                 positional.append((b, a, False))
         else:
-            # Одна из сторон пуста — сравнивать не с чем внутри этого раздела,
-            # отдаём в общий резерв, а не молча теряем эти листы.
             leftover_before.extend(gb)
             leftover_after.extend(ga)
 
@@ -227,7 +252,10 @@ def _match_pool(
             positional.append((b, a, mismatch))
 
     for b, a, mismatch in positional:
-        pairs.append(PagePair(b.file_idx, b.page, a.file_idx, a.page, 0.0, "position", b.kind, mismatch))
+        pairs.append(PagePair(
+            b.file_idx, b.page, a.file_idx, a.page,
+            0.0, "position", b.kind, mismatch,
+        ))
 
     return pairs
 
@@ -236,31 +264,36 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
     before_codes = [f.discipline_code for f in before_files]
     after_codes = [f.discipline_code for f in after_files]
 
-    # subsystem_lean — различение подсистем внутри одного раздела по лексике.
-    # Г.88: раздел здесь БОЛЬШЕ НЕ ЗАШИТ строкой. Раньше стояло
-    # `if code == "ОВ"`, потому что и словари, и само наблюдение были сделаны
-    # на одном разделе; теперь раздел передаётся внутрь, а `subsystem.py`
-    # сам решает по своему реестру, заведено ли для него различение
-    # подсистем, и возвращает None, если нет. Добавить раздел можно строкой
-    # данных в реестре, не трогая этот файл.
-    #
-    # Файл РД/ИД внутри раздела почти всегда посвящён одной подсистеме
-    # целиком (см. subsystem.py) — уровень файла даёт достаточно текста для
-    # надёжного сигнала, отдельная страница может быть слишком скудной.
+    # Файл РД/ИД внутри раздела часто посвящён одной подсистеме целиком.
+    # Уровень файла даёт более устойчивый сигнал, чем одна скудная страница.
     after_file_leans = [
         subsystem_lean(" ".join(f["text"] for f in entry.text_facts), code)
         for entry, code in zip(after_files, after_codes)
     ]
 
     before_pages = [
-        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT),
-                 room_key_set(entry, p), subsystem_lean(_page_text(entry, p), before_codes[fi]))
+        _PageRef(
+            fi,
+            p,
+            page_token_set(entry, p),
+            entry.page_kinds.get(p, PAGE_KIND_TEXT),
+            room_key_set(entry, p),
+            equipment_key_set(entry, p),
+            subsystem_lean(_page_text(entry, p), before_codes[fi]),
+        )
         for fi, entry in enumerate(before_files)
         for p in range(1, entry.pages + 1)
     ]
     after_pages = [
-        _PageRef(fi, p, page_token_set(entry, p), entry.page_kinds.get(p, PAGE_KIND_TEXT),
-                 room_key_set(entry, p), after_file_leans[fi])
+        _PageRef(
+            fi,
+            p,
+            page_token_set(entry, p),
+            entry.page_kinds.get(p, PAGE_KIND_TEXT),
+            room_key_set(entry, p),
+            equipment_key_set(entry, p),
+            after_file_leans[fi],
+        )
         for fi, entry in enumerate(after_files)
         for p in range(1, entry.pages + 1)
     ]
@@ -271,7 +304,7 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
         pool_before = [p for p in before_pages if p.kind == kind]
         pool_after = [p for p in after_pages if p.kind == kind]
         if not pool_before or not pool_after:
-            continue  # нечего сравнивать в этом пуле вообще (например, только чертежи с обеих сторон)
+            continue
         pairs.extend(_match_pool(pool_before, pool_after, before_codes, after_codes))
 
     return pairs
