@@ -23,48 +23,57 @@ def _doc(name, rooms, text):
     )
 
 
-def test_pixel_and_semantic_vision_confirm_page_pair(monkeypatch):
+def _changed(local=True):
+    return {
+        "significant": True,
+        "diff_ratio": 0.03,
+        "changed_cells": 7,
+        "local_cluster": local,
+        "hot_zone": (0.2, 0.2, 0.5, 0.5) if local else None,
+    }
+
+
+def test_deterministic_and_semantic_vision_confirm_page_pair(monkeypatch):
     before = [_doc("pd.pdf", ["012"], "012 венткамера приточная установка")]
     after = [_doc("rd.pdf", ["012"], "012 венткамера приточная установка")]
 
-    monkeypatch.setattr(pair_vision, "visual_diff_ratio", lambda *args, **kwargs: 0.25)
-    monkeypatch.setattr(
-        pair_vision,
-        "compare_page_pair",
-        lambda *args, **kwargs: {
-            "significant": [{
-                "label": "Венткамера 012",
-                "change": "В помещении 012 изменена конфигурация приточной установки",
-                "severity": "major",
-                "field_check": "проверить установку в 012",
-            }]
-        },
-    )
+    monkeypatch.setattr(pair_vision, "visual_change_evidence", lambda *args, **kwargs: _changed())
+    seen = {}
 
+    def fake_compare(*args, **kwargs):
+        seen["clip"] = kwargs.get("clip_frac")
+        return {
+            "significant": [{
+                "label": "Изменение",
+                "change": "В помещении 012 изменена конфигурация оборудования",
+                "severity": "major",
+                "field_check": "проверить решение в помещении 012",
+            }]
+        }
+
+    monkeypatch.setattr(pair_vision, "compare_page_pair", fake_compare)
     signals, diagnostics = pair_vision.run_targeted_pair_vision(
-        before,
-        after,
-        ["pd.pdf"],
-        ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"),
-        max_pairs=2,
+        before, after, ["pd.pdf"], ["rd.pdf"],
+        LlmConfig(provider="anthropic", api_key="fake"), max_pairs=2,
     )
 
     page_sources = {s.source for s in signals if s.domain == "page_pair"}
-    assert page_sources == {"pixel_diff", "vision_pair"}
-    room_signals = [s for s in signals if s.domain == "room" and s.key == "012"]
-    assert len(room_signals) == 1
-    assert room_signals[0].source == "vision"
+    assert page_sources == {"raster_diff", "vision_pair"}
+    assert [s.key for s in signals if s.domain == "room"] == ["012"]
     assert diagnostics[0]["status"] == "significant"
     assert diagnostics[0]["rooms_mentioned"] == ["012"]
+    assert seen["clip"] == (0.2, 0.2, 0.5, 0.5)
 
 
-def test_unchanged_raster_does_not_spend_vision_call(monkeypatch):
+def test_structurally_same_pair_does_not_spend_vision_call(monkeypatch):
     before = [_doc("pd.pdf", ["140"], "140 вытяжная вентиляция")]
     after = [_doc("rd.pdf", ["140"], "140 вытяжная вентиляция")]
     calls = {"vision": 0}
 
-    monkeypatch.setattr(pair_vision, "visual_diff_ratio", lambda *args, **kwargs: 0.01)
+    monkeypatch.setattr(pair_vision, "visual_change_evidence", lambda *args, **kwargs: {
+        "significant": False, "diff_ratio": 0.001, "changed_cells": 0,
+        "local_cluster": False, "hot_zone": None,
+    })
 
     def should_not_run(*args, **kwargs):
         calls["vision"] += 1
@@ -72,10 +81,7 @@ def test_unchanged_raster_does_not_spend_vision_call(monkeypatch):
 
     monkeypatch.setattr(pair_vision, "compare_page_pair", should_not_run)
     signals, diagnostics = pair_vision.run_targeted_pair_vision(
-        before,
-        after,
-        ["pd.pdf"],
-        ["rd.pdf"],
+        before, after, ["pd.pdf"], ["rd.pdf"],
         LlmConfig(provider="anthropic", api_key="fake"),
     )
 
@@ -84,10 +90,10 @@ def test_unchanged_raster_does_not_spend_vision_call(monkeypatch):
     assert diagnostics[0]["status"] == "visually_same"
 
 
-def test_room_number_must_exist_on_both_pages(monkeypatch):
+def test_room_number_must_be_grounded_on_both_pages(monkeypatch):
     before = [_doc("pd.pdf", ["147"], "147 вентиляция")]
     after = [_doc("rd.pdf", ["147"], "147 вентиляция")]
-    monkeypatch.setattr(pair_vision, "visual_diff_ratio", lambda *args, **kwargs: 0.3)
+    monkeypatch.setattr(pair_vision, "visual_change_evidence", lambda *args, **kwargs: _changed(False))
     monkeypatch.setattr(
         pair_vision,
         "compare_page_pair",
@@ -97,11 +103,8 @@ def test_room_number_must_exist_on_both_pages(monkeypatch):
     )
 
     signals, _ = pair_vision.run_targeted_pair_vision(
-        before,
-        after,
-        ["pd.pdf"],
-        ["rd.pdf"],
+        before, after, ["pd.pdf"], ["rd.pdf"],
         LlmConfig(provider="anthropic", api_key="fake"),
     )
     assert not any(signal.domain == "room" for signal in signals)
-    assert {signal.source for signal in signals} == {"pixel_diff", "vision_pair"}
+    assert {signal.source for signal in signals} == {"raster_diff", "vision_pair"}
