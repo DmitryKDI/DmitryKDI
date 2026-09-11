@@ -1,23 +1,23 @@
 """Запись диагностических логов фоновых прогонов в JSON.
 
-Разбор ПД и compliance уже вызывают :func:`save` из своих ``finally``.
-Этот модуль дополнительно оборачивает фоновые задачи прямого сравнения
-листов и триангуляции при их постановке через Starlette ``BackgroundTasks``.
-После завершения ``done/error/cancelled`` автоматически появляется JSON,
-даже если сам прогон закончился исключением.
+Разбор ПД и compliance вызывают :func:`save` из своих ``finally``.
+Прямое сравнение листов и триангуляция логируются автоматически через
+обёртку Starlette ``BackgroundTasks``.
 
 Логи предназначены для отладки качества и производительности. В них нет
 текста PDF, содержимого файлов или ключей провайдера: только метаданные
 прогона, счётчики, ошибки и агрегированные результаты.
 
-Существующие логи стадий:
-  data/run_logs/{run_id}_{timestamp}.json
+Чтобы каталог не разрастался после каждого запуска, хранится только
+последний лог каждого типа:
 
-Автоматические логи задач анализа:
-  data/run_logs/tasks/{run_type}/{run_id}_{timestamp}.json
+* ``data/run_logs/tasks/analysis/latest.json``
+* ``data/run_logs/tasks/triangulated/latest.json``
+* в корне ``data/run_logs`` — только последний ``pd`` и последний
+  ``compliance`` лог; старый лог того же типа удаляется перед записью.
 
-Так отдельные пространства идентификаторов ``analysis_runs`` и
-``triangulated_runs`` не конфликтуют с ``pd_runs``/``compliance_runs``.
+Запись выполняется атомарно через временный файл и ``replace``: читатель
+никогда не увидит наполовину записанный JSON.
 """
 from __future__ import annotations
 
@@ -37,26 +37,53 @@ def _ensure_dir(path: Path | None = None) -> None:
     (path or RUN_LOGS_DIR).mkdir(parents=True, exist_ok=True)
 
 
+def _safe_run_type(run_type: str) -> str:
+    return "".join(ch for ch in str(run_type) if ch.isalnum() or ch in ("-", "_")) or "task"
+
+
 def _log_path(run_id: int, timestamp: datetime) -> Path:
-    """Совместимый путь старых логов ПД/compliance."""
+    """Совместимое имя stage-лога; старые логи того же типа чистит save()."""
     ts_str = timestamp.strftime("%Y%m%dT%H%M%SZ")
     return RUN_LOGS_DIR / f"{run_id}_{ts_str}.json"
 
 
 def _task_log_path(run_type: str, run_id: int, timestamp: datetime) -> Path:
-    """Путь автоматического лога с отдельным каталогом на тип задачи."""
-    safe_type = "".join(ch for ch in str(run_type) if ch.isalnum() or ch in ("-", "_")) or "task"
-    folder = TASK_LOGS_DIR / safe_type
+    """Путь единственного актуального лога фоновой задачи данного типа."""
+    del run_id, timestamp  # имя стабильно: новый прогон заменяет предыдущий
+    folder = TASK_LOGS_DIR / _safe_run_type(run_type)
     _ensure_dir(folder)
-    ts_str = timestamp.strftime("%Y%m%dT%H%M%S.%fZ")
-    return folder / f"{run_id}_{ts_str}.json"
+    return folder / "latest.json"
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
+    """Атомарно заменить JSON, не оставляя частично записанный файл."""
     _ensure_dir(path.parent)
-    with open(path, "w", encoding="utf-8") as handle:
+    temp = path.with_suffix(path.suffix + ".tmp")
+    with open(temp, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
+    temp.replace(path)
     return path
+
+
+def _remove_previous_stage_logs(run_type: str) -> None:
+    """Оставить в корне только один лог каждого stage-типа.
+
+    Старый HTTP API ищет ПД/compliance по шаблону ``{run_id}_*.json``,
+    поэтому имена этих файлов пока сохраняем совместимыми. Перед новым
+    сохранением удаляем только JSON с тем же ``run_type``; лог соседней
+    стадии не затрагивается.
+    """
+    _ensure_dir()
+    for path in RUN_LOGS_DIR.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if payload.get("run_type") == run_type:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def save(
@@ -72,9 +99,13 @@ def save(
     compliance: dict | None = None,
     errors: list[dict] | None = None,
 ) -> Path:
-    """Записать совместимый лог стадии ПД/compliance на диск."""
+    """Записать последний лог стадии ПД/compliance на диск.
+
+    Новый запуск того же ``run_type`` удаляет предыдущий лог этого типа.
+    """
     _ensure_dir()
     timestamp = datetime.now(timezone.utc)
+    _remove_previous_stage_logs(run_type)
     path = _log_path(run_id, timestamp)
 
     log_data: dict[str, Any] = {
@@ -110,11 +141,7 @@ def save_task_snapshot(
     details: dict | None = None,
     errors: list[dict] | None = None,
 ) -> Path:
-    """Записать автоматический лог фоновой задачи.
-
-    Формат общий для прямого сравнения листов и триангуляции, поэтому новый
-    тип фоновой задачи можно подключить без новой схемы файла.
-    """
+    """Перезаписать последний автоматический лог фоновой задачи."""
     timestamp = datetime.now(timezone.utc)
     path = _task_log_path(run_type, run_id, timestamp)
     payload: dict[str, Any] = {
@@ -295,15 +322,7 @@ _BACKGROUND_PATCHED = False
 
 
 def install_background_task_logging() -> None:
-    """Автоматически логировать фоновые analysis/triangulated задачи.
-
-    ``main.py`` уже импортирует этот модуль, поэтому установка выполняется
-    один раз при старте приложения. Оборачиваются только два явно известных
-    обработчика. Остальные ``BackgroundTasks`` FastAPI не затрагиваются.
-
-    ПД и compliance здесь намеренно не оборачиваются: у них уже есть
-    собственный ``finally`` с более богатым специализированным логом.
-    """
+    """Автоматически логировать фоновые analysis/triangulated задачи."""
     global _BACKGROUND_PATCHED
     if _BACKGROUND_PATCHED:
         return
