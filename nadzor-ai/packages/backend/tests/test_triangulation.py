@@ -20,6 +20,7 @@ from app.triangulation import (
     signals_from_requirement_cross_check,
     signals_from_room_cross_check,
     signals_from_routing_diff,
+    signals_from_visual_requirement_checks,
     triangulate,
 )
 
@@ -33,44 +34,33 @@ def test_two_independent_sources_confirm():
     assert len(result) == 1, result
     assert result[0].status == CONFIRMED, result
     assert result[0].sources == ("schema", "text"), result
-    print("OK: два разных источника по одному ключу дают confirmed")
 
 
 def test_single_source_is_only_candidate():
-    signals = [Signal(source="text", domain="room", key="147", detail="а")]
-    result = triangulate(signals)
-    assert result[0].status == CANDIDATE, result
-    print("OK: единственный источник даёт candidate, не confirmed")
+    result = triangulate([Signal(source="text", domain="room", key="147")])
+    assert result[0].status == CANDIDATE
 
 
 def test_repeated_hits_from_same_source_do_not_double_count():
-    """Реальный случай: у нарушения №1 (раздвоенная позиция П17.1/17.2) был
-    только графический источник — но сама схема могла дать несколько
-    отдельных наблюдений. Повторные сигналы ОДНОГО источника не должны
-    случайно перейти порог в 2 источника."""
     signals = [
         Signal(source="schema", domain="room", key="012", detail="наблюдение 1"),
         Signal(source="schema", domain="room", key="012", detail="наблюдение 2"),
     ]
     result = triangulate(signals)
-    assert result[0].status == CANDIDATE, result
-    assert result[0].sources == ("schema",), result
-    print("OK: несколько сигналов одного источника не удваивают уверенность")
+    assert result[0].status == CANDIDATE
+    assert result[0].sources == ("schema",)
 
 
 def test_room_and_equipment_domains_do_not_collide():
-    """Номер помещения и код позиции оборудования могут случайно совпасть
-    строкой — домены должны считаться раздельно."""
     signals = [
         Signal(source="room_registry", domain="room", key="012"),
         Signal(source="equip_registry", domain="equipment", key="012"),
     ]
     result = triangulate(signals)
-    assert len(result) == 2, result
+    assert len(result) == 2
     statuses = {(c.domain, c.key): c.status for c in result}
-    assert statuses[("room", "012")] == CANDIDATE, statuses
-    assert statuses[("equipment", "012")] == CANDIDATE, statuses
-    print("OK: помещение и позиция оборудования с одинаковым ключом не смешиваются")
+    assert statuses[("room", "012")] == CANDIDATE
+    assert statuses[("equipment", "012")] == CANDIDATE
 
 
 def test_min_sources_threshold_is_configurable():
@@ -82,7 +72,6 @@ def test_min_sources_threshold_is_configurable():
     assert triangulate(signals, min_sources=4)[0].status == CANDIDATE
     assert triangulate(signals, min_sources=3)[0].status == CONFIRMED
     assert triangulate(signals, min_sources=2)[0].status == CONFIRMED
-    print("OK: порог числа источников настраивается вызывающим кодом")
 
 
 def test_confirmed_only_and_candidates_only_filters():
@@ -92,7 +81,6 @@ def test_confirmed_only_and_candidates_only_filters():
     ]
     assert [c.key for c in confirmed_only(confirmations)] == ["1"]
     assert [c.key for c in candidates_only(confirmations)] == ["2"]
-    print("OK: фильтры confirmed_only/candidates_only разделяют статусы")
 
 
 def rf(page, key, name, area=None):
@@ -109,7 +97,7 @@ def ef(page, key, name, qty=None):
     return fact
 
 
-def test_adapter_from_room_cross_check_feeds_triangulation():
+def test_adapter_from_room_cross_check_feeds_strong_signal():
     before = [DocumentInput("pd.pdf", 1, [], [rf(1, "012", "Венткамера", "15.2")], "ОВ")]
     after = [DocumentInput("rd.pdf", 1, [], [rf(1, "013", "Форкамера", "12.0")], "ОВ")]
     result = cross_check_rooms(before, after)
@@ -117,10 +105,17 @@ def test_adapter_from_room_cross_check_feeds_triangulation():
     assert signals and signals[0].source == "room_registry"
     assert signals[0].key == "012"
     assert signals[0].domain == "room"
-    print("OK: адаптер room_cross_check отдаёт корректно оформленные сигналы")
 
 
-def test_adapter_from_equip_cross_check_feeds_triangulation():
+def test_room_name_change_stays_diagnostic_not_control_signal():
+    before = [DocumentInput("pd.pdf", 1, [], [rf(1, "147", "Лаборантская", "19.6")], "ОВ")]
+    after = [DocumentInput("rd.pdf", 1, [], [rf(1, "147", "Обрывок подписи", "19.6")], "ОВ")]
+    result = cross_check_rooms(before, after)
+    assert any(f.finding_type == "name_changed" for f in result.findings)
+    assert signals_from_room_cross_check(result.findings) == []
+
+
+def test_adapter_from_equip_cross_check_feeds_qty_signal():
     before = [DocumentInput("pd.pdf", 1, [], [], "ОВ", equipment_facts=[ef(1, "14", "Приточная установка", "2")])]
     after = [DocumentInput("rd.pdf", 1, [], [], "ОВ", equipment_facts=[ef(1, "14", "Приточная установка", "1")])]
     result = cross_check_equipment(before, after)
@@ -128,7 +123,17 @@ def test_adapter_from_equip_cross_check_feeds_triangulation():
     assert signals and signals[0].source == "equip_registry"
     assert signals[0].key == "14"
     assert signals[0].domain == "equipment"
-    print("OK: адаптер equip_cross_check отдаёт корректно оформленные сигналы")
+
+
+def test_equipment_added_only_in_rd_does_not_create_control_signal():
+    before = [DocumentInput("pd.pdf", 1, [], [], "ОВ", equipment_facts=[ef(1, "14", "Установка", "1")])]
+    after = [DocumentInput(
+        "rd.pdf", 1, [], [], "ОВ",
+        equipment_facts=[ef(1, "14", "Установка", "1"), ef(1, "999", "Шумная подпись", "1")],
+    )]
+    result = cross_check_equipment(before, after)
+    assert any(f.finding_type == "missing_in_pd" and f.equip_key == "999" for f in result.findings)
+    assert all(s.key != "999" for s in signals_from_equip_cross_check(result.findings))
 
 
 def test_adapter_from_requirement_cross_check_feeds_triangulation():
@@ -139,8 +144,6 @@ def test_adapter_from_requirement_cross_check_feeds_triangulation():
     assert signals and signals[0].source == "requirement_prose"
     assert signals[0].key == "270"
     assert signals[0].domain == "room"
-    print("OK: адаптер requirement_cross_check отдаёт корректно оформленные сигналы")
-
 
 
 def test_adapter_from_routing_diff_only_uses_finding_categories():
@@ -154,50 +157,62 @@ def test_adapter_from_routing_diff_only_uses_finding_categories():
         "room_only_after": [],
     }
     signals = signals_from_routing_diff(diff)
-    keys = {s.key for s in signals}
-    assert keys == {"147", "198"}, keys
+    assert {s.key for s in signals} == {"147", "198"}
     assert all(s.source == "routing" for s in signals)
-    print("OK: адаптер routing_diff берёт только retargeted/connection_count_changed")
+
+
+def test_visual_requirement_absence_becomes_independent_signal_per_room():
+    results = [
+        {
+            "rooms": ["267", "270"],
+            "verdict": "absent",
+            "reason": "контур системы не показан",
+            "where": "помещения 267/270",
+        },
+        {"rooms": ["271"], "verdict": "confirmed", "reason": "видно"},
+        {"rooms": ["272"], "verdict": "unclear", "reason": "не тот лист"},
+    ]
+    signals = signals_from_visual_requirement_checks(results)
+    assert {s.key for s in signals} == {"267", "270"}
+    assert all(s.source == "vision" and s.domain == "room" for s in signals)
+    assert all("контур системы" in s.detail for s in signals)
+
+
+def test_requirement_plus_visual_absence_confirms_same_room():
+    pd_requirements = [Requirement(
+        rooms=["270"], page=10,
+        sentence="В помещении 270 предусмотрена система подогрева пола",
+        code=None,
+    )]
+    after = [DocumentInput("rd.pdf", 1, text_facts=[{"page": 1, "text": "270"}])]
+    req = cross_check_requirements(pd_requirements, after)
+    signals = signals_from_requirement_cross_check(req.findings)
+    signals += signals_from_visual_requirement_checks([
+        {"rooms": ["270"], "verdict": "absent", "reason": "на плане нет системы"}
+    ])
+    result = triangulate(signals)
+    assert result[0].status == CONFIRMED
+    assert set(result[0].sources) == {"requirement_prose", "vision"}
 
 
 def test_end_to_end_two_independent_modules_confirm_same_room():
-    """Ровно та ситуация, которую правило должно поймать: находка по
-    помещению видна и в реестре помещений, и в графе маршрутизации —
-    независимо друг от друга, поэтому вместе они дают confirmed."""
     before = [DocumentInput("pd.pdf", 1, [], [rf(1, "147", "Лаборантская", "19.6")], "ОВ")]
-    after = [DocumentInput("rd.pdf", 1, [], [rf(1, "147", "Другое название", "19.6")], "ОВ")]
+    after = [DocumentInput("rd.pdf", 1, [], [rf(1, "999", "Другое помещение", "19.6")], "ОВ")]
     room_result = cross_check_rooms(before, after)
-    routing_diff = {"retargeted": [{"room_key": "147"}], "connection_count_changed": [],
-                     "renumbered": [], "unchanged": [], "unusable": [],
-                     "room_only_before": [], "room_only_after": []}
-
+    routing_diff = {
+        "retargeted": [{"room_key": "147"}],
+        "connection_count_changed": [], "renumbered": [], "unchanged": [],
+        "unusable": [], "room_only_before": [], "room_only_after": [],
+    }
     signals = signals_from_room_cross_check(room_result.findings) + signals_from_routing_diff(routing_diff)
     result = triangulate(signals)
     by_key = {c.key: c for c in result}
-    assert by_key["147"].status == CONFIRMED, by_key["147"]
-    assert set(by_key["147"].sources) == {"room_registry", "routing"}, by_key["147"]
-    print("OK: два независимых модуля по одному помещению дают confirmed сквозным путём")
+    assert by_key["147"].status == CONFIRMED
+    assert set(by_key["147"].sources) == {"room_registry", "routing"}
 
 
 def test_signal_from_vision_verdict_uses_consistent_source_name():
-    s = signal_from_vision_verdict("140", detail="модель отметила расхождение")
-    assert s.source == "vision"
-    assert s.domain == "room"
-    assert s.key == "140"
-    print("OK: сигнал из зрения оформлен тем же способом, что остальные источники")
-
-
-if __name__ == "__main__":
-    test_two_independent_sources_confirm()
-    test_single_source_is_only_candidate()
-    test_repeated_hits_from_same_source_do_not_double_count()
-    test_room_and_equipment_domains_do_not_collide()
-    test_min_sources_threshold_is_configurable()
-    test_confirmed_only_and_candidates_only_filters()
-    test_adapter_from_room_cross_check_feeds_triangulation()
-    test_adapter_from_equip_cross_check_feeds_triangulation()
-    test_adapter_from_requirement_cross_check_feeds_triangulation()
-    test_adapter_from_routing_diff_only_uses_finding_categories()
-    test_end_to_end_two_independent_modules_confirm_same_room()
-    test_signal_from_vision_verdict_uses_consistent_source_name()
-    print("ALL PASS")
+    signal = signal_from_vision_verdict("140", detail="модель отметила расхождение")
+    assert signal.source == "vision"
+    assert signal.domain == "room"
+    assert signal.key == "140"
