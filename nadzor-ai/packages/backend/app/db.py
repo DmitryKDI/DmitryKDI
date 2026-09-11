@@ -169,6 +169,41 @@ def _restore_preserved(saved: dict[str, list[dict]]) -> None:
             conn.execute(table.insert(), rows)
 
 
+def _repair_document_paths() -> int:
+    """Восстановить переносимые пути к оригиналам по digest.
+
+    Старые версии сохраняли абсолютный ``file_path``. После перехода
+    WSL -> Windows (или наоборот) в БД оставался, например, ``/mnt/c/...``
+    и любой последующий анализ падал с ``no such file``. Источником истины
+    уже является ``file_store`` по SHA-256 digest, поэтому при старте можно
+    безопасно материализовать оригинал в кэш текущей машины и обновить путь.
+
+    Возвращает число исправленных записей. Записи без digest не трогаются:
+    восстановить их содержимое автоматически неоткуда.
+    """
+    from . import file_store, models
+
+    repaired = 0
+    db = SessionLocal()
+    try:
+        for doc in db.query(models.Document).all():
+            current = Path(doc.file_path) if doc.file_path else None
+            if current is not None and current.is_file():
+                continue
+            if not doc.digest:
+                continue
+            materialized = file_store.materialize(doc.digest)
+            if materialized is None:
+                continue
+            doc.file_path = str(materialized)
+            repaired += 1
+        if repaired:
+            db.commit()
+    finally:
+        db.close()
+    return repaired
+
+
 def init_db() -> None:
     from . import models  # noqa: F401 — регистрирует модели в Base.metadata
 
@@ -186,9 +221,13 @@ def init_db() -> None:
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         _restore_preserved(saved)
+        _repair_document_paths()
         return
 
     Base.metadata.create_all(bind=engine)
+    repaired = _repair_document_paths()
+    if repaired:
+        print(f"Восстановлены переносимые пути к документам: {repaired}")
 
 
 def get_session():
