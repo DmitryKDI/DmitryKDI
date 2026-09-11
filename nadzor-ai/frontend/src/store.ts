@@ -204,6 +204,10 @@ function isGone(error: unknown): boolean {
   return error instanceof BackendApiError && error.status >= 400 && error.status < 500
 }
 
+function isTerminalStatus(status: string): boolean {
+  return status === 'done' || status === 'error' || status === 'cancelled'
+}
+
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 
 function pollAnalysisRun(runId: number): void {
@@ -229,7 +233,7 @@ function pollAnalysisRun(runId: number): void {
     }
     if (useApp.getState().analysisRunId !== runId) return
     useApp.setState({ analysisRunStatus: data })
-    if (data.status !== 'done' && data.status !== 'error') {
+    if (!isTerminalStatus(data.status)) {
       pollTimer = setTimeout(tick, 800)
     }
   }
@@ -251,7 +255,7 @@ function pollTriangulatedRun(runId: number): void {
     }
     if (useApp.getState().triangulatedRunId !== runId) return
     useApp.setState({ triangulatedRunStatus: data })
-    if (data.status !== 'done' && data.status !== 'error') {
+    if (!isTerminalStatus(data.status)) {
       triangulatedPollTimer = setTimeout(tick, 800)
     }
   }
@@ -284,7 +288,7 @@ function pollPdRun(side: 'before' | 'after', runId: number): void {
     }
     if (useApp.getState()[idKey] !== runId) return
     useApp.setState({ [statusKey]: data } as Partial<AppState>)
-    if (data.status !== 'done' && data.status !== 'error') {
+    if (!isTerminalStatus(data.status)) {
       pdPollTimers[side] = setTimeout(tick, 1000)
     }
   }
@@ -310,7 +314,7 @@ function pollComplianceRun(runId: number): void {
     }
     if (useApp.getState().complianceRunId !== runId) return
     useApp.setState({ complianceRunStatus: data })
-    if (data.status !== 'done' && data.status !== 'error') {
+    if (!isTerminalStatus(data.status)) {
       compliancePollTimer = setTimeout(tick, 1000)
     }
   }
