@@ -15,8 +15,9 @@ from contextvars import ContextVar, copy_context
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-# Бюджеты развёртывания, не пороги качества и не свойства документа.
-DEFAULT_CONCURRENCY = 2
+# GigaChat для физлиц по умолчанию даёт один одновременный поток. Более
+# высокая корпоративная квота включается только явно через окружение.
+DEFAULT_CONCURRENCY = 1
 DEFAULT_CACHE_ENTRIES = 256
 DEFAULT_CLASSIFICATION_TOKENS = 1024
 DEFAULT_EXTRACTION_TOKENS = 4096
@@ -134,12 +135,18 @@ class AdaptiveLimiter:
                     raise RuntimeError("Провайдер требует паузу; проверка пока не выполнена")
                 self.condition.wait(timeout=wait_for if wait_for > 0 else None)
             self.active += 1
+        completed = False
         try:
             yield
+            completed = True
         finally:
             with self.condition:
                 self.active -= 1
                 self.condition.notify_all()
+            # HTTP 429 определяется уже после выхода из slot(); временный
+            # success здесь безопасен — rate_limited() тут же обнулит streak.
+            if completed:
+                self.succeeded()
 
 
 GIGACHAT_LIMITER = AdaptiveLimiter(
@@ -315,6 +322,16 @@ class PersistentResultCache(ResultCache):
                 )
                 db.commit()
         except (sqlite3.Error, TypeError, ValueError):
+            return
+
+    def clear(self):
+        """Полная очистка означает RAM + диск, иначе старый ответ вернётся после clear()."""
+        super().clear()
+        try:
+            with self._connect() as db:
+                db.execute("DELETE FROM llm_results")
+                db.commit()
+        except sqlite3.Error:
             return
 
 
