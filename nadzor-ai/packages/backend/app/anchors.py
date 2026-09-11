@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-_ROOM_ID_RE = re.compile(r"(?<![\\w])(?P<id>\\d{1,4}(?:\\.\\d+)?[А-ЯA-Z]?)(?![\\w])", re.IGNORECASE)
-_ROOM_PREFIX_RE = re.compile(r"^\\s*(?:пом(?:ещение)?|room)\\.?\\s*", re.IGNORECASE)
-_SPACE_RE = re.compile(r"\\s+")
+_ROOM_ID_RE = re.compile(r"(?<![\w])(?P<id>\d{1,4}(?:\.\d+)?[А-ЯA-Z]?)(?![\w])", re.IGNORECASE)
+_ROOM_PREFIX_RE = re.compile(r"^\s*(?:пом(?:ещение)?|room)\.?\s*", re.IGNORECASE)
+_SPACE_RE = re.compile(r"\s+")
 
 
 def normalize_room_key(value: object) -> str:
