@@ -7,6 +7,9 @@
 структурный разбор фактически пуст. Если обе страницы разобраны, но не имеют
 ни одного содержательного сигнала для пары, сопоставлять их «по номеру»
 нельзя: это выдуманная связь с score=0, которая порождает ложные LLM-находки.
+Исключение — явно разные известные разделы: такая пара сохраняется только как
+видимый ``discipline_mismatch`` для диагностики покрытия и никогда не выглядит
+как уверенное содержательное совпадение.
 """
 from __future__ import annotations
 
@@ -82,13 +85,7 @@ def _cover_pairs(before_list: list[_PageRef], after_list: list[_PageRef]) -> lis
 
 
 def _allow_positional_fallback(before: _PageRef, after: _PageRef) -> bool:
-    """Позиция — fallback только для непрочитанной стороны.
-
-    Если обе страницы уже дали текст/помещения/оборудование, отсутствие
-    совпадения само является информацией: уверенной пары нет. Для скана или
-    пустого текстового слоя позиционный fallback сохраняет покрытие до OCR/
-    vision, но остаётся ``needs_review``.
-    """
+    """Позиция — fallback только для непрочитанной стороны."""
     return not before.has_structural_signal or not after.has_structural_signal
 
 
@@ -214,12 +211,8 @@ def _match_pool(
             score, matched_by, before.kind,
         ))
 
-    remaining_before = [
-        page for page in before_pages if (page.file_idx, page.page) not in used_before
-    ]
-    remaining_after = [
-        page for page in after_pages if (page.file_idx, page.page) not in used_after
-    ]
+    remaining_before = [page for page in before_pages if (page.file_idx, page.page) not in used_before]
+    remaining_after = [page for page in after_pages if (page.file_idx, page.page) not in used_after]
 
     by_code: dict[str, dict[str, list[_PageRef]]] = {}
     leftover_before: list[_PageRef] = []
@@ -251,11 +244,11 @@ def _match_pool(
 
     if leftover_before and leftover_after:
         for before, after in _cover_pairs(leftover_before, leftover_after):
-            if not _allow_positional_fallback(before, after):
-                continue
             before_code = before_codes[before.file_idx]
             after_code = after_codes[after.file_idx]
             mismatch = bool(before_code and after_code and before_code != after_code)
+            if not mismatch and not _allow_positional_fallback(before, after):
+                continue
             positional.append((before, after, mismatch))
 
     for before, after, mismatch in positional:
@@ -277,12 +270,9 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
 
     before_pages = [
         _PageRef(
-            file_index,
-            page,
-            page_token_set(entry, page),
+            file_index, page, page_token_set(entry, page),
             entry.page_kinds.get(page, PAGE_KIND_TEXT),
-            room_key_set(entry, page),
-            equipment_key_set(entry, page),
+            room_key_set(entry, page), equipment_key_set(entry, page),
             subsystem_lean(_page_text(entry, page), before_codes[file_index]),
         )
         for file_index, entry in enumerate(before_files)
@@ -290,12 +280,9 @@ def match_page_pairs(before_files: list[DocumentInput], after_files: list[Docume
     ]
     after_pages = [
         _PageRef(
-            file_index,
-            page,
-            page_token_set(entry, page),
+            file_index, page, page_token_set(entry, page),
             entry.page_kinds.get(page, PAGE_KIND_TEXT),
-            room_key_set(entry, page),
-            equipment_key_set(entry, page),
+            room_key_set(entry, page), equipment_key_set(entry, page),
             after_file_leans[file_index],
         )
         for file_index, entry in enumerate(after_files)
