@@ -10,9 +10,12 @@ on:
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/packages/backend/app/run_logger.py'
+      - 'nadzor-ai/packages/backend/app/matching.py'
       - 'nadzor-ai/packages/backend/tests/test_llm_runtime.py'
       - 'nadzor-ai/packages/backend/tests/test_performance_regression.py'
       - 'nadzor-ai/packages/backend/tests/test_run_logger.py'
+      - 'nadzor-ai/packages/backend/tests/test_matching.py'
+      - 'nadzor-ai/packages/backend/tests/test_matching_confidence.py'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
@@ -55,5 +58,12 @@ jobs:
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/requirement_llm_extract.py
           python -m py_compile app/run_logger.py
+          python -m py_compile app/matching.py
       - name: Run runtime regression tests
-        run: pytest -q tests/test_llm_runtime.py tests/test_performance_regression.py tests/test_run_logger.py
+        run: >-
+          pytest -q
+          tests/test_llm_runtime.py
+          tests/test_performance_regression.py
+          tests/test_run_logger.py
+          tests/test_matching.py
+          tests/test_matching_confidence.py
