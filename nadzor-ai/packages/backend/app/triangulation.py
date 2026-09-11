@@ -1,27 +1,16 @@
-"""Правило триангуляции источников (Г.30, п.4).
+"""Правило триангуляции независимых источников.
 
-Разные модули этого пакета независимо производят сигналы о возможном
-расхождении по одному и тому же помещению/позиции: реестр помещений
-(`room_cross_check.py`), реестр оборудования (`equip_cross_check.py`), граф
-маршрутизации (`routing_graph.py`), таблица распределения
-(`room_entity_check.py`), требования из прозы (`requirement_cross_check.py`),
-и — вне этого пакета, из свободного LLM-вызова — сравнение схем зрением.
-У нарушения №2 из прямой проверки этого комплекта
-(тёплые полы) все три источника — текст, схема, спецификация — независимо
-подтвердили одно и то же; у нарушения №1 (раздвоенная позиция оборудования)
-источник был ровно один, и вопрос остался неразрешённым. Это наблюдение,
-не гипотеза, и его стоит формализовать как правило, а не полагаться на то,
-что кто-то заметит совпадение вручную.
+Сигнал — это не готовое нарушение, а независимое указание одного модуля на
+возможное расхождение. Находка становится ``confirmed`` только когда минимум
+два разных источника указывают на один и тот же ключ. Одиночные сигналы
+остаются ``candidate`` и идут в очередь инспектору.
 
-Правило: находка получает статус `confirmed`, только если минимум
-`min_sources` (по умолчанию 2) РАЗНЫХ источников независимо указали на один
-и тот же ключ (помещение/позицию). Меньше — `candidate`: годится для очереди
-эскалации (Г.30 п.5), не для готового отчёта инспектору.
-
-Модуль не решает, что считать «сигналом» — это работа отдельных
-`signals_from_*`-адаптеров, каждый со своим модулем-источником. Сама
-триангуляция — чистая агрегация, без обращения к LLM/vision и без знания
-внутреннего устройства источников."""
+Важно: не каждый сырой diff обязан становиться сигналом. Реестры помещений
+и оборудования намеренно сохраняют широкий диагностический вывод, но в
+триангуляцию допускаются только достаточно сильные категории. Это защищает
+точки контроля от шума парсинга и от ситуации, когда сотни новых позиций РД
+выглядят как сотни потенциальных нарушений.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -30,18 +19,18 @@ from typing import Sequence
 
 CONFIRMED = "confirmed"
 CANDIDATE = "candidate"
-
 DEFAULT_MIN_SOURCES = 2
+
+# Слабые категории остаются в исходных diagnostics, но не повышают
+# уверенность триангуляции без отдельного подтверждения.
+_ROOM_SIGNAL_TYPES = {"missing_in_rd", "area_changed"}
+_EQUIP_SIGNAL_TYPES = {"missing_in_rd", "qty_changed"}
 
 
 @dataclass(frozen=True)
 class Signal:
-    """Один независимый сигнал о возможном расхождении по ключу `key` в
-    области `domain` («room» | «equipment» — разные пространства ключей,
-    номер помещения и код позиции оборудования могут случайно совпасть
-    строкой). `source` — имя модуля/канала, породившего сигнал; несколько
-    сигналов с ОДНИМ И ТЕМ ЖЕ `source` по одному ключу считаются одним
-    источником, не удваивают уверенность."""
+    """Один независимый сигнал по ключу ``(domain, key)``."""
+
     source: str
     domain: str
     key: str
@@ -50,10 +39,11 @@ class Signal:
 
 @dataclass(frozen=True)
 class Confirmation:
-    """Итог триангуляции по одному (domain, key)."""
+    """Итог триангуляции по одному ``(domain, key)``."""
+
     domain: str
     key: str
-    status: str  # confirmed | candidate
+    status: str
     sources: tuple[str, ...] = ()
     details: tuple[str, ...] = field(default_factory=tuple)
 
@@ -63,98 +53,164 @@ class Confirmation:
 
 
 def triangulate(signals: Sequence[Signal], min_sources: int = DEFAULT_MIN_SOURCES) -> list[Confirmation]:
-    """Группирует сигналы по (domain, key) и присваивает статус по числу
-    РАЗЛИЧНЫХ источников. Порядок результата — по ключу, для воспроизводимого
-    отчёта."""
+    """Сгруппировать сигналы и посчитать именно РАЗНЫЕ источники."""
+
     grouped: dict[tuple[str, str], list[Signal]] = defaultdict(list)
-    for s in signals:
-        grouped[(s.domain, s.key)].append(s)
+    for signal in signals:
+        grouped[(signal.domain, signal.key)].append(signal)
 
     out: list[Confirmation] = []
     for (domain, key), group in grouped.items():
-        sources = tuple(sorted({s.source for s in group}))
-        details = tuple(s.detail for s in group if s.detail)
+        sources = tuple(sorted({signal.source for signal in group}))
+        details = tuple(signal.detail for signal in group if signal.detail)
         status = CONFIRMED if len(sources) >= min_sources else CANDIDATE
-        out.append(Confirmation(domain=domain, key=key, status=status,
-                                sources=sources, details=details))
-    out.sort(key=lambda c: (c.domain, c.key))
+        out.append(
+            Confirmation(
+                domain=domain,
+                key=key,
+                status=status,
+                sources=sources,
+                details=details,
+            )
+        )
+    out.sort(key=lambda item: (item.domain, item.key))
     return out
 
 
 def confirmed_only(confirmations: Sequence[Confirmation]) -> list[Confirmation]:
-    return [c for c in confirmations if c.status == CONFIRMED]
+    return [item for item in confirmations if item.status == CONFIRMED]
 
 
 def candidates_only(confirmations: Sequence[Confirmation]) -> list[Confirmation]:
-    return [c for c in confirmations if c.status == CANDIDATE]
+    return [item for item in confirmations if item.status == CANDIDATE]
 
 
 # --------------------------------------------------------------------------
-# Адаптеры: превращают вывод конкретного модуля-источника в список Signal.
-# Каждый — тонкая обёртка, без собственной логики принятия решений.
+# Адаптеры источников
 # --------------------------------------------------------------------------
 
 def signals_from_room_cross_check(findings) -> list[Signal]:
-    """`findings` — `RoomCrossCheckResult.findings` (room_cross_check.py)."""
-    return [Signal(source="room_registry", domain="room", key=f.room_key, detail=f.detail)
-            for f in findings]
+    """Сильные сигналы из реестра помещений.
+
+    ``name_changed`` сейчас не участвует в автоматическом подтверждении:
+    этот тип особенно чувствителен к обрывкам подписей на насыщенных листах.
+    Он по-прежнему остаётся в ``rooms.findings`` для ручного просмотра.
+    """
+
+    return [
+        Signal(
+            source="room_registry",
+            domain="room",
+            key=finding.room_key,
+            detail=finding.detail,
+        )
+        for finding in findings
+        if getattr(finding, "finding_type", "") in _ROOM_SIGNAL_TYPES
+    ]
 
 
 def signals_from_equip_cross_check(findings) -> list[Signal]:
-    """`findings` — `EquipCrossCheckResult.findings` (equip_cross_check.py)."""
-    return [Signal(source="equip_registry", domain="equipment", key=f.equip_key, detail=f.detail)
-            for f in findings]
+    """Сильные сигналы из реестра оборудования.
+
+    ``missing_in_pd`` означает лишь, что в РД появилась дополнительная
+    позиция. На реальных листах эта категория особенно шумная и сама по себе
+    не должна создавать точку контроля. Исчезновение проектной позиции и
+    изменение количества остаются сигналами.
+    """
+
+    return [
+        Signal(
+            source="equip_registry",
+            domain="equipment",
+            key=finding.equip_key,
+            detail=finding.detail,
+        )
+        for finding in findings
+        if getattr(finding, "finding_type", "") in _EQUIP_SIGNAL_TYPES
+    ]
 
 
 _ROUTING_FINDING_CATEGORIES = ("retargeted", "connection_count_changed")
 
 
 def signals_from_routing_diff(diff: dict[str, list[dict]]) -> list[Signal]:
-    """`diff` — результат `diff_routing_graphs` (routing_graph.py). Только
-    категории, которые сама функция считает находками (`retargeted`,
-    `connection_count_changed`) — `renumbered`/`unchanged` не сигнал, а
-    `unusable`/`room_only_*` — другой вопрос (неразрешённость, комплектность),
-    не про маршрутизацию, поэтому тоже не сигнал здесь."""
+    """Сигналы только из категорий, которые означают изменение маршрута."""
+
     out: list[Signal] = []
     for category in _ROUTING_FINDING_CATEGORIES:
         for entry in diff.get(category, []):
-            out.append(Signal(source="routing", domain="room", key=entry["room_key"],
-                              detail=f"{category}"))
+            out.append(
+                Signal(
+                    source="routing",
+                    domain="room",
+                    key=entry["room_key"],
+                    detail=category,
+                )
+            )
     return out
 
 
 def signals_from_requirement_cross_check(findings) -> list[Signal]:
-    """`findings` — `RequirementCrossCheckResult.findings`
-    (requirement_cross_check.py). `code_confirmed_in_rd` записи означают
-    совпадение, а не сигнал о возможном расхождении, и намеренно сюда не
-    попадают (тот же принцип, что и в остальных `signals_from_*`: сигнал —
-    это находка о несовпадении/неразрешённости, не запись о подтверждённом
-    соответствии).
+    """Сигналы из требований ПД, которые не удалось подтвердить текстом."""
 
-    Требование без кода (`no_code_visual_check_needed` — по построению
-    `requirement_cross_check.py` текстом не проверяется вообще, каждое
-    такое требование кандидат) раскладывается на отдельный сигнал по
-    КАЖДОМУ помещению из его списка (domain="room") — так это естественно
-    складывается в триангуляции с сигналами `room_registry`/`prose` по
-    тому же номеру, что и произошло вручную с нарушением №2 в этой сессии.
-    Требование с кодом (`code_missing_in_rd`) не привязано к одному номеру
-    помещения так же однозначно — сигнал по коду идёт в отдельный домен
-    `requirement_code`, не смешиваясь с доменом `room`."""
     out: list[Signal] = []
-    for f in findings:
-        if f.finding_type == "no_code_visual_check_needed":
-            for room in f.rooms:
-                out.append(Signal(source="requirement_prose", domain="room", key=room, detail=f.detail))
-        elif f.finding_type == "code_missing_in_rd":
-            out.append(Signal(source="requirement_prose", domain="requirement_code", key=f.code, detail=f.detail))
+    for finding in findings:
+        if finding.finding_type == "no_code_visual_check_needed":
+            for room in finding.rooms:
+                out.append(
+                    Signal(
+                        source="requirement_prose",
+                        domain="room",
+                        key=room,
+                        detail=finding.detail,
+                    )
+                )
+        elif finding.finding_type == "code_missing_in_rd":
+            out.append(
+                Signal(
+                    source="requirement_prose",
+                    domain="requirement_code",
+                    key=finding.code,
+                    detail=finding.detail,
+                )
+            )
+    return out
+
+
+def signals_from_visual_requirement_checks(results: Sequence[dict]) -> list[Signal]:
+    """Преобразовать проверку требований по листу РД в независимые vision-сигналы.
+
+    Только ``absent`` является сигналом расхождения. ``confirmed`` означает,
+    что требование на листе выполнено, а ``unclear`` — что доказательств
+    недостаточно. Один результат может относиться к нескольким помещениям;
+    тогда создаётся отдельный сигнал на каждый номер, чтобы он мог
+    триангулироваться с ``requirement_prose``/``routing``/``room_registry``.
+    """
+
+    out: list[Signal] = []
+    for result in results:
+        if result.get("verdict") != "absent":
+            continue
+        reason = str(result.get("reason") or "").strip()
+        where = str(result.get("where") or "").strip()
+        detail = reason
+        if where:
+            detail = f"{detail} [{where}]" if detail else where
+        for room in result.get("rooms") or []:
+            room_key = str(room).strip()
+            if room_key:
+                out.append(
+                    Signal(
+                        source="vision",
+                        domain="room",
+                        key=room_key,
+                        detail=detail,
+                    )
+                )
     return out
 
 
 def signal_from_vision_verdict(room_key: str, detail: str = "") -> Signal:
-    """Для сигнала из LLM-сравнения схем (`vision.compare_page_pair` и
-    аналоги) — единственный источник без готового адаптера, потому что сам
-    вердикт модели не структурирован по номеру помещения жёстко (свободный
-    JSON от провайдера). Вызывающий код сам решает, какой room_key вывод
-    модели описывает, и явно строит Signal — здесь только для единообразия
-    имени источника («vision») между разными вызовами."""
+    """Совместимый одиночный vision-сигнал."""
+
     return Signal(source="vision", domain="room", key=room_key, detail=detail)
