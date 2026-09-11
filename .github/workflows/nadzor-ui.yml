@@ -1,0 +1,39 @@
+name: Nadzor UI and runtime
+
+on:
+  push:
+    branches:
+      - 'chatgpt/**'
+      - 'claude/**'
+    paths:
+      - 'nadzor-ai/frontend/**'
+      - 'nadzor-ai/packages/backend/app/llm_runtime.py'
+      - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
+      - '.github/workflows/nadzor-ui.yml'
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nadzor-ai/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  runtime-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m py_compile nadzor-ai/packages/backend/app/llm_runtime.py
