@@ -1,16 +1,14 @@
 import { useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Shell from './layout/Shell'
-import NewAnalysis from './pages/NewAnalysis'
+import Dashboard from './pages/Dashboard'
+import Workspace from './pages/Workspace'
 import AttentionMap from './pages/AttentionMap'
+import Evidence from './pages/Evidence'
+import Reports from './pages/Reports'
+import History from './pages/History'
 import ParsedDocs from './pages/ParsedDocs'
 
-// Г.85 — старый бэкенд (`packages/api`, порт 8000) удалён по прямому решению
-// пользователя, вместе с ним ушли 14 экранов CRM-витрины и авторизация:
-// логин, роли и права жили только там. Реальный движок (`packages/backend`,
-// порт 8010) аутентификации не требует вообще, поэтому обёртки `Protected`
-// больше нет — не заглушка, а следствие удаления единственного источника
-// сессии. Остались два экрана, которые реально работают на живом движке.
 export default function App() {
   const location = useLocation()
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
@@ -18,9 +16,14 @@ export default function App() {
   return (
     <Shell>
       <Routes>
-        <Route path="/" element={<NewAnalysis />} />
-        <Route path="/parsed" element={<ParsedDocs />} />
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/documents" element={<Workspace />} />
+        <Route path="/analysis/new" element={<Navigate to="/documents" replace />} />
         <Route path="/attention" element={<AttentionMap />} />
+        <Route path="/evidence" element={<Evidence />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/history" element={<History />} />
+        <Route path="/parsed" element={<ParsedDocs />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>
