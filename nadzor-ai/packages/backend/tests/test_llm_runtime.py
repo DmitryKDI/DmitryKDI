@@ -2,6 +2,7 @@
 import sys
 import base64
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -24,6 +25,13 @@ def fresh_runtime(monkeypatch):
 
 def config():
     return llm.LlmConfig("gigachat", base64.b64encode(b"synthetic:secret").decode(), model="model")
+
+
+def monkeypatch_setter(module, name, value):
+    """Простая замена атрибута без pytest.fixture — для тестов вне monkeypatch."""
+    original = getattr(module, name)
+    setattr(module, name, value)
+    return original
 
 
 def fake_transport(monkeypatch, content='{"items": []}', finish_reason="stop"):
@@ -225,3 +233,103 @@ def test_expired_remote_file_gets_one_reupload(monkeypatch):
     assert result == {"items": []}
     assert counts == {"chat": 2, "upload": 2}
     print("OK: недоступный file_id обновляется одним повтором без подмены результата")
+
+
+def test_parallel_map_runs_workers_concurrently(monkeypatch):
+    """parallel_map с workers=2 должен выполнять вызовы параллельно,
+    а не последовательно: общее время ≈ время одного вызова, а не суммы."""
+    import time
+    import app.llm_runtime as runtime
+
+    # Мокаем limiter, чтобы он не блокировал
+    monkeypatch.setattr(runtime, "GIGACHAT_LIMITER", runtime.AdaptiveLimiter(4))
+    calls = []
+
+    def slow_work(value):
+        calls.append(("start", value))
+        time.sleep(0.15)
+        calls.append(("end", value))
+        return value * 10
+
+    with measure_run() as metrics:
+        start = time.monotonic()
+        results = list(runtime.parallel_map(slow_work, [1, 2, 3], workers=2))
+        elapsed = time.monotonic() - start
+
+    assert results == [10, 20, 30]
+    # При последовательном выполнении: 3 * 0.15 = 0.45с
+    # При параллельном (workers=2): ~0.3с (две пачки по 2)
+    assert elapsed < 0.40, f"параллельность не работает: прошло {elapsed:.2f}с"
+    # Все три запускаются (первые два параллельно, третий — по мере освобождения)
+    starts = [v for evt, v in calls if evt == "start"]
+    assert len(starts) == 3, "все три запускаются"
+    print("OK: parallel_map выполняет вызовы параллельно, а не последовательно")
+
+
+def test_parallel_map_timeout_wrapped_does_not_block_others(monkeypatch):
+    """Если worker бросает TimeoutError, parallel_map перебрасывает
+    исключение в главный поток (тот же паттерн, что _call_prepared ловит
+    и возвращает (chunk, None, exc)). Очередь не виснет — это проверяет
+    время выполнения: если бы один worker повесил очередь, время было бы >>."""
+    import time
+    import app.llm_runtime as runtime
+
+    monkeypatch.setattr(runtime, "GIGACHAT_LIMITER", runtime.AdaptiveLimiter(4))
+    call_count = {"n": 0}
+
+    def work(value):
+        call_count["n"] += 1
+        if value == 2:
+            raise TimeoutError("провайдер не отвечает")
+        return value
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError, match="провайдер не отвечает"):
+        list(runtime.parallel_map(work, [1, 2, 3], workers=2))
+    elapsed = time.monotonic() - start
+    # Если бы worker с value=2 повесил очередь на 0.15с+ (очередь из 3 элементов,
+    # workers=2), elapsed был бы >> 0.2. Но исключение выбрасывается сразу,
+    # и остальные workers продолжают — elapsed ~ 0.15с (один sleep).
+    assert elapsed < 0.5, f"очередь зависла: {elapsed:.2f}с"
+    assert call_count["n"] == 3, "все три worker выполнены до сбоя"
+    print("OK: timeout worker выбрасывает исключение, очередь не виснет")
+
+
+def test_cache_hit_miss_metrics_are_recorded(monkeypatch):
+    """Первый вызов — cache miss (запрос к провайдеру).
+    Второй с тем же ключом — cache hit (из кэша). Метрики отражают это."""
+    calls = fake_transport(monkeypatch)
+    with measure_run() as metrics:
+        # Первый вызов — miss
+        llm.call_llm_json(config(), "rules", "text A",
+                          operation="text_verify", source_digest="page1")
+        # Второй вызов с тем же ключом — hit
+        llm.call_llm_json(config(), "rules", "text A",
+                          operation="text_verify", source_digest="page1")
+    snapshot = metrics.snapshot()
+    assert snapshot["result_cache_hits"] == 1, "второй вызов взят из кэша"
+    assert snapshot["requests"] == 2, "оба вызова учтены"
+    # Проверка: к чату обращались только один раз (второй — кэш)
+    chat_calls = sum(1 for url, _ in calls if url.endswith("/chat/completions"))
+    assert chat_calls == 1, f"ожидается 1 вызов чата (hit), получено {chat_calls}"
+    print("OK: метрики cache hit / miss корректно записываются")
+
+
+def test_parallel_map_order_with_random_delays():
+    """При workers=2 и рандомных задержках результаты приходят
+    в порядке [0, 1, 2, 3, 4], а не в порядке завершения workers."""
+    import random
+    import app.llm_runtime as runtime
+
+    old_limiter = runtime.GIGACHAT_LIMITER
+    runtime.GIGACHAT_LIMITER = runtime.AdaptiveLimiter(4)
+    try:
+        def work(value):
+            time.sleep(random.uniform(0.01, 0.05))
+            return value
+
+        results = list(runtime.parallel_map(work, list(range(5)), workers=2))
+        assert results == [0, 1, 2, 3, 4], f"порядок нарушен: {results}"
+    finally:
+        runtime.GIGACHAT_LIMITER = old_limiter
+    print("OK: порядок результатов сохранён при рандомных задержках workers")

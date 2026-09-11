@@ -396,3 +396,47 @@ def test_valid_empty_requirements_is_successful_empty_chunk(monkeypatch):
     assert result == []
     assert errors == []
     print("OK: явный пустой список требований не считается технической ошибкой")
+
+
+def test_parallel_partial_failure_mix_success_and_fail():
+    """Чередование: пачки со страницей 2 падают, остальные успешны.
+    Результат — только из успешных, порядок сохранён, ошибки в колбэк."""
+    import app.requirement_llm_extract as module
+
+    facts = [
+        {"page": 1, "text": "a" * 100, "document": "т1.pdf", "section": "АР"},
+        {"page": 2, "text": "b" * 100, "document": "т2.pdf", "section": "ОВ"},
+        {"page": 3, "text": "c" * 100, "document": "т3.pdf", "section": "КР"},
+    ]
+
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+        # Извлекаем номер страницы из user_text (контейнер документа)
+        page_match = None
+        for page in [1, 2, 3]:
+            if f"Страница {page}" in user_text:
+                page_match = page
+                break
+        if page_match == 2:
+            raise ConnectionError("сеть упала на странице 2")
+        return {"requirements": [{
+            "rooms": [], "code": None,
+            "requirement": f"требование со страницы {page_match}",
+            "sentence": f"предложение со страницы {page_match}", "page": page_match,
+        }]}
+
+    errors = []
+    original = _patch(module, "call_llm_json", fake_call_llm_json)
+    try:
+        reqs = module.extract_requirements_llm(
+            facts, config=None, max_chars_per_call=150,
+            on_chunk_error=lambda page, exc: errors.append((page, exc)),
+        )
+    finally:
+        module.call_llm_json = original
+
+    # 2 успешных (стр. 1 и 3) + 1 пропущенный (стр. 2)
+    assert len(reqs) == 2, f"ожидалось 2 требования, получено {len(reqs)}"
+    assert len(errors) == 1, f"ожидалась 1 ошибка, получено {len(errors)}"
+    assert errors[0][0] == 2, f"ошибка на странице 2, получено {errors[0][0]}"
+    assert isinstance(errors[0][1], ConnectionError)
+    print("OK: partial failure — успешные пачки не теряются, ошибки изолированы")

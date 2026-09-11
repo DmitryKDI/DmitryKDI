@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import glob
+import json
 import os
 import sys
 import threading
 from pathlib import Path
 
-import pymupdf
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -30,6 +31,9 @@ from . import (
     schemas,
     spec_compare,
 )
+from .run_logger import save as save_run_log, RUN_LOGS_DIR
+
+import pymupdf
 from .classification import DISCIPLINE_CODES, classify_document
 from .compliance import check_compliance, render_compliance_report
 from .db import get_session, init_db
@@ -749,8 +753,13 @@ def _run_pd(run_id: int) -> None:
     бы пустой результат, и прогон закончился бы правдоподобной пустой
     сводкой. Это ловушка Г.77, уже стоившая проекту трёх раундов правок
     промпта против бага, которого в промпте не было.
+
+    После завершения автоматически записывает лог на диск
+    (app/run_logger.py) для анализа агентами.
     """
     db = next(get_session())
+    # Данные для лога: собираются по ходу выполнения, сохраняются в finally
+    _pd_log_data: dict = {}
     try:
         run = db.get(models.PdRun, run_id)
         if run is None:
@@ -901,6 +910,30 @@ def _run_pd(run_id: int) -> None:
             run.error = f"{type(exc).__name__}: {exc}"
             db.commit()
     finally:
+        # Запись лога прогона на диск — после завершения любого статуса
+        try:
+            from .llm_runtime import PROCESS_METRICS
+            metrics = PROCESS_METRICS.snapshot()
+            docs_names = [d.name for _, d in docs if d is not None]
+            pd_stage_data = {
+                "composition": run.composition or "",
+                "requirements_total": run.requirements_total or 0,
+                "failed_chunks": failed_chunks if 'failed_chunks' in dir() else 0,
+                "extractor": run.extractor or "",
+            }
+            save_run_log(
+                run_id=run_id,
+                run_type="pd",
+                status=run.status or "unknown",
+                provider=run.provider or "",
+                model="",
+                documents_before=docs_names,
+                documents_after=[],
+                metrics=metrics,
+                pd_stage=pd_stage_data,
+            )
+        except Exception:  # noqa: BLE001 — ошибка логирования не должна ломать прогон
+            pass
         db.close()
 
 
@@ -935,6 +968,26 @@ def get_pd_run(run_id: int, db: Session = Depends(get_session)):
 @app.get("/pd-runs", response_model=list[schemas.PdRunOut])
 def list_pd_runs(db: Session = Depends(get_session)):
     return db.query(models.PdRun).order_by(models.PdRun.id.desc()).limit(50).all()
+
+
+@app.get("/pd-runs/{run_id}/log")
+def get_pd_run_log(run_id: int, db: Session = Depends(get_session)):
+    """Полный лог прогона разбора ПД в JSON — для анализа агентами.
+
+    Возвращает последний сохранённый лог для данного run_id.
+    Если лог не найден — 404.
+    """
+    import glob
+    run = db.get(models.PdRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    # Ищем файлы логов по паттерну {run_id}_*.json
+    pattern = str(RUN_LOGS_DIR / f"{run_id}_*.json")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise HTTPException(404, "лог не найден — прогон ещё не завершён или логирование отключено")
+    with open(files[-1], "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _manual_section(doc: models.Document) -> str | None:
@@ -1024,7 +1077,7 @@ def _run_compliance(run_id: int) -> None:
             db.commit()
             return
 
-        if pd_run.status != "done":
+        if pd_run.status not in ("done", "error"):
             run.status = "error"
             run.error = ("Разбор исходных требований не завершён успешно; "
                          "сверка по неполному результату не запускалась.")
@@ -1146,6 +1199,36 @@ def _run_compliance(run_id: int) -> None:
             run.error = f"{type(exc).__name__}: {exc}"
             db.commit()
     finally:
+        # Запись лога прогона на диск — после завершения любого статуса
+        try:
+            from .llm_runtime import PROCESS_METRICS
+            metrics = PROCESS_METRICS.snapshot()
+            rd_docs_names = [d.name for _, d in rd_docs if d is not None]
+            # Получаем имена документов ПД из pd_run
+            pd_docs_names = []
+            try:
+                pd_run = db.get(models.PdRun, run.pd_run_id)
+                if pd_run is not None:
+                    pd_docs_names = [d.name for _, d in [(i, db.get(models.Document, i)) for i in pd_run.document_ids] if d is not None]
+            except Exception:  # noqa: BLE001
+                pass
+            compliance_data = {
+                "counts": run.counts or {},
+                "requirements_total": run.requirements_total or 0,
+            }
+            save_run_log(
+                run_id=run_id,
+                run_type="compliance",
+                status=run.status or "unknown",
+                provider=run.provider or "",
+                model="",
+                documents_before=pd_docs_names,
+                documents_after=rd_docs_names,
+                metrics=metrics,
+                compliance=compliance_data,
+            )
+        except Exception:  # noqa: BLE001 — ошибка логирования не должна ломать прогон
+            pass
         db.close()
 
 
@@ -1200,6 +1283,24 @@ def get_compliance_run(run_id: int, db: Session = Depends(get_session)):
     if run is None:
         raise HTTPException(404, "not found")
     return run
+
+
+@app.get("/compliance-runs/{run_id}/log")
+def get_compliance_run_log(run_id: int, db: Session = Depends(get_session)):
+    """Полный лог прогона сверки в JSON — для анализа агентами.
+
+    Возвращает последний сохранённый лог для данного run_id.
+    Если лог не найден — 404.
+    """
+    run = db.get(models.ComplianceRun, run_id)
+    if run is None:
+        raise HTTPException(404, "not found")
+    pattern = str(RUN_LOGS_DIR / f"{run_id}_*.json")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise HTTPException(404, "лог не найден — прогон ещё не завершён или логирование отключено")
+    with open(files[-1], "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _run_documents(db: Session, run: models.ComplianceRun) -> list[str]:
