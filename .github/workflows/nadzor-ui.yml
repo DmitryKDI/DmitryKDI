@@ -13,6 +13,7 @@ on:
       - 'nadzor-ai/packages/backend/app/matching.py'
       - 'nadzor-ai/packages/backend/app/triangulation.py'
       - 'nadzor-ai/packages/backend/app/triangulated_pipeline.py'
+      - 'nadzor-ai/packages/backend/app/control_pair_vision.py'
       - 'nadzor-ai/packages/backend/tests/test_llm_runtime.py'
       - 'nadzor-ai/packages/backend/tests/test_performance_regression.py'
       - 'nadzor-ai/packages/backend/tests/test_run_logger.py'
@@ -21,6 +22,7 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_triangulation.py'
       - 'nadzor-ai/packages/backend/tests/test_triangulated_pipeline.py'
       - 'nadzor-ai/packages/backend/tests/test_triangulated_synthesis_budget.py'
+      - 'nadzor-ai/packages/backend/tests/test_control_pair_vision.py'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
@@ -65,6 +67,7 @@ jobs:
           python -m py_compile app/run_logger.py
           python -m py_compile app/matching.py
           python -m py_compile app/triangulation.py
+          python -m py_compile app/control_pair_vision.py
           python -m py_compile app/triangulated_pipeline.py
       - name: Run runtime regression tests
         run: >-
@@ -77,3 +80,4 @@ jobs:
           tests/test_triangulation.py
           tests/test_triangulated_pipeline.py
           tests/test_triangulated_synthesis_budget.py
+          tests/test_control_pair_vision.py
