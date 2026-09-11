@@ -7,7 +7,7 @@ on:
       - 'claude/**'
     paths:
       - 'nadzor-ai/frontend/**'
-      - 'nadzor-ai/data/known_violations.json'
+      - 'nadzor-ai/packages/backend/app/anchors.py'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/packages/backend/app/run_logger.py'
@@ -15,6 +15,9 @@ on:
       - 'nadzor-ai/packages/backend/app/triangulation.py'
       - 'nadzor-ai/packages/backend/app/triangulated_pipeline.py'
       - 'nadzor-ai/packages/backend/app/control_pair_vision.py'
+      - 'nadzor-ai/packages/backend/app/visual_prefilter.py'
+      - 'nadzor-ai/packages/backend/app/vision_page_compare.py'
+      - 'nadzor-ai/packages/backend/app/vision.py'
       - 'nadzor-ai/packages/backend/tests/test_llm_runtime.py'
       - 'nadzor-ai/packages/backend/tests/test_performance_regression.py'
       - 'nadzor-ai/packages/backend/tests/test_run_logger.py'
@@ -24,7 +27,10 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_triangulated_pipeline.py'
       - 'nadzor-ai/packages/backend/tests/test_triangulated_synthesis_budget.py'
       - 'nadzor-ai/packages/backend/tests/test_control_pair_vision.py'
+      - 'nadzor-ai/packages/backend/tests/test_anchors.py'
+      - 'nadzor-ai/packages/backend/tests/test_vision_grounding.py'
       - 'nadzor-ai/packages/backend/tests/test_blind_runtime.py'
+      - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
@@ -36,7 +42,7 @@ jobs:
       run:
         working-directory: nadzor-ai/frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -64,12 +70,15 @@ jobs:
           pip install -r requirements.txt pytest
       - name: Compile changed runtime modules
         run: |
+          python -m py_compile app/anchors.py
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/requirement_llm_extract.py
           python -m py_compile app/run_logger.py
           python -m py_compile app/matching.py
           python -m py_compile app/triangulation.py
           python -m py_compile app/control_pair_vision.py
+          python -m py_compile app/visual_prefilter.py
+          python -m py_compile app/vision_page_compare.py
           python -m py_compile app/triangulated_pipeline.py
       - name: Run runtime regression tests
         run: >-
@@ -83,4 +92,6 @@ jobs:
           tests/test_triangulated_pipeline.py
           tests/test_triangulated_synthesis_budget.py
           tests/test_control_pair_vision.py
+          tests/test_anchors.py
+          tests/test_vision_grounding.py
           tests/test_blind_runtime.py
