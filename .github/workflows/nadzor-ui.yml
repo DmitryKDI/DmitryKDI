@@ -7,6 +7,7 @@ on:
       - 'claude/**'
     paths:
       - 'nadzor-ai/frontend/**'
+      - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/packages/backend/app/run_logger.py'
@@ -23,6 +24,7 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_triangulated_pipeline.py'
       - 'nadzor-ai/packages/backend/tests/test_triangulated_synthesis_budget.py'
       - 'nadzor-ai/packages/backend/tests/test_control_pair_vision.py'
+      - 'nadzor-ai/packages/backend/tests/test_blind_runtime.py'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
@@ -35,7 +37,7 @@ jobs:
         working-directory: nadzor-ai/frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -50,8 +52,8 @@ jobs:
       run:
         working-directory: nadzor-ai/packages/backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
@@ -81,3 +83,4 @@ jobs:
           tests/test_triangulated_pipeline.py
           tests/test_triangulated_synthesis_budget.py
           tests/test_control_pair_vision.py
+          tests/test_blind_runtime.py
