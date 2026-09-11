@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from app import run_logger
 
 
-def test_save_task_snapshot_writes_typed_log(tmp_path, monkeypatch):
+def test_save_task_snapshot_writes_latest_typed_log(tmp_path, monkeypatch):
     monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
     monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
 
@@ -22,7 +22,7 @@ def test_save_task_snapshot_writes_typed_log(tmp_path, monkeypatch):
     )
 
     assert path.parent == tmp_path / "tasks" / "analysis"
-    assert path.name.startswith("17_")
+    assert path.name == "latest.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["run_type"] == "analysis"
     assert payload["run_id"] == 17
@@ -31,6 +31,21 @@ def test_save_task_snapshot_writes_typed_log(tmp_path, monkeypatch):
     assert payload["documents_after"] == ["rd.pdf"]
     assert payload["details"]["pairs_total"] == 5
     assert payload["metrics"]["calls"] == 5
+
+
+def test_task_log_overwrites_previous_run_of_same_type(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
+    monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
+
+    first = run_logger.save_task_snapshot(run_type="analysis", run_id=1, status="done")
+    second = run_logger.save_task_snapshot(run_type="analysis", run_id=2, status="error")
+
+    assert first == second
+    files = list((tmp_path / "tasks" / "analysis").glob("*.json"))
+    assert files == [second]
+    payload = json.loads(second.read_text(encoding="utf-8"))
+    assert payload["run_id"] == 2
+    assert payload["status"] == "error"
 
 
 def test_task_log_paths_do_not_collide_between_run_types(tmp_path, monkeypatch):
@@ -43,6 +58,53 @@ def test_task_log_paths_do_not_collide_between_run_types(tmp_path, monkeypatch):
     assert analysis != triangulated
     assert analysis.parent.name == "analysis"
     assert triangulated.parent.name == "triangulated"
+    assert analysis.name == "latest.json"
+    assert triangulated.name == "latest.json"
+
+
+def test_stage_log_replaces_only_same_run_type(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
+    monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
+
+    first_pd = run_logger.save(
+        run_id=1,
+        run_type="pd",
+        status="done",
+        provider="gigachat",
+        model="",
+        documents_before=["pd-v1.pdf"],
+        documents_after=[],
+        metrics={},
+    )
+    compliance = run_logger.save(
+        run_id=1,
+        run_type="compliance",
+        status="done",
+        provider="gigachat",
+        model="",
+        documents_before=["pd-v1.pdf"],
+        documents_after=["rd.pdf"],
+        metrics={},
+    )
+    second_pd = run_logger.save(
+        run_id=2,
+        run_type="pd",
+        status="done",
+        provider="gigachat",
+        model="",
+        documents_before=["pd-v2.pdf"],
+        documents_after=[],
+        metrics={},
+    )
+
+    assert not first_pd.exists()
+    assert compliance.exists()
+    assert second_pd.exists()
+    payloads = [json.loads(p.read_text(encoding="utf-8")) for p in tmp_path.glob("*.json")]
+    assert sorted(p["run_type"] for p in payloads) == ["compliance", "pd"]
+    pd_payload = next(p for p in payloads if p["run_type"] == "pd")
+    assert pd_payload["run_id"] == 2
+    assert pd_payload["documents_before"] == ["pd-v2.pdf"]
 
 
 def test_compact_triangulated_result_keeps_quality_diagnostics_only():
