@@ -76,8 +76,11 @@ def test_stage_log_replaces_only_same_run_type(tmp_path, monkeypatch):
         documents_after=[],
         metrics={},
     )
+    # У разных типов прогонов независимые пространства run_id. Используем
+    # разные id, чтобы этот тест проверял именно очистку по run_type, а не
+    # случайную коллизию имени файла с точностью timestamp до секунды.
     compliance = run_logger.save(
-        run_id=1,
+        run_id=77,
         run_type="compliance",
         status="done",
         provider="gigachat",
@@ -100,9 +103,9 @@ def test_stage_log_replaces_only_same_run_type(tmp_path, monkeypatch):
     assert not first_pd.exists()
     assert compliance.exists()
     assert second_pd.exists()
-    payloads = [json.loads(p.read_text(encoding="utf-8")) for p in tmp_path.glob("*.json")]
-    assert sorted(p["run_type"] for p in payloads) == ["compliance", "pd"]
-    pd_payload = next(p for p in payloads if p["run_type"] == "pd")
+    payloads = [json.loads(path.read_text(encoding="utf-8")) for path in tmp_path.glob("*.json")]
+    assert sorted(payload["run_type"] for payload in payloads) == ["compliance", "pd"]
+    pd_payload = next(payload for payload in payloads if payload["run_type"] == "pd")
     assert pd_payload["run_id"] == 2
     assert pd_payload["documents_before"] == ["pd-v2.pdf"]
 
