@@ -1,9 +1,10 @@
 """Targeted visual verification of project requirements on RD/ID sheets.
 
-This module is intentionally benchmark-blind.  It receives only facts that
-were extracted from the uploaded documents and resolves them through generic
-room anchors.  Multi-room references are checked room-by-room so one visible
-room cannot hide an absence in another room.
+The mechanism is benchmark-blind.  Requirements are grounded by document
+room anchors, checked room-by-room, and an ``unclear`` whole-page verdict may
+be retried on small crops around the exact room label.  The crop retry is a
+recall mechanism, not a shortcut to ``absent``: a crop containing only an
+explication/table must remain ``unclear``.
 """
 from __future__ import annotations
 
@@ -11,6 +12,8 @@ import hashlib
 import os
 import re
 from collections import Counter
+
+import pymupdf
 
 from .anchors import normalize_room_key, normalize_room_references
 from .llm import LlmConfig, call_llm_json
@@ -21,20 +24,23 @@ _REQUIREMENT_CHECK_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора проверить,
 выполнено ли конкретное требование проектной документации на листе РД/ИД.
 
-Тебе показан один лист РД/ИД целиком. Отдельно дано требование из ПД и одна
-конкретная зона/помещение, к которой сейчас относится проверка. Делай вывод
-только из показанного листа и текста требования; исторические примеры и
-эталонные ответы недоступны.
+Тебе показан один лист РД/ИД или адресный фрагмент этого листа. Отдельно дано
+требование из ПД и одна конкретная зона/помещение. Делай вывод только из
+показанного изображения и текста требования; исторические примеры и эталонные
+ответы недоступны.
 
 {UNTRUSTED_INPUT_RULE}
 
 Вердикты:
   "confirmed" — требуемое решение явно присутствует в указанной зоне;
-  "absent" — указанная зона явно видна, но требуемого решения в ней нет;
+  "absent" — указанная зона явно видна НА ИНЖЕНЕРНОМ ЧЕРТЕЖЕ, но требуемого
+             решения в ней нет;
   "unclear" — лист/масштаб/тип схемы не позволяют уверенно решить вопрос.
 
-Не выбирай "absent", если зона не найдена или лист не предназначен для
-показа проверяемого решения. Не считай отсутствие слова доказательством
+Очень важно: экспликация помещений, таблица, штамп или просто подпись номера
+помещения НЕ доказывают отсутствие инженерного решения. Если показанный
+фрагмент содержит только таблицу/экспликацию и не показывает инженерную
+графику помещения, верни "unclear". Не считай отсутствие слова доказательством
 отсутствия графического элемента.
 
 Отвечай только JSON:
@@ -52,6 +58,8 @@ def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> in
 
 
 MAX_VISUAL_ROOM_CHECKS = _positive_int_env("NADZOR_MAX_VISUAL_ROOM_CHECKS", 24, 1, 100)
+MAX_ROOM_CROP_RETRIES = _positive_int_env("NADZOR_MAX_ROOM_CROP_RETRIES", 2, 0, 4)
+_ROOM_KEY_RE = re.compile(r"^\d{1,4}(?:\.\d+)?[а-яё]?$", re.IGNORECASE)
 
 
 def requirement_check_system_prompt(discipline: str | None = None) -> str:
@@ -67,19 +75,26 @@ def check_requirement_on_page(
     config: LlmConfig,
     discipline: str | None = None,
     timeout: float = 120.0,
+    clip_frac: tuple[float, float, float, float] | None = None,
 ) -> dict:
     room_keys = normalize_room_references(rooms)
     rooms_str = ", ".join(room_keys) if room_keys else "не указаны"
+    crop_note = (
+        " Показан адресный фрагмент вокруг найденной подписи помещения; "
+        "если это только экспликация/таблица, верни unclear."
+        if clip_frac is not None else ""
+    )
     user_text = (
         "Требование из ПД:\n"
         f"<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n{requirement_text}\n</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n"
         f"Проверяемая зона: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{rooms_str}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>."
+        f"{crop_note}"
     )
     try:
-        image = render_page_to_data_url(rd_pdf_path, rd_page_no)
+        image = render_page_to_data_url(rd_pdf_path, rd_page_no, clip_frac=clip_frac)
         image_digest = hashlib.sha256(image.encode("utf-8")).hexdigest()
         source_digest = hashlib.sha256(
-            f"{image_digest}:{requirement_text}:{rooms_str}".encode("utf-8")
+            f"{image_digest}:{requirement_text}:{rooms_str}:{clip_frac}".encode("utf-8")
         ).hexdigest()
         result = call_llm_json(
             config,
@@ -89,7 +104,7 @@ def check_requirement_on_page(
             timeout=timeout,
             operation="vision",
             source_digest=source_digest,
-            prompt_version="requirement-page-v3",
+            prompt_version="requirement-page-v4",
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -180,6 +195,80 @@ def _room_tasks(findings: list) -> list[tuple[object, str | None]]:
     return tasks[:MAX_VISUAL_ROOM_CHECKS]
 
 
+def _rect_to_fraction(page_rect, rect) -> tuple[float, float, float, float]:
+    return (
+        max(0.0, rect.x0 / page_rect.width),
+        max(0.0, rect.y0 / page_rect.height),
+        min(1.0, rect.x1 / page_rect.width),
+        min(1.0, rect.y1 / page_rect.height),
+    )
+
+
+def room_label_crops(
+    pdf_path: str,
+    page_no: int,
+    room: str,
+    *,
+    max_crops: int = MAX_ROOM_CROP_RETRIES,
+) -> list[tuple[float, float, float, float]]:
+    """Find bounded crops around exact room labels using the PDF text layer.
+
+    Several occurrences are intentionally allowed: the same number can be in
+    an explication and on the plan.  Vision is explicitly instructed to reject
+    table-only crops, so we preserve both possibilities instead of guessing
+    which occurrence is the real room polygon.
+    """
+    key = normalize_room_key(room)
+    if max_crops <= 0 or not key or not _ROOM_KEY_RE.fullmatch(key):
+        return []
+    try:
+        doc = pymupdf.open(pdf_path)
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        if page_no < 1 or page_no > doc.page_count:
+            return []
+        page = doc[page_no - 1]
+        hits = page.search_for(key)
+        if not hits:
+            return []
+        page_rect = page.rect
+        crops: list[tuple[float, float, float, float]] = []
+        seen: set[tuple[int, int]] = set()
+        # Prefer labels away from page borders/title block, then spread across
+        # the page so table and plan occurrences can both be inspected.
+        ranked = sorted(
+            hits,
+            key=lambda rect: (
+                rect.y0 > page_rect.height * 0.82,
+                rect.x0 > page_rect.width * 0.86,
+                rect.y0,
+                rect.x0,
+            ),
+        )
+        for hit in ranked:
+            cx = (hit.x0 + hit.x1) / 2
+            cy = (hit.y0 + hit.y1) / 2
+            bucket = (int(cx / max(1.0, page_rect.width) * 8), int(cy / max(1.0, page_rect.height) * 8))
+            if bucket in seen:
+                continue
+            seen.add(bucket)
+            margin_x = max(page_rect.width * 0.12, hit.width * 10)
+            margin_y = max(page_rect.height * 0.10, hit.height * 14)
+            clip = pymupdf.Rect(
+                max(page_rect.x0, hit.x0 - margin_x),
+                max(page_rect.y0, hit.y0 - margin_y),
+                min(page_rect.x1, hit.x1 + margin_x),
+                min(page_rect.y1, hit.y1 + margin_y),
+            )
+            crops.append(_rect_to_fraction(page_rect, clip))
+            if len(crops) >= max_crops:
+                break
+        return crops
+    finally:
+        doc.close()
+
+
 def check_visual_candidates(
     findings: list,
     room_index: dict[str, list[dict]],
@@ -188,12 +277,7 @@ def check_visual_candidates(
     max_pages_per_finding: int = 3,
     on_result=None,
 ) -> list[dict]:
-    """Check each explicit room anchor independently.
-
-    A composite LLM value such as ``"пом. 101, 102"`` is expanded to two
-    checks.  Requirements with no document-grounded room anchor remain
-    visible as ``unclear`` without spending a vision call on random pages.
-    """
+    """Check each explicit room anchor independently, with grounded crop retry."""
     tasks = _room_tasks(findings)
 
     def _check_task(task):
@@ -207,6 +291,7 @@ def check_visual_candidates(
                 "reason": "у требования нет конкретного помещения/зоны для адресной проверки",
                 "where": "",
                 "pages_checked": 0,
+                "crops_checked": 0,
             }
 
         pages = select_candidate_pages([room], room_index, max_pages_per_finding, sentence)
@@ -218,9 +303,11 @@ def check_visual_candidates(
                 "reason": "помещение не найдено в реестре РД — нет обоснованного листа для vision-проверки",
                 "where": room,
                 "pages_checked": 0,
+                "crops_checked": 0,
             }
 
         checked = 0
+        crops_checked = 0
         last_reason = ""
         last_where = room
         for entry in pages:
@@ -239,9 +326,38 @@ def check_visual_candidates(
                     "reason": last_reason,
                     "where": last_where,
                     "pages_checked": checked,
+                    "crops_checked": crops_checked,
                     "page": int(entry["page"]),
                     "document": str(entry.get("name") or ""),
                 }
+
+            # Whole-page uncertainty often comes from unreadably small labels.
+            # Retry only around exact labels found in this same grounded page.
+            for crop in room_label_crops(
+                str(entry["path"]), int(entry["page"]), room,
+                max_crops=MAX_ROOM_CROP_RETRIES,
+            ):
+                crops_checked += 1
+                focused = check_requirement_on_page(
+                    entry["path"], int(entry["page"]), sentence, [room], config,
+                    discipline, clip_frac=crop,
+                )
+                focused_verdict = focused.get("verdict")
+                last_reason = str(focused.get("reason") or last_reason)
+                last_where = str(focused.get("where") or last_where)
+                if focused_verdict in {"confirmed", "absent"}:
+                    return {
+                        "rooms": [room],
+                        "sentence": sentence,
+                        "verdict": focused_verdict,
+                        "reason": last_reason,
+                        "where": last_where,
+                        "pages_checked": checked,
+                        "crops_checked": crops_checked,
+                        "page": int(entry["page"]),
+                        "document": str(entry.get("name") or ""),
+                        "focused": True,
+                    }
         return {
             "rooms": [room],
             "sentence": sentence,
@@ -249,6 +365,7 @@ def check_visual_candidates(
             "reason": last_reason or "проверенные листы не позволяют сделать уверенный вывод",
             "where": last_where,
             "pages_checked": checked,
+            "crops_checked": crops_checked,
         }
 
     out: list[dict] = []
