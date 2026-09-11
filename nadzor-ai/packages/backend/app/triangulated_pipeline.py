@@ -1,43 +1,20 @@
-"""Реальный движок Приложения Г («сравнение комплектов») как вызываемая
-функция для FastAPI — не только для `scripts/registry_diff.py`.
+"""Сводный движок «Точек контроля» для HTTP-сервиса.
 
-`registry_diff.run_triangulated()` (Г.46/Г.61/Г.64/Г.65) — единственное
-место, где реестры помещений/оборудования, требования из прозы,
-комплектность (Г.17) и (при наличии ключа ИИ) граф маршрутизации сводятся
-в триангуляцию (`triangulation.py`) и очередь эскалации (`escalation.py`).
-Но это скрипт: он печатает текст на экран/в файл (`_emit`), а не
-возвращает структуру. HTTP-эндпоинту (`main.py`) нужен JSON, поэтому здесь
-— тот же порядок вызовов, что и в `run_triangulated`, но результат
-собирается в словари вместо печати. Это НЕ новая логика: каждая функция,
-вызванная ниже, — импорт из уже протестированного `app/*`, тот же путь,
-что доказан на реальном комплекте (см. `nadzor-ai/CLAUDE.md`, Приложение
-Г, `docs/PRILOZHENIE-G-ISTORIYA.md`).
+Пайплайн объединяет дешёвые детерминированные источники, требования из ПД,
+точечную vision-проверку требований по листам РД и маршрутизацию. Готовой
+точкой контроля считается только объект, подтверждённый минимум двумя
+независимыми источниками.
 
-Режим без ключа ИИ (`llm_config is None`) — тот же путь, что
-`scripts/run_no_llm.sh`/`RUN-NO-LLM.bat` (Г.46): реестры помещений/
-оборудования (с severity, не просто diff множеств), комплектность,
-требования из прозы через узкий regex-путь (`requirement_registry.py`),
-сверка требований с РД текстом, триангуляция и очередь эскалации. Это
-честный, полностью рабочий деградированный режим, а не заглушка — граф
-маршрутизации (если явно передан `room_keys`), таблица распределения и
-эскалация в зрение/сводный вердикт при этом отсутствуют, и это ВИДИМО в
-ответе (`llm.used=False`, поле `not_run` перечисляет, что именно
-пропущено и почему, Г.10), а не молчаливо.
-
-Сознательно НЕ перенесено в этот эндпоинт (см. отчёт агента, Г.10 —
-честно, не молчанием): прямое сравнение листов по паре зрением (Г.51,
-`run_page_pair_comparison`) и таблица распределения (Г.58/Г.65/Г.88,
-`_run_mo_cross_check`) — обе требуют ключа ИИ и по конструкции не
-участвуют в самой триангуляции (их находки — либо отдельная секция
-отчёта, либо сигнал `mo_table`, который не был точечно перепроверен в
-этом эндпоинте на реальном комплекте). Следующий шаг, если понадобится:
-подключить `mo_table`-сигналы и вернуть секцию `page_pair_comparison`
-отдельным полем, тем же способом, что уже сделано для `routing`.
+Ключевой принцип производительности: vision не запускается по всем листам
+и всем сырым diff. Сначала текст/реестры формируют узкий список требований,
+затем зрение проверяет только подходящие листы РД по номерам помещений.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Optional
 
 import pymupdf
@@ -48,10 +25,11 @@ from .composition_registry import (
     extract_composition_entries,
     find_document_references,
 )
+from .equip_cross_check import cross_check_equipment
 from .escalation import build_tickets
+from .facts_store import facts_for
 from .llm import LlmConfig
 from .matching import DocumentInput
-from .equip_cross_check import cross_check_equipment
 from .requirement_cross_check import cross_check_general_requirements, cross_check_requirements
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_llm_filter import classify_general_requirements
@@ -59,7 +37,6 @@ from .requirement_registry import extract_general_requirements, extract_requirem
 from .room_cross_check import cross_check_rooms
 from .routing_diff import diff_room_routing
 from .stamp import read_stamp
-from .facts_store import facts_for
 from .triangulation import (
     Signal,
     candidates_only,
@@ -68,26 +45,40 @@ from .triangulation import (
     signals_from_requirement_cross_check,
     signals_from_room_cross_check,
     signals_from_routing_diff,
+    signals_from_visual_requirement_checks,
     triangulate,
 )
 from .verdict_synthesis import KeyVerdict, synthesize_all
+from .vision_page_compare import check_visual_candidates
 
-# Тот же потолок, что и в scripts/registry_diff.py (Г.50) — авто-выбор
-# помещений для routing_diff, когда --rooms/room_keys не задан явно, но
-# ключ ИИ есть: ~6 с/лист, прогон на десятках помещений без потолка растянется
-# на много минут.
-MAX_AUTO_ROUTING_ROOMS = 15
+
+def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+# Раньше auto-routing мог пройти до 15 шумных помещений. После фильтрации
+# сильных сигналов достаточно меньшего потолка; значение можно поднять env.
+MAX_AUTO_ROUTING_ROOMS = _positive_int_env("NADZOR_MAX_AUTO_ROUTING_ROOMS", 8, 0, 50)
+# Точечное зрение — только для требований без кода и с известным помещением.
+MAX_VISUAL_REQUIREMENT_FINDINGS = _positive_int_env(
+    "NADZOR_MAX_VISUAL_REQUIREMENT_FINDINGS", 12, 0, 50
+)
+MAX_VISUAL_PAGES_PER_FINDING = _positive_int_env(
+    "NADZOR_MAX_VISUAL_PAGES_PER_FINDING", 2, 1, 5
+)
 
 
 def _to_jsonable(value):
-    """Датаклассы этого пакета -> обычные dict/list/str для FastAPI, без
-    ручного перечисления полей на каждый тип (их тут больше десятка)."""
     if is_dataclass(value) and not isinstance(value, type):
-        return {k: _to_jsonable(v) for k, v in asdict(value).items()}
+        return {key: _to_jsonable(item) for key, item in asdict(value).items()}
     if isinstance(value, (list, tuple)):
-        return [_to_jsonable(v) for v in value]
+        return [_to_jsonable(item) for item in value]
     if isinstance(value, dict):
-        return {k: _to_jsonable(v) for k, v in value.items()}
+        return {key: _to_jsonable(item) for key, item in value.items()}
     return value
 
 
@@ -97,77 +88,63 @@ class DocumentLoadResult:
     skipped: list[str] = field(default_factory=list)
 
 
-def _load_documents(paths: list[str], names: Optional[list[str]] = None) -> DocumentLoadResult:
-    """PDF-пути -> `DocumentInput` с уже извлечёнными фактами. Копия
-    `registry_diff._document_inputs` (см. модульный докстринг: скрипты не
-    предназначены для импорта, поэтому логика продублирована здесь как
-    отдельная, тестируемая функция app-пакета, а не импортирована из
-    scripts/) — файл, который не открылся, не роняет весь прогон, а
-    попадает в `skipped` (Г.10 — видимое, не молчаливое).
+def _elapsed(started: float) -> float:
+    return round(perf_counter() - started, 4)
 
-    `names`, если задан, — отображаемое имя документа (оригинальное имя
-    файла на момент загрузки через `/documents`, см. `main.py`), а не имя
-    файла НА ДИСКЕ: `upload_document` сохраняет каждый файл под случайным
-    UUID-именем (`{uuid4().hex}.pdf`), и без этого параметра инспектор
-    увидел бы в ответе бессмысленный набор латинских символов вместо
-    названия тома."""
+
+def _load_documents(paths: list[str], names: Optional[list[str]] = None) -> DocumentLoadResult:
     out: list[DocumentInput] = []
     skipped: list[str] = []
-    for i, path in enumerate(paths):
-        p = Path(path)
-        display_name = names[i] if names else p.name
-        if not p.is_file():
+    for index, path in enumerate(paths):
+        source = Path(path)
+        display_name = names[index] if names and index < len(names) else source.name
+        if not source.is_file():
             skipped.append(f"{display_name}: не найден")
             continue
         try:
-            facts = facts_for(str(p), display_name)
-        except Exception as exc:  # noqa: BLE001 — один битый файл не должен ронять весь прогон
+            facts = facts_for(str(source), display_name)
+        except Exception as exc:  # noqa: BLE001
             skipped.append(f"{display_name}: {exc}")
             continue
-        out.append(DocumentInput(
-            name=display_name, pages=facts.pages, text_facts=facts.text_facts,
-            room_facts=facts.room_facts, page_kinds=facts.page_kinds,
-            equipment_facts=facts.equipment_facts, balance_facts=facts.balance_facts,
-        ))
+        out.append(
+            DocumentInput(
+                name=display_name,
+                pages=facts.pages,
+                text_facts=facts.text_facts,
+                room_facts=facts.room_facts,
+                discipline_code=getattr(facts, "discipline_code", None),
+                page_kinds=facts.page_kinds,
+                equipment_facts=facts.equipment_facts,
+                balance_facts=facts.balance_facts,
+            )
+        )
     return DocumentLoadResult(docs=out, skipped=skipped)
 
 
 def _load_text_facts(paths: list[str]) -> list[dict]:
-    """[{page, text}] по ВСЕМ страницам — копия `registry_diff._load_text_facts`
-    (Г.34: нужен нефильтрованный текст для комплектности/поиска токена
-    требования, в отличие от `text_facts`, которые `material.py` уже
-    отфильтровал от каталогов поставщика)."""
     out: list[dict] = []
     for path in paths:
-        p = Path(path)
-        if not p.is_file():
+        source = Path(path)
+        if not source.is_file():
             continue
         try:
-            doc = pymupdf.open(str(p))
-        except Exception:  # noqa: BLE001 — один битый файл не должен ронять весь прогон
+            doc = pymupdf.open(str(source))
+        except Exception:  # noqa: BLE001
             continue
         try:
-            for i in range(doc.page_count):
-                text = doc[i].get_text("text").strip()
+            for index in range(doc.page_count):
+                text = doc[index].get_text("text").strip()
                 if text:
-                    out.append({"page": i + 1, "text": text})
+                    out.append({"page": index + 1, "text": text})
         finally:
             doc.close()
     return out
 
 
 def _supplied_documents(paths: list[str], names: Optional[list[str]] = None) -> list[SuppliedDocument]:
-    """Копия `registry_diff._supplied_documents` (Г.17) — обозначение из
-    имени файла плюс хвост шифра из штампа первой страницы.
-
-    `names` — то же, что и в `_load_documents`: реальное имя файла на
-    момент загрузки, не случайное UUID-имя на диске (`composition_registry`
-    парсит смысловые части ИМЕНИ ФАЙЛА, Г.17 — на UUID это совпадение
-    никогда не сработает, находки комплектности молча превратятся в
-    пустой список)."""
     out: list[SuppliedDocument] = []
-    for i, path in enumerate(paths):
-        display_name = names[i] if names else Path(path).name
+    for index, path in enumerate(paths):
+        display_name = names[index] if names and index < len(names) else Path(path).name
         shifrs: tuple[str, ...] = ()
         try:
             doc = pymupdf.open(path)
@@ -178,10 +155,71 @@ def _supplied_documents(paths: list[str], names: Optional[list[str]] = None) -> 
                         shifrs = (stamp.shifr,)
             finally:
                 doc.close()
-        except Exception:  # noqa: BLE001 — не открылся файл; обозначение всё равно берём из имени
+        except Exception:  # noqa: BLE001
             pass
         out.append(SuppliedDocument(filename=display_name, shifrs=shifrs))
     return out
+
+
+def _room_index_for_vision(paths: list[str], names: Optional[list[str]] = None) -> dict[str, list[dict]]:
+    """Индекс РД для точечной проверки требования зрением.
+
+    ``facts_for`` уже кэширует структурный разбор, поэтому здесь не нужен
+    второй дорогой парсинг PDF. Текст страницы добавляется только для
+    ранжирования кандидатов в ``select_candidate_pages``.
+    """
+    index: dict[str, list[dict]] = {}
+    for file_index, path in enumerate(paths):
+        source = Path(path)
+        if not source.is_file():
+            continue
+        display_name = names[file_index] if names and file_index < len(names) else source.name
+        try:
+            facts = facts_for(str(source), display_name)
+        except Exception:  # noqa: BLE001
+            continue
+        text_by_page = {
+            int(item.get("page") or 0): str(item.get("text") or "")
+            for item in facts.text_facts
+        }
+        for fact in facts.room_facts:
+            key = str(fact.get("key") or "").strip()
+            page = int(fact.get("page") or 0)
+            if not key or page <= 0:
+                continue
+            index.setdefault(key, []).append(
+                {
+                    "path": str(source),
+                    "page": page,
+                    "name": display_name,
+                    "text": text_by_page.get(page, ""),
+                }
+            )
+    return index
+
+
+def _visual_requirement_candidates(findings: list) -> tuple[list, int]:
+    """Дедуплицировать и ограничить только проверяемые vision-кандидаты."""
+    selected: list = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    eligible = [
+        finding
+        for finding in findings
+        if getattr(finding, "finding_type", "") == "no_code_visual_check_needed"
+        and getattr(finding, "rooms", None)
+    ]
+    for finding in eligible:
+        key = (
+            str(getattr(finding, "sentence_pd", "")).strip(),
+            tuple(str(room) for room in getattr(finding, "rooms", []) if str(room).strip()),
+        )
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        selected.append(finding)
+        if len(selected) >= MAX_VISUAL_REQUIREMENT_FINDINGS:
+            break
+    return selected, len(eligible)
 
 
 def run_triangulated_analysis(
@@ -192,20 +230,19 @@ def run_triangulated_analysis(
     before_names: Optional[list[str]] = None,
     after_names: Optional[list[str]] = None,
 ) -> dict:
-    """Тот же порядок источников, что `registry_diff.run_triangulated`
-    (Г.46), но результат — JSON-совместимый словарь, а не печать. См.
-    докстринг модуля про то, что сознательно не перенесено (Г.51/mo).
-
-    `before_names`/`after_names` — отображаемые имена документов (см.
-    `_load_documents`), по умолчанию берутся из самих путей."""
     room_keys = list(room_keys or [])
     not_run: list[str] = []
+    timings: dict[str, float] = {}
+    total_started = perf_counter()
 
+    stage_started = perf_counter()
     before = _load_documents(before_paths, before_names)
     after = _load_documents(after_paths, after_names)
+    timings["load_documents"] = _elapsed(stage_started)
     skipped = before.skipped + after.skipped
 
     if not before.docs or not after.docs:
+        timings["total"] = _elapsed(total_started)
         return {
             "valid": False,
             "reason": (
@@ -215,159 +252,221 @@ def run_triangulated_analysis(
                 f"РД {len(after.docs)}/{len(after_paths)})"
             ),
             "skipped_files": skipped,
+            "performance": {"stages_seconds": timings, "duration_seconds": timings["total"]},
         }
 
+    stage_started = perf_counter()
     room_result = cross_check_rooms(before.docs, after.docs)
     equip_result = cross_check_equipment(before.docs, after.docs)
+    timings["registries"] = _elapsed(stage_started)
 
+    stage_started = perf_counter()
     pd_text_facts = _load_text_facts(before_paths)
     after_text_facts = _load_text_facts(after_paths)
     all_text_facts = pd_text_facts + after_text_facts
-
     composition_entries = extract_composition_entries(all_text_facts)
     composition_refs = find_document_references(all_text_facts)
-    composition_supplied = _supplied_documents(
-        before_paths + after_paths,
-        (before_names or [Path(p).name for p in before_paths])
-        + (after_names or [Path(p).name for p in after_paths]),
+    supplied_names = (
+        (before_names or [Path(path).name for path in before_paths])
+        + (after_names or [Path(path).name for path in after_paths])
     )
-    composition_result = check_completeness(composition_entries, composition_refs, composition_supplied)
+    composition_supplied = _supplied_documents(before_paths + after_paths, supplied_names)
+    composition_result = check_completeness(
+        composition_entries, composition_refs, composition_supplied
+    )
+    timings["text_and_composition"] = _elapsed(stage_started)
 
-    use_llm = llm_config is not None and bool(llm_config.api_key) and llm_config.provider not in ("", "local")
-
-    # Г.77 — реальная находка: сбой ВСЕХ пачек вызова ЛЛМ (сеть, ключ,
-    # SSL-сертификат — реально наблюдалось живьём) раньше давал пустой
-    # список требований, неотличимый от «в документе их правда нет».
-    # `llm_call_failures` копится сюда с обоих шагов ниже и попадает в JSON
-    # (`llm.call_failures`), чтобы такой сбой был виден клиенту, а не читался
-    # как «0 найдено».
+    use_llm = (
+        llm_config is not None
+        and bool(llm_config.api_key)
+        and llm_config.provider not in ("", "local")
+    )
     llm_call_failures: list[str] = []
 
+    stage_started = perf_counter()
     if use_llm:
         def _on_extract_error(page: int, exc: Exception) -> None:
             llm_call_failures.append(f"requirements_llm_extract стр.{page}+: {exc!r}")
 
-        pd_requirements = extract_requirements_llm(  # type: ignore[arg-type]
-            pd_text_facts, llm_config, on_chunk_error=_on_extract_error,
+        pd_requirements = extract_requirements_llm(
+            pd_text_facts,
+            llm_config,  # type: ignore[arg-type]
+            on_chunk_error=_on_extract_error,
         )
     else:
         pd_requirements = extract_requirements(pd_text_facts)
-        not_run.append("requirements_llm_extract: нет ключа ИИ — извлечение требований узким regex-путём (Г.36)")
+        not_run.append(
+            "requirements_llm_extract: нет ключа ИИ — извлечение требований узким regex-путём"
+        )
+    timings["requirements_extract"] = _elapsed(stage_started)
 
+    stage_started = perf_counter()
     general_requirements = extract_general_requirements(pd_text_facts)
-
     general_verdicts = None
+    general_requirements_for_check = general_requirements
     if use_llm:
-        # Г.69/70, реально подключено здесь только сейчас (Г.75) — раньше
-        # этот эндпоинт (используется /triangulated-runs -> AttentionMap.tsx,
-        # т.е. САМ СЕРВИС, не только CLI-скрипт registry_diff.py) извлекал
-        # каталог формы 3 регуляркой и НИКОГДА не прогонял его через
-        # ЛЛМ-фильтр шума, даже когда ключ ИИ уже есть и используется для
-        # соседних шагов того же прогона — молчаливый пробел, не отражённый
-        # в `not_run` (в отличие от честно помеченных ventilation_mo/
-        # page_pair_comparison ниже). Реальный вызывающий каталог требований
-        # без фильтра — то, что пользователь наблюдал как «текст не
-        # отправлялся в ЛЛМ для анализа его смысла».
         def _on_filter_error(batch: list, exc: Exception) -> None:
             first_page = batch[0].page if batch else -1
-            llm_call_failures.append(f"requirement_llm_filter стр.{first_page}+ ({len(batch)} шт.): {exc!r}")
+            llm_call_failures.append(
+                f"requirement_llm_filter стр.{first_page}+ ({len(batch)} шт.): {exc!r}"
+            )
 
-        general_verdicts = classify_general_requirements(  # type: ignore[arg-type]
-            general_requirements, llm_config, on_batch_error=_on_filter_error,
+        general_verdicts = classify_general_requirements(
+            general_requirements,
+            llm_config,  # type: ignore[arg-type]
+            on_batch_error=_on_filter_error,
         )
+        # Раньше фильтр считался, но его решение не влияло на cross-check.
+        general_requirements_for_check = [
+            verdict.requirement for verdict in general_verdicts if verdict.is_requirement
+        ]
     else:
         not_run.append(
-            "requirement_llm_filter (Г.69/70): нет ключа ИИ — каталог формы 3 показан "
-            "как есть (regex), без ЛЛМ-фильтра шума"
+            "requirement_llm_filter: нет ключа ИИ — общий каталог показан без смыслового фильтра"
         )
+    timings["requirements_filter"] = _elapsed(stage_started)
 
+    stage_started = perf_counter()
     req_after = [DocumentInput(name="РД", pages=1, text_facts=after_text_facts)]
     req_result = cross_check_requirements(pd_requirements, req_after)
-    general_req_result = cross_check_general_requirements(general_requirements, req_after)
+    general_req_result = cross_check_general_requirements(
+        general_requirements_for_check, req_after
+    )
+    timings["requirements_cross_check"] = _elapsed(stage_started)
 
     signals: list[Signal] = []
     signals += signals_from_room_cross_check(room_result.findings)
     signals += signals_from_equip_cross_check(equip_result.findings)
     signals += signals_from_requirement_cross_check(req_result.findings)
     signals += [
-        Signal(source="composition_registry", domain="document", key=f.designation, detail=f.detail)
-        for f in composition_result.findings
+        Signal(
+            source="composition_registry",
+            domain="document",
+            key=finding.designation,
+            detail=finding.detail,
+        )
+        for finding in composition_result.findings
     ]
 
-    routing_room_keys = list(room_keys)
+    # ------------------------------------------------------------------
+    # Targeted vision: требование из ПД + лист РД по номеру помещения.
+    # ------------------------------------------------------------------
+    stage_started = perf_counter()
+    visual_results: list[dict] = []
+    visual_candidates, visual_eligible_total = _visual_requirement_candidates(req_result.findings)
+    if use_llm and visual_candidates and MAX_VISUAL_REQUIREMENT_FINDINGS > 0:
+        rd_room_index = _room_index_for_vision(after_paths, after_names)
+        visual_results = check_visual_candidates(
+            visual_candidates,
+            rd_room_index,
+            llm_config,  # type: ignore[arg-type]
+            max_pages_per_finding=MAX_VISUAL_PAGES_PER_FINDING,
+        )
+        signals += signals_from_visual_requirement_checks(visual_results)
+        if visual_eligible_total > len(visual_candidates):
+            not_run.append(
+                f"targeted_requirement_vision: проверено {len(visual_candidates)} из "
+                f"{visual_eligible_total} кандидатов из-за лимита "
+                f"NADZOR_MAX_VISUAL_REQUIREMENT_FINDINGS"
+            )
+    elif use_llm and visual_eligible_total and MAX_VISUAL_REQUIREMENT_FINDINGS == 0:
+        not_run.append("targeted_requirement_vision: отключено лимитом 0")
+    elif not use_llm and visual_eligible_total:
+        not_run.append("targeted_requirement_vision: требует ключа ИИ")
+    timings["targeted_requirement_vision"] = _elapsed(stage_started)
+
+    # ------------------------------------------------------------------
+    # Routing только по сильным комнатным кандидатам, а не по каждому
+    # сырому name_changed из room registry.
+    # ------------------------------------------------------------------
+    stage_started = perf_counter()
+    routing_room_keys = list(dict.fromkeys(str(key) for key in room_keys if str(key).strip()))
     auto_selected = False
     routing_diff_result: Optional[dict] = None
-    if not routing_room_keys and use_llm:
-        candidates_rooms = sorted({f.room_key for f in room_result.findings})
-        routing_room_keys = candidates_rooms[:MAX_AUTO_ROUTING_ROOMS]
-        auto_selected = True
+    if not routing_room_keys and use_llm and MAX_AUTO_ROUTING_ROOMS > 0:
+        strong_room_keys = sorted(
+            {
+                signal.key
+                for signal in signals
+                if signal.domain == "room"
+                and signal.source in {"requirement_prose", "vision", "room_registry"}
+            }
+        )
+        routing_room_keys = strong_room_keys[:MAX_AUTO_ROUTING_ROOMS]
+        auto_selected = bool(routing_room_keys)
     if routing_room_keys:
         routing_diff_result = diff_room_routing(before_paths, after_paths, routing_room_keys)
         signals += signals_from_routing_diff(routing_diff_result)
-    else:
-        not_run.append(
-            "routing_diff: --rooms/room_keys не задан, и авто-выбор недоступен без ключа ИИ "
-            "(Г.50) — граф маршрутизации не проверялся"
-        )
+    elif not use_llm:
+        not_run.append("routing_diff: room_keys не заданы и нет ключа ИИ")
+    timings["routing"] = _elapsed(stage_started)
 
+    # Полное свободное vision-сравнение каждой пары листов остаётся отдельной
+    # стадией analysis. Здесь уже подключено более узкое и дешёвое зрение по
+    # требованиям; повторять все pair-вызовы означало бы платить дважды.
     not_run.append(
-        "room_entity_check (сверка назначений таблицы ПД с листом РД, Г.58/Г.65/Г.88): "
-        "требует ключа ИИ — и таблица, и подписи на плане читаются только зрением"
+        "run_page_pair_comparison: прямое сравнение всех пар выполняется отдельной стадией analysis; "
+        "его findings пока не слиты с этой триангуляцией"
     )
     not_run.append(
-        "run_page_pair_comparison (прямое сравнение листов зрением, Г.51): требует ключа ИИ, "
-        "не заведено в триангуляцию по конструкции — не подключено к этому эндпоинту"
+        "room_entity_check: отдельная сверка таблицы назначений с планом пока не подключена"
     )
 
+    stage_started = perf_counter()
     confirmations = triangulate(signals)
     confirmed = confirmed_only(confirmations)
     candidates = candidates_only(confirmations)
     tickets = build_tickets(candidates)
+    timings["triangulation"] = _elapsed(stage_started)
 
-    # Сводный LLM-вердикт нужен только там, где уже есть минимум два
-    # независимых источника. Одиночный candidate от этого не получает новой
-    # независимой информации: прежняя схема делала по одному LLM-вызову на
-    # каждый такой ключ и на реальном мини-бенчмарке породила 95 вызовов для
-    # 95 кандидатов при 0 подтверждённых объектах. Кандидаты остаются в
-    # escalation_tickets и ждут второго источника (vision/mo/routing), а
-    # дорогой synthesis запускается только после настоящей триангуляции.
+    stage_started = perf_counter()
     verdicts: list[KeyVerdict] = []
     confirmed_keys = {(item.domain, item.key) for item in confirmed}
     if use_llm and confirmed_keys:
-        verdicts = synthesize_all(  # type: ignore[arg-type]
-            signals, llm_config, only_keys=confirmed_keys,
+        verdicts = synthesize_all(
+            signals,
+            llm_config,  # type: ignore[arg-type]
+            only_keys=confirmed_keys,
         )
     elif use_llm:
         not_run.append(
-            "verdict_synthesis (Г.61): нет объектов, подтверждённых 2+ независимыми "
-            "источниками — одиночные кандидаты оставлены в очереди без повторного LLM-вызова"
+            "verdict_synthesis: нет объектов, подтверждённых 2+ независимыми источниками"
         )
     else:
-        not_run.append("verdict_synthesis (Г.61): требует ключа ИИ — сводный вердикт не построен")
+        not_run.append("verdict_synthesis: требует ключа ИИ")
+    timings["verdict_synthesis"] = _elapsed(stage_started)
+    timings["total"] = _elapsed(total_started)
+
+    visual_counts = {"absent": 0, "confirmed": 0, "unclear": 0}
+    for item in visual_results:
+        verdict = str(item.get("verdict") or "unclear")
+        if verdict in visual_counts:
+            visual_counts[verdict] += 1
 
     return {
         "valid": True,
         "documents": {
-            "before": [d.name for d in before.docs],
-            "after": [d.name for d in after.docs],
+            "before": [doc.name for doc in before.docs],
+            "after": [doc.name for doc in after.docs],
         },
         "skipped_files": skipped,
         "llm": {
             "used": use_llm,
             "provider": llm_config.provider if llm_config else None,
-            # Г.77 — видимый счётчик сбоев вызова (сеть/ключ/сертификат), а
-            # не только регистронезависимая тишина: непустой список здесь
-            # значит, что часть требований/фильтра НЕ является решением
-            # модели, а является дефолтом после сбоя связи.
             "call_failures": llm_call_failures,
         },
         "not_run": not_run,
+        "performance": {
+            "duration_seconds": timings["total"],
+            "stages_seconds": timings,
+        },
         "rooms": {
             "total_pd": room_result.total_pd_rooms,
             "total_rd": room_result.total_rd_rooms,
             "matched": room_result.matched_rooms,
             "unmatched": room_result.unmatched_rooms,
             "findings": _to_jsonable(room_result.findings),
+            "signals_total": len(signals_from_room_cross_check(room_result.findings)),
         },
         "equipment": {
             "total_pd": equip_result.total_pd_equip,
@@ -375,6 +474,7 @@ def run_triangulated_analysis(
             "matched": equip_result.matched_equip,
             "unmatched": equip_result.unmatched_equip,
             "findings": _to_jsonable(equip_result.findings),
+            "signals_total": len(signals_from_equip_cross_check(equip_result.findings)),
         },
         "composition": {
             "supplied_count": len(composition_supplied),
@@ -391,6 +491,7 @@ def run_triangulated_analysis(
                 "source": "llm" if use_llm else "regex",
             },
             "general": {
+                "raw_total": len(general_requirements),
                 "total": general_req_result.total,
                 "with_token": general_req_result.with_token,
                 "token_confirmed": general_req_result.token_confirmed,
@@ -399,12 +500,21 @@ def run_triangulated_analysis(
                 "findings": _to_jsonable(general_req_result.findings),
                 "llm_filter": {
                     "used": general_verdicts is not None,
-                    "kept": sum(1 for v in general_verdicts if v.is_requirement) if general_verdicts else None,
+                    "kept": sum(1 for item in general_verdicts if item.is_requirement)
+                    if general_verdicts is not None else None,
                     "dropped_as_noise": _to_jsonable(
-                        [v for v in general_verdicts if not v.is_requirement]
-                    ) if general_verdicts else [],
+                        [item for item in general_verdicts if not item.is_requirement]
+                    ) if general_verdicts is not None else [],
                 },
             },
+        },
+        "vision_requirements": {
+            "eligible_total": visual_eligible_total,
+            "checked_total": len(visual_results),
+            "max_findings": MAX_VISUAL_REQUIREMENT_FINDINGS,
+            "max_pages_per_finding": MAX_VISUAL_PAGES_PER_FINDING,
+            "counts": visual_counts,
+            "results": visual_results,
         },
         "routing": {
             "room_keys": routing_room_keys,
