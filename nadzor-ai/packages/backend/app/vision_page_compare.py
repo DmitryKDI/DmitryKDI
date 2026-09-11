@@ -1,72 +1,62 @@
-"""Полностраничная проверка требования на листе РД зрением — эскалация Г.33/Г.36.
+"""Targeted visual verification of project requirements on RD/ID sheets.
 
-`requirement_cross_check.py` помечает КАЖДОЕ требование без кода как
-`no_code_visual_check_needed`: у требования нет буквенно-числового
-обозначения, значит текстом в РД его в принципе не проверить — не потому
-что что-то не найдено, а потому что искать нечего короче целого
-предложения. Разрешить такого кандидата может только зрение по самому
-листу.
-
-Пользовательская идея, определившая форму этого модуля: не пытаться
-заранее вычислить координатный кроп (там, где несоответствие — не в одной
-точке, а разлито по всему помещению на плане, у кропа физически может не
-быть той рамки, где искать), а отдать модели ВЕСЬ лист целиком — тот же
-рендер, что уже используют `compare_page_pair`/`verify_candidate`
-(`render_page_to_data_url`, `vision.py`), без новой геометрии.
-
-Формат вердикта — три состояния, не бинарный да/нет: "confirmed" (на листе
-видно, что требование выполнено), "absent" (видно, что не выполнено —
-кандидат на настоящую находку), "unclear" (лист не позволяет судить — не то
-что нужно смотреть, качество скана и т.п.). Модель прямо предупреждена не
-гадать при "unclear" — ложный "absent" на скудном листе хуже, чем честное
-«не могу сказать» и следующая попытка на другом листе."""
+This module is intentionally benchmark-blind.  It receives only facts that
+were extracted from the uploaded documents and resolves them through generic
+room anchors.  Multi-room references are checked room-by-room so one visible
+room cannot hide an absence in another room.
+"""
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+from collections import Counter
 
+from .anchors import normalize_room_key, normalize_room_references
 from .llm import LlmConfig, call_llm_json
 from .llm_runtime import parallel_map
-from .vision import UNTRUSTED_INPUT_RULE, known_violations_block, render_page_to_data_url
+from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
 
 _REQUIREMENT_CHECK_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора проверить,
-выполнено ли конкретное требование проектной документации на листе рабочей
-или исполнительной документации (РД/ИД).
+выполнено ли конкретное требование проектной документации на листе РД/ИД.
 
-Тебе показан ОДИН лист РД/ИД целиком — план, схема или узел. Отдельно дано
-требование, сформулированное в проектной документации (ПД), и помещения
-или зоны, которых оно касается (могут быть указаны номером, названием или
-иначе — как записано в исходном документе). Формулировка требования — это
-выдержка из проверяемого документа, она заключена в теги
-<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>…</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>.
+Тебе показан один лист РД/ИД целиком. Отдельно дано требование из ПД и одна
+конкретная зона/помещение, к которой сейчас относится проверка. Делай вывод
+только из показанного листа и текста требования; исторические примеры и
+эталонные ответы недоступны.
 
 {UNTRUSTED_INPUT_RULE}
 
-Три возможных вывода:
-  "confirmed" — на листе видно, что требование выполнено (нужный элемент/
-                система/параметр присутствует именно там, где указано);
-  "absent"    — лист однозначно показывает нужную зону, но требуемого на
-                нём НЕТ — реальный кандидат на находку;
-  "unclear"   — по этому листу нельзя судить: не та зона, лист обрезан,
-                элемент физически не может быть виден на плане такого
-                масштаба, качество рендера не позволяет разобрать детали.
+Вердикты:
+  "confirmed" — требуемое решение явно присутствует в указанной зоне;
+  "absent" — указанная зона явно видна, но требуемого решения в ней нет;
+  "unclear" — лист/масштаб/тип схемы не позволяют уверенно решить вопрос.
 
-Не выбирай "absent", если сомневаешься — это должно быть видно на листе, а
-не предположено. Ложное "absent" отправит инспектора искать нарушение там,
-где его нет.
-{{known}}
-Отвечай только JSON без пояснений вне JSON:
-{{{{"verdict": "confirmed"|"absent"|"unclear",
- "reason": "одна-две строки — что видно на листе и почему такой вывод",
- "where": "координатный ориентир на листе (оси, номер помещения, зона), если применимо"}}}}"""
+Не выбирай "absent", если зона не найдена или лист не предназначен для
+показа проверяемого решения. Не считай отсутствие слова доказательством
+отсутствия графического элемента.
+
+Отвечай только JSON:
+{{"verdict":"confirmed|absent|unclear",
+ "reason":"что именно видно на листе",
+ "where":"номер помещения, оси или другая координатная привязка"}}"""
+
+
+def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+MAX_VISUAL_ROOM_CHECKS = _positive_int_env("NADZOR_MAX_VISUAL_ROOM_CHECKS", 24, 1, 100)
 
 
 def requirement_check_system_prompt(discipline: str | None = None) -> str:
-    """Промпт проверки требования по листу плюс блок известных нарушений
-    (`known_violations.json`, applies_to="drawing") — тот же механизм
-    few-shot-примеров, что `vision_system_prompt` в vision.py (см. тот же
-    пропуск в requirement_llm_extract.py, исправленный там же)."""
-    return _REQUIREMENT_CHECK_TEMPLATE.format(known=known_violations_block("drawing", discipline))
+    del discipline
+    return _REQUIREMENT_CHECK_TEMPLATE
 
 
 def check_requirement_on_page(
@@ -78,97 +68,116 @@ def check_requirement_on_page(
     discipline: str | None = None,
     timeout: float = 120.0,
 ) -> dict:
-    """Один лист, одно требование. Возвращает {verdict, reason, where} —
-    "unclear" с объяснением, если модель не дала разбираемый JSON, а не
-    молчаливая пустая находка (Г.10)."""
-    rooms_str = ", ".join(rooms) if rooms else "не указаны"
-    # Текст требования и номера помещений извлечены из ПД, то есть из
-    # документа поднадзорного лица — контейнер Б.3.1 (тот же, что
-    # `vision.compare_text_pair`) отделяет их от собственной постановки
-    # задачи в этом же сообщении.
+    room_keys = normalize_room_references(rooms)
+    rooms_str = ", ".join(room_keys) if room_keys else "не указаны"
     user_text = (
-        f"Требование из проектной документации:\n"
+        "Требование из ПД:\n"
         f"<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n{requirement_text}\n</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n"
-        f"Касается помещений: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{rooms_str}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>.\n"
-        f"Проверь по этому листу РД/ИД, выполняется ли оно."
+        f"Проверяемая зона: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{rooms_str}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>."
     )
     try:
-        img = render_page_to_data_url(rd_pdf_path, rd_page_no)
-        system_prompt = requirement_check_system_prompt(discipline)
-        cache_args = ({
-            "operation": "vision",
-            "source_digest": hashlib.sha256(
-                f"{rd_pdf_path}:{rd_page_no}:{requirement_text}:{rooms_str}".encode()
-            ).hexdigest(),
-            "prompt_version": "requirement-page-v2",
-        } if config is not None else {})
+        image = render_page_to_data_url(rd_pdf_path, rd_page_no)
+        image_digest = hashlib.sha256(image.encode("utf-8")).hexdigest()
+        source_digest = hashlib.sha256(
+            f"{image_digest}:{requirement_text}:{rooms_str}".encode("utf-8")
+        ).hexdigest()
         result = call_llm_json(
-            config, system_prompt, user_text, images=[img], timeout=timeout, **cache_args
+            config,
+            requirement_check_system_prompt(discipline),
+            user_text,
+            images=[image],
+            timeout=timeout,
+            operation="vision",
+            source_digest=source_digest,
+            prompt_version="requirement-page-v3",
         )
-    except Exception as exc:  # noqa: BLE001 — сбой одного листа (сеть, провайдер, рендер) не должен ронять весь прогон, см. registry_diff._verify_group
-        return {"verdict": "unclear", "reason": f"ОШИБКА: {exc}", "where": "", "error": True}
-    if not isinstance(result, dict) or result.get("verdict") not in {"confirmed", "absent", "unclear"}:
-        return {"verdict": "unclear", "reason": "ИИ не дал разбираемый ответ", "where": "", "error": True}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "verdict": "unclear",
+            "reason": f"ОШИБКА: {type(exc).__name__}: {exc}",
+            "where": "",
+            "error": True,
+        }
+    if not isinstance(result, dict) or result.get("verdict") not in {
+        "confirmed", "absent", "unclear"
+    }:
+        return {
+            "verdict": "unclear",
+            "reason": "ИИ не дал разбираемый ответ",
+            "where": "",
+            "error": True,
+        }
     return result
 
 
+def _canonical_room_index(room_index: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for raw_key, entries in room_index.items():
+        key = normalize_room_key(raw_key)
+        if key:
+            out.setdefault(key, []).extend(entries or [])
+    return out
+
+
 def select_candidate_pages(
-    rooms: list[str], room_index: dict[str, list[dict]], max_pages: int,
+    rooms: list[str],
+    room_index: dict[str, list[dict]],
+    max_pages: int,
     sentence: str = "",
 ) -> list[dict]:
-    """Ранжирование без отсева: прямой якорь, текст, разнообразие при равенстве.
+    """Rank pages by exact room anchor, then by rare words from requirement."""
+    keys = normalize_room_references(rooms)
+    canonical_index = _canonical_room_index(room_index)
+    lists = [canonical_index.get(key, []) for key in keys]
 
-    Вес слова вычисляется по кандидатным страницам, без отраслевого словаря
-    и подобранного порога. Пустой текст не исключает страницу. Пропущенные
-    ради другого файла страницы остаются в очереди до исчерпания бюджета.
-    """
-    import re
-    from collections import Counter
-
-    lists = [room_index.get(str(room), []) for room in dict.fromkeys(rooms)]
-    entries = {}
+    entries: dict[tuple[str, int], dict] = {}
     for group in lists:
         for entry in group:
-            key = (entry["path"], entry["page"])
+            key = (str(entry["path"]), int(entry["page"]))
             if key not in entries or not entry.get("level_fallback"):
                 entries[key] = entry
-    words = {key: set(re.findall(r"\w+", str(e.get("text") or "").casefold()))
-             for key, e in entries.items()}
+    if not entries:
+        return []
+
+    words = {
+        key: set(re.findall(r"\w+", str(entry.get("text") or "").casefold()))
+        for key, entry in entries.items()
+    }
     frequencies = Counter(word for tokens in words.values() for word in tokens)
     query = set(re.findall(r"\w+", sentence.casefold()))
-    scores = {key: sum(1 / frequencies[word] for word in sorted(tokens & query))
-              for key, tokens in words.items()}
-    tiers = {key: (bool(e.get("level_fallback")), -scores[key])
-             for key, e in entries.items()}
-    seen_pages = set()
-    seen_files = set()
-    pages = []
-    for tier in sorted(set(tiers.values())):
-        if len(pages) >= max_pages:
-            break
-        queues = [[(e["path"], e["page"]) for e in group
-                   if tiers[(e["path"], e["page"])] == tier] for group in lists]
-        while len(pages) < max_pages:
-            added = False
-            for queue in queues:
-                if len(pages) >= max_pages:
-                    break
-                remaining = [key for key in queue if key not in seen_pages]
-                if not remaining:
-                    continue
-                key = next((key for key in remaining if key[0] not in seen_files), remaining[0])
-                seen_pages.add(key)
-                seen_files.add(key[0])
-                pages.append(entries[key])
-                added = True
-            if not added:
-                break
-    return pages
+    scores = {
+        key: sum(1 / frequencies[word] for word in (tokens & query) if frequencies[word])
+        for key, tokens in words.items()
+    }
+    ordered = sorted(
+        entries,
+        key=lambda key: (
+            bool(entries[key].get("level_fallback")),
+            -scores[key],
+            str(entries[key].get("name") or ""),
+            key[1],
+        ),
+    )
+    return [entries[key] for key in ordered[:max_pages]]
 
 
 def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pages: int) -> list[dict]:
-    """Совместимость с прежними вызывающими; общий подбор без текста требования."""
     return select_candidate_pages(rooms, room_index, max_pages)
+
+
+def _room_tasks(findings: list) -> list[tuple[object, str | None]]:
+    tasks: list[tuple[object, str | None]] = []
+    for finding in findings:
+        if getattr(finding, "finding_type", None) != "no_code_visual_check_needed":
+            continue
+        rooms = normalize_room_references(getattr(finding, "rooms", []) or [])
+        if rooms:
+            tasks.extend((finding, room) for room in rooms)
+        else:
+            tasks.append((finding, None))
+        if len(tasks) >= MAX_VISUAL_ROOM_CHECKS:
+            break
+    return tasks[:MAX_VISUAL_ROOM_CHECKS]
 
 
 def check_visual_candidates(
@@ -179,93 +188,92 @@ def check_visual_candidates(
     max_pages_per_finding: int = 3,
     on_result=None,
 ) -> list[dict]:
-    """Эскалирует находки `no_code_visual_check_needed`
-    (`RequirementCrossCheckResult.findings`) в зрение по листам РД.
+    """Check each explicit room anchor independently.
 
-    `room_index` — {room_key: [{path, page, ...}]}, тот же формат, что
-    строит `_registry(paths, "room_facts")` в `scripts/registry_diff.py`:
-    для помещений из требования ищутся страницы РД, где они встречаются
-    (единственный способ узнать, какой лист вообще смотреть — у требования
-    без кода нет строки реестра, которая сама указала бы лист).
+    A composite LLM value such as ``"пом. 101, 102"`` is expanded to two
+    checks.  Requirements with no document-grounded room anchor remain
+    visible as ``unclear`` without spending a vision call on random pages.
+    """
+    tasks = _room_tasks(findings)
 
-    Требование без единого известного номера помещения в реестре РД —
-    "unclear" без вызова модели: смотреть решительно не на чем, а не
-    случайная страница ради видимости проверки.
+    def _check_task(task):
+        finding, room = task
+        sentence = str(getattr(finding, "sentence_pd", "") or "")
+        if room is None:
+            return {
+                "rooms": [],
+                "sentence": sentence,
+                "verdict": "unclear",
+                "reason": "у требования нет конкретного помещения/зоны для адресной проверки",
+                "where": "",
+                "pages_checked": 0,
+            }
 
-    `on_result`, если задан, вызывается с готовым `{rooms, sentence, verdict,
-    reason, where, pages_checked}` сразу после КАЖДОЙ находки, не после всех
-    сразу — так вызывающий код может писать результат на диск по мере
-    появления (см. `registry_diff.run_requirements`), а не только вернуть
-    список после последнего вызова модели: прогон на десятках находок
-    занимает минуты, и сбой/остановка посреди него не должна стирать уже
-    полученные вердикты (тот же принцип, что Г.10 — прогресс должен быть
-    видимым состоянием, а не всё-или-ничего).
-
-    Возвращает список {rooms, sentence, verdict, reason, where, pages_checked}
-    — по записи на находку, не на страницу: если хотя бы одна проверенная
-    страница даёт "confirmed"/"absent", это и есть итог находки (первый
-    небезразличный вердикт побеждает "unclear" от предыдущих страниц)."""
-    candidates = [f for f in findings
-                  if getattr(f, "finding_type", None) == "no_code_visual_check_needed"]
-
-    def _check_finding(f):
-        pages = select_candidate_pages(f.rooms, room_index, max_pages_per_finding, f.sentence_pd)
+        pages = select_candidate_pages([room], room_index, max_pages_per_finding, sentence)
         if not pages:
             return {
-                "rooms": f.rooms, "sentence": f.sentence_pd,
-                "verdict": "unclear", "reason": "ни одно из помещений требования не найдено в реестре РД — нет листа для проверки",
-                "where": "", "pages_checked": 0,
+                "rooms": [room],
+                "sentence": sentence,
+                "verdict": "unclear",
+                "reason": "помещение не найдено в реестре РД — нет обоснованного листа для vision-проверки",
+                "where": room,
+                "pages_checked": 0,
             }
-        verdict = "unclear"
-        reason = ""
-        where = ""
+
         checked = 0
+        last_reason = ""
+        last_where = room
         for entry in pages:
             checked += 1
-            result = check_requirement_on_page(entry["path"], entry["page"], f.sentence_pd, f.rooms, config, discipline)
-            if result.get("verdict") in ("confirmed", "absent"):
-                verdict, reason, where = result["verdict"], result.get("reason", ""), result.get("where", "")
-                break
-            reason = result.get("reason", reason)
+            result = check_requirement_on_page(
+                entry["path"], int(entry["page"]), sentence, [room], config, discipline
+            )
+            verdict = result.get("verdict")
+            last_reason = str(result.get("reason") or last_reason)
+            last_where = str(result.get("where") or last_where)
+            if verdict in {"confirmed", "absent"}:
+                return {
+                    "rooms": [room],
+                    "sentence": sentence,
+                    "verdict": verdict,
+                    "reason": last_reason,
+                    "where": last_where,
+                    "pages_checked": checked,
+                    "page": int(entry["page"]),
+                    "document": str(entry.get("name") or ""),
+                }
         return {
-            "rooms": f.rooms, "sentence": f.sentence_pd,
-            "verdict": verdict, "reason": reason, "where": where, "pages_checked": checked,
+            "rooms": [room],
+            "sentence": sentence,
+            "verdict": "unclear",
+            "reason": last_reason or "проверенные листы не позволяют сделать уверенный вывод",
+            "where": last_where,
+            "pages_checked": checked,
         }
 
-    # Находки независимы: worker не обращается к БД и не вызывает UI.
-    # Callback выполняется здесь, в главном потоке, поэтому порядок и
-    # потоковая запись сохраняются, а запросы используют общий лимит.
     out: list[dict] = []
-    for entry_result in parallel_map(_check_finding, candidates):
-        out.append(entry_result)
+    for result in parallel_map(_check_task, tasks):
+        out.append(result)
         if on_result:
-            on_result(entry_result)
+            on_result(result)
     return out
 
 
-def render_vision_finding_line(r: dict) -> str:
-    """Одна находка — одна строка, для потоковой записи по мере готовности
-    (см. `on_result` в `check_visual_candidates`), тот же текст, что попадёт
-    в группу результата `render_vision_requirement_report`, просто без
-    ожидания конца всего прогона."""
-    rooms_str = ", ".join(r["rooms"])
-    where = f" [{r['where']}]" if r.get("where") else ""
-    return f"[{r['verdict']}] помещения {rooms_str}: {r['reason']}{where}"
+def render_vision_finding_line(result: dict) -> str:
+    rooms_str = ", ".join(result.get("rooms") or []) or "без привязки"
+    where = f" [{result['where']}]" if result.get("where") else ""
+    return f"[{result.get('verdict', 'unclear')}] помещения {rooms_str}: {result.get('reason', '')}{where}"
 
 
 def render_vision_requirement_report(results: list[dict]) -> str:
-    lines = ["=== Проверка кандидатов зрением по листу РД (эскалация Г.33) ===",
-             f"Проверено находок: {len(results)}"]
-    by_verdict: dict[str, list[dict]] = {}
-    for r in results:
-        by_verdict.setdefault(r["verdict"], []).append(r)
+    lines = [
+        "=== Адресная vision-проверка требований ПД по листам РД/ИД ===",
+        f"Проверок: {len(results)}",
+    ]
     for verdict in ("absent", "confirmed", "unclear"):
-        group = by_verdict.get(verdict, [])
+        group = [item for item in results if item.get("verdict") == verdict]
         if not group:
             continue
         lines.append(f"\n--- {verdict} ({len(group)}) ---")
-        for r in group:
-            rooms_str = ", ".join(r["rooms"])
-            where = f" [{r['where']}]" if r.get("where") else ""
-            lines.append(f"  помещения {rooms_str}: {r['reason']}{where}")
+        lines.extend(f"  {render_vision_finding_line(item)}" for item in group)
     return "\n".join(lines)
