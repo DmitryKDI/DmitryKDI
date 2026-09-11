@@ -1,10 +1,11 @@
-"""Escalate strong drawing pairs from deterministic diff to semantic vision."""
+"""Blind graphical controls: pair diff/vision plus registry-driven entity checks."""
 from __future__ import annotations
 
 import re
 from typing import Sequence
 
 from .anchors import normalize_room_key
+from .entity_control import run_room_entity_controls
 from .llm import LlmConfig
 from .matching import DocumentInput, match_page_pairs
 from .triangulation import Signal
@@ -42,9 +43,27 @@ def run_targeted_pair_vision(
     *,
     max_pairs: int = 6,
 ) -> tuple[list[Signal], list[dict]]:
-    """Run semantic vision only for strongly matched, structurally changed drawings."""
+    """Run bounded blind graphical controls.
+
+    Two independent generic routes share one stage because they use the same
+    already-loaded document facts and LLM budget:
+    1. strong matched drawings -> raster localization -> semantic pair vision;
+    2. recognized PD distribution tables -> grounded RD plan entity check.
+    Neither route receives benchmark expected answers.
+    """
+    signals: list[Signal] = []
+    diagnostics: list[dict] = []
+
+    entity_signals, entity_diagnostics = run_room_entity_controls(
+        before_docs, after_docs, before_paths, after_paths, config
+    )
+    signals.extend(entity_signals)
+    diagnostics.extend(
+        [{"control_type": "room_entity", **item} for item in entity_diagnostics]
+    )
+
     if max_pairs <= 0:
-        return [], []
+        return signals, diagnostics
 
     pairs = match_page_pairs(list(before_docs), list(after_docs))
     strong = [
@@ -55,10 +74,7 @@ def run_targeted_pair_vision(
     ]
     strong.sort(key=lambda pair: (-pair.score, pair.before_file_idx, pair.before_page))
 
-    signals: list[Signal] = []
-    diagnostics: list[dict] = []
     llm_used = 0
-
     for pair in strong:
         if llm_used >= max_pairs:
             break
@@ -72,6 +88,7 @@ def run_targeted_pair_vision(
             )
         except Exception as exc:  # noqa: BLE001
             diagnostics.append({
+                "control_type": "page_pair",
                 "pair_key": pair_key,
                 "before_page": pair.before_page,
                 "after_page": pair.after_page,
@@ -82,6 +99,7 @@ def run_targeted_pair_vision(
             continue
 
         base_diag = {
+            "control_type": "page_pair",
             "pair_key": pair_key,
             "before_page": pair.before_page,
             "after_page": pair.after_page,
@@ -110,7 +128,7 @@ def run_targeted_pair_vision(
                 config,
                 context=(
                     f"раздел {before_doc.discipline_code or '?'}; "
-                    f"детерминированный raster-diff локализовал изменение"
+                    "детерминированный raster-diff локализовал изменение"
                 ),
                 discipline=before_doc.discipline_code,
                 clip_frac=tuple(clip) if clip else None,
