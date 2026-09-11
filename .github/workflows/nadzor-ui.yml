@@ -9,8 +9,10 @@ on:
       - 'nadzor-ai/frontend/**'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
+      - 'nadzor-ai/packages/backend/app/run_logger.py'
       - 'nadzor-ai/packages/backend/tests/test_llm_runtime.py'
       - 'nadzor-ai/packages/backend/tests/test_performance_regression.py'
+      - 'nadzor-ai/packages/backend/tests/test_run_logger.py'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
@@ -48,9 +50,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
-      - name: Compile changed LLM modules
+      - name: Compile changed runtime modules
         run: |
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/requirement_llm_extract.py
-      - name: Run scheduler and cache regression tests
-        run: pytest -q tests/test_llm_runtime.py tests/test_performance_regression.py
+          python -m py_compile app/run_logger.py
+      - name: Run runtime regression tests
+        run: pytest -q tests/test_llm_runtime.py tests/test_performance_regression.py tests/test_run_logger.py
