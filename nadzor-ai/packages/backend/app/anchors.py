@@ -1,3 +1,4 @@
+"""Canonical room-anchor normalization used across the blind runtime."""
 from __future__ import annotations
 
 import re
