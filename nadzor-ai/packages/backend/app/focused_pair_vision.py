@@ -1,9 +1,9 @@
 """Generic room-focused fallback for blind drawing comparison.
 
-The first vision pass has one job only: state observable PD -> RD differences.
-It deliberately does not ask for legal qualification, severity or field actions.
-Every shown room must be accounted for as changed, same or unclear so an empty
-list can never masquerade as a completed inspection.
+This stage has one job only: describe observable engineering differences between
+PD and RD/ID.  It deliberately does not ask for legal qualification, severity
+or field actions.  Every shown room must be accounted for as changed, same or
+unclear so an empty model answer can never masquerade as a completed check.
 """
 from __future__ import annotations
 
@@ -28,48 +28,83 @@ def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> in
     return max(minimum, min(maximum, value))
 
 
-MAX_FOCUSED_ROOM_CALLS = _positive_int_env("NADZOR_MAX_FOCUSED_ROOM_VISION_CALLS", 12, 0, 40)
-FOCUSED_ROOMS_PER_CALL = _positive_int_env("NADZOR_FOCUSED_ROOMS_PER_CALL", 4, 1, 8)
-MAX_FOCUSED_ROOMS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_ROOMS_PER_PAIR", 12, 1, 32)
+# The global budget is shared by all page pairs.  A per-pair cap prevents the
+# first dense plan from consuming every call before later pairs are inspected.
+MAX_FOCUSED_ROOM_CALLS = _positive_int_env("NADZOR_MAX_FOCUSED_ROOM_VISION_CALLS", 12, 0, 48)
+MAX_FOCUSED_CALLS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_CALLS_PER_PAIR", 2, 1, 6)
+# A single paired montage is easier for the model than two independent montage
+# images, so eight rows remain readable while covering substantially more rooms.
+FOCUSED_ROOMS_PER_CALL = _positive_int_env("NADZOR_FOCUSED_ROOMS_PER_CALL", 8, 1, 10)
+MAX_FOCUSED_ROOMS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_ROOMS_PER_PAIR", 24, 1, 40)
 
 _ROOM_NUM_RE = re.compile(r"^(\d{1,4})(?:\.(\d+))?([а-яё]?)$", re.IGNORECASE)
 _STATUS_PRIORITY = {"same": 0, "unclear": 1, "changed": 2}
+
+# These phrases are architectural/function-name changes, not engineering-system
+# evidence by themselves.  They were a generic source of false positives when
+# room crops contained labels more prominently than MEP graphics.
+_ARCHITECTURAL_PHRASES = (
+    "добавлено помещение",
+    "добавлен медицинский пункт",
+    "удалено помещение",
+    "назначение помещения",
+    "переименовано помещение",
+    "room added",
+    "room removed",
+    "room renamed",
+)
+_ENGINEERING_STEMS = (
+    "вент", "воздух", "дефлект", "решет", "клапан", "приточ", "вытяж",
+    "отоп", "радиатор", "труб", "стояк", "тепл", "нагрев", "охлаж",
+    "кондиц", "оборуд", "установ", "насос", "теплообмен", "канал",
+    "кабел", "элект", "свет", "розет", "вод", "спринкл", "пожар",
+    "датчик", "система", "трасс", "коммуникац", "арматур", "вентилят",
+    "duct", "pipe", "fan", "heater", "radiator", "equipment", "hvac",
+)
 
 _FOCUSED_ROOM_PROMPT = f"""\
 Ты сравниваешь инженерные чертежи ПД и РД/ИД. На этом этапе нужна только
 фиксация ВИДИМЫХ различий. Не делай юридических выводов, не оценивай severity,
 не предлагай проверку на объекте и не решай, является ли различие нарушением.
 
-На первом изображении — монтаж фрагментов ПД, на втором — монтаж фрагментов
-РД/ИД. Строки подписаны ROOM <номер>. Сравнивай только ROOM с тем же номером.
-Не сравнивай соседние строки между собой.
+Тебе показано ОДНО изображение-монтаж. В каждой строке есть ROOM <номер>,
+слева фрагмент ПД, справа соответствующий фрагмент РД/ИД. Сравнивай только
+левую и правую половину ОДНОЙ строки. Не сравнивай соседние ROOM между собой.
+
+Проверяй ТОЛЬКО инженерный слой: вентиляцию, отопление, трубопроводы,
+оборудование, воздуховоды, решётки, клапаны, стояки, трассы, подключения и
+другие инженерные системы. Игнорируй изменение названия/назначения помещения,
+архитектурные стены и перегородки, мебель, экспликацию и обычные подписи, если
+они не описывают инженерный элемент. Фраза вроде «добавлен медицинский пункт»
+сама по себе НЕ является инженерным различием.
 
 Для КАЖДОГО переданного ROOM обязан вернуть ровно один результат:
 - changed — видишь конкретное инженерное отличие между ПД и РД/ИД;
-- same — обе стороны достаточно читаемы и соответствующее решение выглядит одинаковым;
+- same — обе стороны достаточно читаемы и инженерное решение выглядит одинаковым;
 - unclear — хотя бы одна сторона нечитабельна, показана только таблица/экспликация,
   зона обрезана или нельзя уверенно сопоставить инженерное решение.
 
-Проверяй прежде всего наличие/отсутствие инженерных элементов, состав и
-количество оборудования, подключение, трассу, конфигурацию и положение
-элементов. Не считай различием рамку, штамп, масштаб, цвет, шрифт, качество
-рендера или компоновку листа. Не делай вывод об отсутствии элемента только
-из отсутствия слова в тексте.
+Для changed сначала отдельно зафиксируй, что видно в ПД и что видно в РД,
+а затем сформулируй одно конкретное отличие: элемент исчез/появился, изменены
+количество, тип, подключение, трасса, конфигурация или положение. Если не можешь
+назвать конкретный инженерный элемент или систему — ставь unclear, а не changed.
+Если доказательств недостаточно — unclear, а не same. Нельзя пропускать ROOM и
+нельзя придумывать номера вне списка.
 
-Если ставишь changed, напиши по одному короткому наблюдению для ПД и РД и
-одно конкретное предложение change. Если доказательства недостаточно — unclear,
-а не same. Нельзя пропускать ROOM и нельзя придумывать номера вне списка.
+Не считай различием рамку, штамп, масштаб, цвет, шрифт, качество рендера или
+компоновку листа. Не делай вывод об отсутствии элемента только из отсутствия
+слова в тексте.
 
 {UNTRUSTED_INPUT_RULE}
 
 Отвечай только JSON:
 {{"checked_rooms":[
   {{"room":"101","status":"changed|same|unclear",
-    "pd_observation":"что видно в ПД",
-    "rd_observation":"что видно в РД/ИД",
-    "change":"конкретное различие; пусто для same/unclear"}}
+    "pd_observation":"какой инженерный элемент виден в ПД",
+    "rd_observation":"какой инженерный элемент виден в РД/ИД",
+    "change":"конкретное инженерное различие; пусто для same/unclear"}}
 ],
-"summary":"кратко, без правовой оценки"}}
+"summary":"кратко, только наблюдаемые инженерные различия"}}
 """
 
 
@@ -95,20 +130,46 @@ def _fit_rect(width: float, height: float, box: pymupdf.Rect) -> pymupdf.Rect:
     return pymupdf.Rect(x0, y0, x0 + target_w, y0 + target_h)
 
 
-def make_montage(rows: Sequence[tuple[str, bytes]]) -> bytes:
+def make_paired_montage(
+    before_rows: Sequence[tuple[str, bytes]],
+    after_rows: Sequence[tuple[str, bytes]],
+) -> bytes:
+    """Build one image with PD and RD side-by-side for every room row."""
+    if not before_rows or not after_rows:
+        return b""
+    after_by_room = {room: png for room, png in after_rows}
+    rows = [(room, png, after_by_room[room]) for room, png in before_rows if room in after_by_room]
     if not rows:
         return b""
-    width = 900.0
-    row_height = 330.0
+
+    width = 1400.0
+    header = 42.0
+    row_height = 300.0
+    gap = 16.0
+    label_width = 100.0
+    half_width = (width - label_width - gap * 3) / 2
     doc = pymupdf.open()
     try:
-        page = doc.new_page(width=width, height=row_height * len(rows))
-        for index, (room, png) in enumerate(rows):
-            y = index * row_height
-            page.insert_text((16, y + 22), f"ROOM {room}", fontsize=13)
-            pix = pymupdf.Pixmap(png)
-            box = pymupdf.Rect(16, y + 32, width - 16, y + row_height - 10)
-            page.insert_image(_fit_rect(float(pix.width), float(pix.height), box), stream=png)
+        page = doc.new_page(width=width, height=header + row_height * len(rows))
+        page.insert_text((label_width + gap, 27), "PD", fontsize=15)
+        page.insert_text((label_width + gap * 2 + half_width, 27), "RD / ID", fontsize=15)
+        for index, (room, before_png, after_png) in enumerate(rows):
+            y0 = header + index * row_height
+            page.insert_text((12, y0 + 28), f"ROOM {room}", fontsize=13)
+            left = pymupdf.Rect(label_width + gap, y0 + 8,
+                                label_width + gap + half_width, y0 + row_height - 8)
+            right = pymupdf.Rect(label_width + gap * 2 + half_width, y0 + 8,
+                                 width - gap, y0 + row_height - 8)
+            before_pix = pymupdf.Pixmap(before_png)
+            after_pix = pymupdf.Pixmap(after_png)
+            page.insert_image(
+                _fit_rect(float(before_pix.width), float(before_pix.height), left),
+                stream=before_png,
+            )
+            page.insert_image(
+                _fit_rect(float(after_pix.width), float(after_pix.height), right),
+                stream=after_png,
+            )
         return page.get_pixmap(matrix=pymupdf.Matrix(1, 1), alpha=False).tobytes("png")
     finally:
         doc.close()
@@ -133,12 +194,12 @@ def grounded_rows(
             continue
         try:
             before_png = render_page_to_png_bytes(
-                before_path, before_page, max_dim=900, clip_frac=before_crops[0]
+                before_path, before_page, max_dim=1050, clip_frac=before_crops[0]
             )
             after_png = render_page_to_png_bytes(
-                after_path, after_page, max_dim=900, clip_frac=after_crops[0]
+                after_path, after_page, max_dim=1050, clip_frac=after_crops[0]
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             missing.append(room)
             continue
         before_rows.append((room, before_png))
@@ -148,32 +209,38 @@ def grounded_rows(
 
 
 def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
-    before_png = make_montage(before_rows)
-    after_png = make_montage(after_rows)
-    if not before_png or not after_png:
+    montage = make_paired_montage(before_rows, after_rows)
+    if not montage:
         return {}
     rooms = [room for room, _ in before_rows]
     room_text = ", ".join(rooms)
-    digest = hashlib.sha256(before_png + b"\0" + after_png + room_text.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(montage + room_text.encode("utf-8")).hexdigest()
     user_text = (
-        "Первое изображение — ПД, второе — РД/ИД. "
-        f"Обязательный список для проверки: {room_text}. "
-        "Верни checked_rooms ровно по этим ROOM; ни один не пропускай."
+        f"Обязательный список ROOM для проверки: {room_text}. "
+        "В каждой строке слева ПД, справа РД/ИД. Верни checked_rooms ровно "
+        "по этим ROOM; ни один не пропускай. Ищи только инженерные различия."
     )
     result = call_llm_json(
         config,
         _FOCUSED_ROOM_PROMPT,
         user_text,
-        images=[png_bytes_to_data_url(before_png), png_bytes_to_data_url(after_png)],
+        images=[png_bytes_to_data_url(montage)],
         operation="vision",
         source_digest=digest,
-        prompt_version="focused-room-pair-v3",
+        prompt_version="focused-room-pair-v4",
     )
     return result if isinstance(result, dict) else {}
 
 
+def _looks_architectural_only(*parts: str) -> bool:
+    text = " ".join(parts).casefold()
+    if not any(phrase in text for phrase in _ARCHITECTURAL_PHRASES):
+        return False
+    return not any(stem in text for stem in _ENGINEERING_STEMS)
+
+
 def normalize_checked_rooms(result: dict, usable_rooms: Sequence[str]) -> tuple[list[dict], list[str]]:
-    """Validate the model contract without turning omissions into negative evidence."""
+    """Validate model output without turning omissions into negative evidence."""
     allowed = [normalize_room_key(room) for room in usable_rooms]
     allowed = [room for index, room in enumerate(allowed) if room and room not in allowed[:index]]
     allowed_set = set(allowed)
@@ -191,6 +258,10 @@ def normalize_checked_rooms(result: dict, usable_rooms: Sequence[str]) -> tuple[
         rd_observation = str(raw.get("rd_observation") or "").strip()
         change = str(raw.get("change") or "").strip()
         if status == "changed" and not change:
+            status = "unclear"
+        if status == "changed" and _looks_architectural_only(
+            pd_observation, rd_observation, change
+        ):
             status = "unclear"
         if status == "same" and (not pd_observation or not rd_observation):
             status = "unclear"
@@ -226,9 +297,10 @@ def compare_shared_rooms_focused(
     findings: list[dict] = []
     diagnostics: list[dict] = []
     calls_used = 0
+    pair_budget = min(max_calls, MAX_FOCUSED_CALLS_PER_PAIR)
 
     for start in range(0, len(ordered), FOCUSED_ROOMS_PER_CALL):
-        if calls_used >= max_calls:
+        if calls_used >= pair_budget:
             break
         requested = ordered[start:start + FOCUSED_ROOMS_PER_CALL]
         before_rows, after_rows, usable, missing = grounded_rows(
@@ -260,7 +332,7 @@ def compare_shared_rooms_focused(
             if row["status"] != "changed":
                 continue
             finding = {
-                "label": "Визуальное различие",
+                "label": "Инженерное визуальное различие",
                 "change": row["change"],
                 "rooms": [row["room"]],
                 "pd_observation": row["pd_observation"],
@@ -286,6 +358,17 @@ def compare_shared_rooms_focused(
             "checked_rooms": checked,
             "findings": accepted,
             "summary": str(result.get("summary") or ""),
+            "pair_call": calls_used,
+            "pair_call_budget": pair_budget,
+        })
+
+    if len(ordered) > pair_budget * FOCUSED_ROOMS_PER_CALL:
+        diagnostics.append({
+            "status": "focused_pair_budget",
+            "rooms_total": len(ordered),
+            "rooms_scheduled": min(len(ordered), pair_budget * FOCUSED_ROOMS_PER_CALL),
+            "calls_used": calls_used,
+            "pair_call_budget": pair_budget,
         })
 
     return findings, diagnostics, calls_used
