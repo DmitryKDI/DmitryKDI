@@ -11,6 +11,13 @@ on:
       - 'nadzor-ai/packages/backend/app/entity_control.py'
       - 'nadzor-ai/packages/backend/app/room_entity_check.py'
       - 'nadzor-ai/packages/backend/app/focused_pair_vision.py'
+      - 'nadzor-ai/packages/backend/app/high_recall_prompts.py'
+      - 'nadzor-ai/packages/backend/app/high_recall_roi.py'
+      - 'nadzor-ai/packages/backend/app/high_recall_calls.py'
+      - 'nadzor-ai/packages/backend/app/high_recall_normalize.py'
+      - 'nadzor-ai/packages/backend/app/high_recall_orchestrator.py'
+      - 'nadzor-ai/packages/backend/app/control_pair_candidates.py'
+      - 'nadzor-ai/packages/backend/app/control_pair_runtime.py'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/packages/backend/app/run_logger.py'
@@ -80,6 +87,13 @@ jobs:
           python -m py_compile app/entity_control.py
           python -m py_compile app/room_entity_check.py
           python -m py_compile app/focused_pair_vision.py
+          python -m py_compile app/high_recall_prompts.py
+          python -m py_compile app/high_recall_roi.py
+          python -m py_compile app/high_recall_calls.py
+          python -m py_compile app/high_recall_normalize.py
+          python -m py_compile app/high_recall_orchestrator.py
+          python -m py_compile app/control_pair_candidates.py
+          python -m py_compile app/control_pair_runtime.py
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/requirement_llm_extract.py
           python -m py_compile app/run_logger.py
