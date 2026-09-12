@@ -39,6 +39,7 @@
 """
 from __future__ import annotations
 
+import os
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -68,6 +69,11 @@ _TEXT_PICK_NOTE = (" (требование не привязано к номер
 # намеренно: зрение — самая дорогая ступень (~6 с на лист, Г.30), а цель
 # здесь не доказать выполнение, а показать инспектору, куда смотреть.
 DEFAULT_MAX_VISUAL_PAGES = 3
+
+# Сколько увеличений зон, предложенных моделью, разрешено на одно
+# требование. Бюджет просмотра, а не граница истины: увеличение стоит
+# вызова, и без потолка одно требование выбрало бы весь лимит.
+MAX_REQUIREMENT_ZOOMS = int(os.environ.get("NADZOR_MAX_REQUIREMENT_ZOOMS", "2"))
 
 
 @dataclass
@@ -118,7 +124,7 @@ def check_compliance(
     result.diagnostics = dict.fromkeys((
         "candidates_available", "candidates_selected", "unique_candidate_pages",
         "vision_calls", "unique_vision_pages", "repeated_vision_pairs",
-        "vision_errors", "vision_unclear", "vision_seconds"), 0)
+        "vision_errors", "vision_unclear", "vision_seconds", "zoom_calls"), 0)
     candidate_keys = set()
     vision_keys = set()
     vision_pairs = set()
@@ -316,6 +322,7 @@ def check_compliance(
 
         seen: dict | None = None
         errors = 0
+        zooms_used = 0
         for pdf_path, page_no in pages:
             _report("просмотр листов РД")
             result.diagnostics["vision_calls"] += 1
@@ -346,6 +353,37 @@ def check_compliance(
                 errors += 1
                 result.diagnostics["vision_errors"] += 1
                 continue
+            # Модель сама называет, что стоит рассмотреть ближе. Увеличение
+            # идёт по ЕЁ зонам, а не по заранее вычисленной геометрии: на
+            # плотном листе решение тонет целиком, и какая именно часть
+            # нужна, видно только тому, кто лист уже посмотрел (раздел 6
+            # задания). Подтверждённое не переспрашиваем — увеличение здесь
+            # механизм полноты, а не сомнения в утвердительном ответе.
+            if (seen.get("verdict") != "confirmed" and seen.get("candidate_regions")
+                    and zooms_used < MAX_REQUIREMENT_ZOOMS):
+                for region in seen["candidate_regions"][:MAX_REQUIREMENT_ZOOMS - zooms_used]:
+                    zooms_used += 1
+                    result.diagnostics["vision_calls"] += 1
+                    result.diagnostics["zoom_calls"] += 1
+                    started = perf_counter()
+                    try:
+                        closer = vision_check(pdf_path, page_no, req.sentence,
+                                              req.rooms, config,
+                                              clip_frac=region["rd_bbox_norm"])
+                    except Exception as exc:  # noqa: BLE001 — кроп не роняет прогон
+                        closer = {"verdict": "unclear", "error": True,
+                                  "reason": f"{type(exc).__name__}: {exc}"}
+                    finally:
+                        result.diagnostics["vision_seconds"] += perf_counter() - started
+                    if not isinstance(closer, dict) or closer.get("error"):
+                        # Сорванный кроп не меняет вердикта целого листа, но и
+                        # исчезнуть не может: неудавшийся вызов обязан быть
+                        # видимым состоянием, а не молчаливым «как было» (Г.10).
+                        result.diagnostics["vision_errors"] += 1
+                        continue
+                    if closer.get("verdict") in {"confirmed", "absent"}:
+                        seen = closer
+                        break
             if seen.get("verdict") == "unclear":
                 result.diagnostics["vision_unclear"] += 1
             if seen.get("verdict") == "confirmed":

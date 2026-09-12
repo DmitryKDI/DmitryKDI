@@ -24,31 +24,52 @@ from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
 
 _REQUIREMENT_CHECK_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора проверить,
-выполнено ли конкретное требование проектной документации на листе РД/ИД.
+выполнено ли конкретное проектное решение в рабочей документации.
 
-Тебе показан один лист РД/ИД или адресный фрагмент этого листа. Отдельно дано
-требование из ПД и одна конкретная зона/помещение. Делай вывод только из
-показанного изображения и текста требования; исторические примеры и эталонные
-ответы недоступны.
+Тебе дано требование (проектное решение) из ПД и показан лист РД/ИД либо его
+адресный фрагмент. Если листов два, ПЕРВЫЙ — источник требования из ПД
+(схема или план), ВТОРОЙ — проверяемый лист РД/ИД. Делай вывод только из
+показанного и из текста требования; исторические примеры и эталонные ответы
+недоступны.
 
 {UNTRUSTED_INPUT_RULE}
 
-Вердикты:
-  "confirmed" — требуемое решение явно присутствует в указанной зоне;
-  "absent" — указанная зона явно видна НА ИНЖЕНЕРНОМ ЧЕРТЕЖЕ, но требуемого
-             решения в ней нет;
-  "unclear" — лист/масштаб/тип схемы не позволяют уверенно решить вопрос.
+Сравнивай инженерную суть: наличие решения, состав и марки оборудования,
+связи и подключения, трассы и ветки, параметры — а не рамку, масштаб,
+оформление, мебель или качество рендера. Разный жанр листа (схема против
+плана) сам по себе не является расхождением: сравнивай сущности и связи, а не
+совпадение геометрии.
 
-Очень важно: экспликация помещений, таблица, штамп или просто подпись номера
-помещения НЕ доказывают отсутствие инженерного решения. Если показанный
-фрагмент содержит только таблицу/экспликацию и не показывает инженерную
-графику помещения, верни "unclear". Не считай отсутствие слова доказательством
-отсутствия графического элемента.
+Вердикты:
+  "confirmed" — требуемое решение явно присутствует;
+  "absent" — показанное место явно видно НА ИНЖЕНЕРНОМ ЧЕРТЕЖЕ, но требуемого
+             решения в нём нет;
+  "unclear" — лист, масштаб или тип изображения не позволяют решить вопрос.
+
+Отдельно оцени `comparability` — можно ли ВООБЩЕ судить по показанному:
+  "high" — видна инженерная графика нужного места, читается;
+  "medium" — видна частично, мелко или перекрыто;
+  "low" — показана только таблица, экспликация, штамп или пустая область.
+
+Очень важно: экспликация помещений, таблица, штамп или подпись номера
+помещения НЕ доказывают отсутствие инженерного решения. Если показано только
+это — comparability="low" и verdict="unclear". Отсутствие СЛОВА не является
+доказательством отсутствия графического элемента.
+
+Если лист плотный и решение нужно рассмотреть ближе, предложи зоны для
+увеличения в `candidate_regions`: координаты долями листа от левого верхнего
+угла, [x1,y1,x2,y2], каждое число от 0 до 1. Предлагай зоны и тогда, когда
+ответить уверенно не получилось, — это способ попросить увеличение, а не
+признание неудачи. Если увеличение не нужно, верни пустой список.
 
 Отвечай только JSON:
 {{"verdict":"confirmed|absent|unclear",
+ "comparability":"high|medium|low",
  "reason":"что именно видно на листе",
- "where":"номер помещения, оси или другая координатная привязка"}}"""
+ "where":"номер помещения, оси или другая координатная привязка",
+ "candidate_regions":[{{"reason":"что там рассмотреть",
+                       "rd_bbox_norm":[0.0,0.0,1.0,1.0],
+                       "priority":"high|medium|low"}}]}}"""
 
 
 def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -69,6 +90,79 @@ def requirement_check_system_prompt(discipline: str | None = None) -> str:
     return _REQUIREMENT_CHECK_TEMPLATE
 
 
+_COMPARABILITY = ("high", "medium", "low")
+
+# Соответствие вердикта и статуса требования. Статус — то, что видит
+# инспектор; вердикт остаётся машинным полем ступени.
+_REQUIREMENT_STATUS = {
+    "confirmed": "appears_compliant",
+    "absent": "candidate_difference",
+    "unclear": "unclear",
+}
+
+
+def normalize_regions(value: object, limit: int = 4) -> list[dict]:
+    """Зоны увеличения, предложенные моделью, — только разбираемые.
+
+    Координаты приходят от модели, то есть это недоверенные данные: рамка с
+    перепутанными углами, выходящая за лист или схлопнутая в точку, молча
+    дала бы пустой или неверный кроп. Такая зона отбрасывается целиком, а не
+    чинится догадкой.
+    """
+    out: list[dict] = []
+    for item in (value or []) if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("rd_bbox_norm") or item.get("bbox_norm")
+        if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+            continue
+        try:
+            x1, y1, x2, y2 = (float(v) for v in raw)
+        except (TypeError, ValueError):
+            continue
+        x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+        y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        priority = str(item.get("priority") or "").strip().casefold()
+        out.append({
+            "reason": str(item.get("reason") or "").strip(),
+            "rd_bbox_norm": (x1, y1, x2, y2),
+            "priority": priority if priority in ("high", "medium", "low") else "medium",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _normalized_answer(result: dict) -> dict:
+    """Ответ модели, приведённый к контракту ступени.
+
+    Главное правило здесь — fail-closed в сторону «не подтверждено»:
+    «выполнено» при низкой читаемости листа означает не выполнение, а то,
+    что судить было не по чему. Обратное направление не трогаем: понижать
+    «не найдено» до «не разобрать» модель вправе сама, а вот повышать
+    сомнительное до подтверждения нельзя (Г.10, раздел 13 задания).
+    """
+    comparability = str(result.get("comparability") or "").strip().casefold()
+    if comparability not in _COMPARABILITY:
+        comparability = "medium"
+    verdict = result.get("verdict")
+    downgraded = ""
+    if verdict == "confirmed" and comparability == "low":
+        verdict = "unclear"
+        downgraded = (" Понижено до «не разобрать»: подтверждение при низкой "
+                      "читаемости листа не является подтверждением.")
+    return {
+        **result,
+        "verdict": verdict,
+        "comparability": comparability,
+        "requirement_status": _REQUIREMENT_STATUS[verdict],
+        "reason": str(result.get("reason") or "") + downgraded,
+        "candidate_regions": normalize_regions(result.get("candidate_regions")),
+    }
+
+
 def check_requirement_on_page(
     rd_pdf_path: str,
     rd_page_no: int,
@@ -78,23 +172,38 @@ def check_requirement_on_page(
     discipline: str | None = None,
     timeout: float = 120.0,
     clip_frac: tuple[float, float, float, float] | None = None,
+    pd_images: list[str] | None = None,
 ) -> dict:
+    """Один вызов «требование + лист РД -> статус» на оба вида источника.
+
+    Требование может быть извлечено из текста ПД или показано на листе ПД —
+    это меняет только то, какие изображения приложены к вызову, а не сам
+    вопрос к модели и не разбор ответа. Отдельного конвейера на
+    «текст -> чертёж» и на «чертёж -> чертёж» не нужно: они отличаются
+    вложением, а не смыслом (раздел 14 задания).
+    """
     room_keys = normalize_room_references(rooms)
     rooms_str = ", ".join(room_keys) if room_keys else "не указаны"
     crop_note = (
-        " Показан адресный фрагмент вокруг найденной подписи помещения; "
-        "если это только экспликация/таблица, верни unclear."
+        " Показан адресный фрагмент листа; если на нём только таблица или "
+        "экспликация, comparability=low и verdict=unclear."
         if clip_frac is not None else ""
+    )
+    source_note = (
+        " Первое изображение — лист ПД, источник требования; второе — "
+        "проверяемый лист РД/ИД."
+        if pd_images else ""
     )
     user_text = (
         "Требование из ПД:\n"
         f"<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n{requirement_text}\n</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n"
         f"Проверяемая зона: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{rooms_str}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>."
-        f"{crop_note}"
+        f"{source_note}{crop_note}"
     )
     try:
         image = render_page_to_data_url(rd_pdf_path, rd_page_no, clip_frac=clip_frac)
-        image_digest = hashlib.sha256(image.encode("utf-8")).hexdigest()
+        images = [*(pd_images or []), image]
+        image_digest = hashlib.sha256("".join(images).encode("utf-8")).hexdigest()
         source_digest = hashlib.sha256(
             f"{image_digest}:{requirement_text}:{rooms_str}:{clip_frac}".encode("utf-8")
         ).hexdigest()
@@ -102,17 +211,20 @@ def check_requirement_on_page(
             config,
             requirement_check_system_prompt(discipline),
             user_text,
-            images=[image],
+            images=images,
             timeout=timeout,
             operation="vision",
             source_digest=source_digest,
-            prompt_version="requirement-page-v4",
+            prompt_version="requirement-page-v5-unified",
         )
     except Exception as exc:  # noqa: BLE001
         return {
             "verdict": "unclear",
+            "comparability": "low",
+            "requirement_status": "unclear",
             "reason": f"ОШИБКА: {type(exc).__name__}: {exc}",
             "where": "",
+            "candidate_regions": [],
             "error": True,
         }
     if not isinstance(result, dict) or result.get("verdict") not in {
@@ -120,11 +232,14 @@ def check_requirement_on_page(
     }:
         return {
             "verdict": "unclear",
+            "comparability": "low",
+            "requirement_status": "unclear",
             "reason": "ИИ не дал разбираемый ответ",
             "where": "",
+            "candidate_regions": [],
             "error": True,
         }
-    return result
+    return _normalized_answer(result)
 
 
 def _canonical_room_index(room_index: dict[str, list[dict]]) -> dict[str, list[dict]]:

@@ -116,3 +116,68 @@ def test_sheets_picked_by_text_are_marked_as_such(tmp_path):
     assert item.status == STATUS_NEEDS_CHECK
     assert item.pages_to_check, "листы для просмотра должны быть названы инспектору"
     assert "по близости текста листа" in item.detail, item.detail
+
+
+def test_model_region_triggers_zoom_and_can_resolve_the_check(tmp_path):
+    """Увеличение идёт по зоне, которую назвала модель (раздел 6 задания).
+
+    Целый лист может не дать ответа, а тот же лист крупнее — даёт. Раньше
+    такого шага в сверке не было вовсе: лист смотрели один раз целиком и
+    записывали «не разобрать».
+    """
+    path = _pdf(tmp_path / "рд.pdf", ["Общие данные", "План сетей"])
+    general = _req("Теплоснабжение приточных установок предусмотрено от узла.")
+    calls = []
+
+    def fake_vision(pdf_path, page_no, text, rooms, config, clip_frac=None, **kw):
+        calls.append(clip_frac)
+        if clip_frac is None:
+            return {"verdict": "unclear", "comparability": "medium",
+                    "reason": "мелко", "where": "",
+                    "candidate_regions": [{"reason": "узел",
+                                           "rd_bbox_norm": (0.2, 0.2, 0.6, 0.6),
+                                           "priority": "high"}]}
+        return {"verdict": "confirmed", "comparability": "high",
+                "reason": "на увеличении видно", "where": "узел"}
+
+    result = check_compliance(
+        [general],
+        rd_text_facts=[{"page": 1, "text": "Общие данные"}],
+        rd_sources=[(path, "рд.pdf")],
+        config=object(),
+        llm_verify=lambda *a, **kw: [
+            {"sentence": general.sentence, "verdict": "absent", "reason": "нет в тексте"}],
+        vision_check=fake_vision,
+        max_visual_pages=1,
+    )
+
+    assert calls[0] is None, "сначала лист целиком"
+    assert calls[1] == (0.2, 0.2, 0.6, 0.6), "увеличение по зоне от модели"
+    assert result.items[0].status == STATUS_CONFIRMED
+    assert result.diagnostics["zoom_calls"] == 1
+
+
+def test_zoom_is_not_asked_for_a_confirmed_sheet(tmp_path):
+    """Подтверждённое не переспрашиваем — увеличение не механизм сомнения."""
+    path = _pdf(tmp_path / "рд.pdf", ["Общие данные", "План сетей"])
+    general = _req("Теплоснабжение приточных установок предусмотрено от узла.")
+    calls = []
+
+    def fake_vision(pdf_path, page_no, text, rooms, config, clip_frac=None, **kw):
+        calls.append(clip_frac)
+        return {"verdict": "confirmed", "comparability": "high", "reason": "видно",
+                "where": "узел",
+                "candidate_regions": [{"reason": "ещё", "rd_bbox_norm": (0.1, 0.1, 0.5, 0.5)}]}
+
+    check_compliance(
+        [general],
+        rd_text_facts=[{"page": 1, "text": "Общие данные"}],
+        rd_sources=[(path, "рд.pdf")],
+        config=object(),
+        llm_verify=lambda *a, **kw: [
+            {"sentence": general.sentence, "verdict": "absent", "reason": "нет в тексте"}],
+        vision_check=fake_vision,
+        max_visual_pages=1,
+    )
+
+    assert calls == [None], "лишний вызов на подтверждённом листе"
