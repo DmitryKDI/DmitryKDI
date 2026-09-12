@@ -1,8 +1,12 @@
 """Automatic JSON diagnostics for background analysis tasks.
 
-Only the latest log of each task type is kept.  Legacy timestamped task logs
-are removed on the next write.  Background LLM metrics are measured per run,
-not copied from process-wide counters, so timing comparisons are meaningful.
+Each task snapshot is immutable and a convenience ``latest.json`` mirror is
+updated beside it.  Historical runs are never deleted automatically: mixing
+``latest`` files from different stages can otherwise make an old technical
+failure look like the current semantic result.
+
+Background LLM metrics are measured per run, not copied from process-wide
+counters, so provider queue time and request timing remain attributable.
 """
 from __future__ import annotations
 
@@ -21,32 +25,27 @@ def _ensure_dir(path: Path | None = None) -> None:
 
 
 def _safe_run_type(run_type: str) -> str:
-    return "".join(ch for ch in str(run_type) if ch.isalnum() or ch in ("-", "_")) or "task"
+    return "".join(
+        ch for ch in str(run_type) if ch.isalnum() or ch in ("-", "_")
+    ) or "task"
+
+
+def _stamp(timestamp: datetime) -> str:
+    return timestamp.strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _log_path(run_id: int, timestamp: datetime) -> Path:
-    return RUN_LOGS_DIR / f"{run_id}_{timestamp.strftime('%Y%m%dT%H%M%SZ')}.json"
+    return RUN_LOGS_DIR / f"{run_id}_{_stamp(timestamp)}.json"
 
 
-def _cleanup_task_folder(folder: Path) -> None:
-    _ensure_dir(folder)
-    for path in folder.glob("*.json"):
-        try:
-            path.unlink()
-        except OSError:
-            pass
-    for path in folder.glob("*.tmp"):
-        try:
-            path.unlink()
-        except OSError:
-            pass
-
-
-def _task_log_path(run_type: str, run_id: int, timestamp: datetime) -> Path:
-    del run_id, timestamp
+def _task_log_paths(
+    run_type: str, run_id: int, timestamp: datetime
+) -> tuple[Path, Path]:
     folder = TASK_LOGS_DIR / _safe_run_type(run_type)
-    _cleanup_task_folder(folder)
-    return folder / "latest.json"
+    _ensure_dir(folder)
+    immutable = folder / f"{int(run_id)}_{_stamp(timestamp)}.json"
+    latest = folder / "latest.json"
+    return immutable, latest
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
@@ -58,18 +57,42 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
-def _remove_previous_stage_logs(run_type: str) -> None:
-    _ensure_dir()
-    for path in RUN_LOGS_DIR.glob("*.json"):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            continue
-        if payload.get("run_type") == run_type:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+def _technical_status(
+    status: str,
+    errors: list[dict] | None = None,
+    details: dict | None = None,
+) -> str:
+    normalized = str(status or "").strip().casefold()
+    errors = list(errors or [])
+    details = dict(details or {})
+
+    if details.get("valid") is False:
+        return "technical_invalid"
+    if errors:
+        if normalized in {"done", "completed", "success", "succeeded"}:
+            return "completed_with_errors"
+        return "failed"
+    if normalized in {"done", "completed", "success", "succeeded"}:
+        return "completed"
+    if normalized in {"error", "failed", "failure"}:
+        return "failed"
+    if normalized in {"queued", "pending"}:
+        return "queued"
+    if normalized in {"running", "processing", "started", "in_progress"}:
+        return "running"
+    return normalized or "unknown"
+
+
+def _execution_state(technical_status: str) -> str:
+    if technical_status in {"completed", "completed_with_errors"}:
+        return "completed"
+    if technical_status in {"failed", "technical_invalid"}:
+        return "failed"
+    if technical_status == "queued":
+        return "queued"
+    if technical_status == "running":
+        return "started"
+    return "unknown"
 
 
 def save(
@@ -87,24 +110,27 @@ def save(
 ) -> Path:
     _ensure_dir()
     timestamp = datetime.now(timezone.utc)
-    _remove_previous_stage_logs(run_type)
+    error_rows = list(errors or [])
+    technical_status = _technical_status(status, error_rows)
     payload: dict[str, Any] = {
         "run_id": run_id,
         "run_type": run_type,
+        "execution_id": f"{_safe_run_type(run_type)}:{int(run_id)}",
         "timestamp": timestamp.isoformat(),
         "status": status,
+        "technical_status": technical_status,
+        "execution_state": _execution_state(technical_status),
         "provider": provider,
         "model": model,
         "documents_before": documents_before,
         "documents_after": documents_after,
         "metrics": metrics,
+        "errors": error_rows,
     }
     if pd_stage is not None:
         payload["pd_stage"] = pd_stage
     if compliance is not None:
         payload["compliance"] = compliance
-    if errors is not None:
-        payload["errors"] = errors
     return _write_json(_log_path(run_id, timestamp), payload)
 
 
@@ -122,20 +148,29 @@ def save_task_snapshot(
     errors: list[dict] | None = None,
 ) -> Path:
     timestamp = datetime.now(timezone.utc)
-    path = _task_log_path(run_type, run_id, timestamp)
-    return _write_json(path, {
+    detail_rows = dict(details or {})
+    error_rows = list(errors or [])
+    technical_status = _technical_status(status, error_rows, detail_rows)
+    payload = {
         "run_id": int(run_id),
         "run_type": run_type,
+        "execution_id": f"{_safe_run_type(run_type)}:{int(run_id)}",
         "timestamp": timestamp.isoformat(),
         "status": status,
+        "technical_status": technical_status,
+        "execution_state": _execution_state(technical_status),
         "provider": provider,
         "model": model,
         "documents_before": list(documents_before or []),
         "documents_after": list(documents_after or []),
         "metrics": dict(metrics or {}),
-        "details": dict(details or {}),
-        "errors": list(errors or []),
-    })
+        "details": detail_rows,
+        "errors": error_rows,
+    }
+    immutable, latest = _task_log_paths(run_type, run_id, timestamp)
+    _write_json(immutable, payload)
+    _write_json(latest, payload)
+    return immutable
 
 
 def _document_names(db, ids: list[int] | None) -> list[str]:
@@ -197,18 +232,20 @@ def _snapshot_analysis(run_id: int, metrics: dict | None = None) -> None:
         finding_rows = []
         for finding in findings:
             pair = pair_map.get(finding.pair_id)
-            finding_rows.append({
-                "id": finding.id,
-                "pair_id": finding.pair_id,
-                "kind": finding.kind,
-                "label": _short(finding.label, 160),
-                "change": _short(finding.change_text),
-                "severity": finding.severity,
-                "field_check": _short(finding.field_check, 300),
-                "before_page": pair.before_page if pair else None,
-                "after_page": pair.after_page if pair else None,
-                "score": pair.score if pair else None,
-            })
+            finding_rows.append(
+                {
+                    "id": finding.id,
+                    "pair_id": finding.pair_id,
+                    "kind": finding.kind,
+                    "label": _short(finding.label, 160),
+                    "change": _short(finding.change_text),
+                    "severity": finding.severity,
+                    "field_check": _short(finding.field_check, 300),
+                    "before_page": pair.before_page if pair else None,
+                    "after_page": pair.after_page if pair else None,
+                    "score": pair.score if pair else None,
+                }
+            )
         save_task_snapshot(
             run_type="analysis",
             run_id=run_id,
@@ -220,6 +257,7 @@ def _snapshot_analysis(run_id: int, metrics: dict | None = None) -> None:
             metrics=metrics or PROCESS_METRICS.snapshot(),
             details={
                 "metrics_scope": "run" if metrics is not None else "process",
+                "pair_score_semantics": "routing_similarity_not_difference_probability",
                 "pairs_total": run.pairs_total or 0,
                 "pairs_done": run.pairs_done or 0,
                 "pairs_llm_ok": run.pairs_llm_ok or 0,
@@ -252,20 +290,28 @@ def _compact_visual_results(block: object) -> dict[str, Any]:
     if not isinstance(block, dict):
         return {}
     results = []
+    kept_keys = {
+        "rooms", "sentence", "verdict", "reason", "where", "pages_checked",
+        "page", "document", "status", "execution_state", "pair_key",
+        "before_page", "after_page", "before_file_index", "after_file_index",
+        "score", "diff_ratio", "changed_cells", "local_cluster", "hot_zone",
+        "significant_total", "rooms_shared", "rooms_mentioned", "anchors_shared",
+        "changes", "error", "semantic_path", "region_id", "anchor_type",
+        "anchor_ids", "anchor_provenance", "pair_confidence", "comparability",
+        "pd_clip", "rd_clip", "image_layout", "general_max_dim", "local_max_dim",
+        "verification_executed", "calls_used", "calls_budget", "proposals_total",
+        "regions_discovered", "regions_verified", "discovery_first",
+    }
     for item in block.get("results") or []:
         if not isinstance(item, dict):
             continue
-        results.append({
-            key: (_short(value) if key in {"sentence", "reason"} else value)
-            for key, value in item.items()
-            if key in {
-                "rooms", "sentence", "verdict", "reason", "where",
-                "pages_checked", "page", "document", "status", "pair_key",
-                "before_page", "after_page", "before_file_index", "after_file_index",
-                "score", "diff_ratio", "changed_cells", "local_cluster", "hot_zone",
-                "significant_total", "rooms_shared", "rooms_mentioned", "changes", "error",
+        results.append(
+            {
+                key: (_short(value) if key in {"sentence", "reason"} else value)
+                for key, value in item.items()
+                if key in kept_keys
             }
-        })
+        )
     out = {key: value for key, value in block.items() if key != "results"}
     out["results"] = results
     return out
@@ -275,13 +321,17 @@ def _compact_confirmations(items: object, limit: int = 80) -> list[dict]:
     out: list[dict] = []
     for item in (items or [])[:limit]:
         if isinstance(item, dict):
-            out.append({
-                "domain": item.get("domain"),
-                "key": item.get("key"),
-                "status": item.get("status"),
-                "sources": item.get("sources") or [],
-                "details": [_short(value, 400) for value in item.get("details") or []],
-            })
+            out.append(
+                {
+                    "domain": item.get("domain"),
+                    "key": item.get("key"),
+                    "status": item.get("status"),
+                    "sources": item.get("sources") or [],
+                    "details": [
+                        _short(value, 400) for value in item.get("details") or []
+                    ],
+                }
+            )
     return out
 
 
@@ -289,9 +339,19 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {}
     rooms = result.get("rooms") if isinstance(result.get("rooms"), dict) else {}
-    equipment = result.get("equipment") if isinstance(result.get("equipment"), dict) else {}
-    requirements = result.get("requirements") if isinstance(result.get("requirements"), dict) else {}
-    triangulation = result.get("triangulation") if isinstance(result.get("triangulation"), dict) else {}
+    equipment = (
+        result.get("equipment") if isinstance(result.get("equipment"), dict) else {}
+    )
+    requirements = (
+        result.get("requirements")
+        if isinstance(result.get("requirements"), dict)
+        else {}
+    )
+    triangulation = (
+        result.get("triangulation")
+        if isinstance(result.get("triangulation"), dict)
+        else {}
+    )
     routing = result.get("routing") if isinstance(result.get("routing"), dict) else None
     return {
         "valid": result.get("valid"),
@@ -317,12 +377,16 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
             "signals_total": equipment.get("signals_total"),
         },
         "requirements": requirements,
-        "vision_requirements": _compact_visual_results(result.get("vision_requirements")),
+        "vision_requirements": _compact_visual_results(
+            result.get("vision_requirements")
+        ),
         "pair_vision": _compact_visual_results(result.get("pair_vision")),
         "routing": {
             "room_keys": routing.get("room_keys") or [],
             "auto_selected": bool(routing.get("auto_selected")),
-        } if routing else None,
+        }
+        if routing
+        else None,
         "triangulation": {
             "signals_count": triangulation.get("signals_count"),
             "confirmed_total": len(triangulation.get("confirmed") or []),
@@ -401,14 +465,23 @@ def install_background_task_logging() -> None:
                     return func(*task_args, **task_kwargs)
             finally:
                 try:
-                    raw_run_id = task_args[0] if task_args else task_kwargs.get("run_id")
+                    raw_run_id = (
+                        task_args[0] if task_args else task_kwargs.get("run_id")
+                    )
                     if raw_run_id is not None:
                         snapshot(
                             int(raw_run_id),
-                            metrics=measured.snapshot() if measured is not None else None,
+                            metrics=(
+                                measured.snapshot()
+                                if measured is not None
+                                else None
+                            ),
                         )
                 except Exception as exc:  # noqa: BLE001
-                    print(f"автолог фоновой задачи не записан: {type(exc).__name__}: {exc}")
+                    print(
+                        "автолог фоновой задачи не записан: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
 
         return original_add_task(self, logged_task, *args, **kwargs)
 
