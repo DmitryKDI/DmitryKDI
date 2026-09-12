@@ -31,6 +31,7 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_triangulated_synthesis_budget.py'
       - 'nadzor-ai/packages/backend/tests/test_control_pair_vision.py'
       - 'nadzor-ai/packages/backend/tests/test_focused_pair_vision.py'
+      - 'nadzor-ai/packages/backend/tests/test_visual_prefilter.py'
       - 'nadzor-ai/packages/backend/tests/test_entity_control.py'
       - 'nadzor-ai/packages/backend/tests/test_anchors.py'
       - 'nadzor-ai/packages/backend/tests/test_vision_grounding.py'
@@ -101,6 +102,7 @@ jobs:
           tests/test_triangulated_synthesis_budget.py
           tests/test_control_pair_vision.py
           tests/test_focused_pair_vision.py
+          tests/test_visual_prefilter.py
           tests/test_entity_control.py
           tests/test_anchors.py
           tests/test_vision_grounding.py
