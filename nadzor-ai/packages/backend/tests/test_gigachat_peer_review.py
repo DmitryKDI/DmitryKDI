@@ -83,13 +83,13 @@ def test_runtime_summary_reports_absence_instead_of_staying_silent(
 
 
 def test_logger_directory_is_among_the_roots_that_are_read(
-    peer_review, tmp_path, monkeypatch
+    peer_review, monkeypatch
 ):
-    """Читаем ровно тот каталог, в который пишет логгер."""
+    """Читаем ровно тот каталог, в который пишет логгер, и старый — тоже."""
     from app import run_logger
 
     monkeypatch.delenv("NADZOR_RUN_LOGS_DIR", raising=False)
     roots = peer_review._runtime_root_candidates()
 
-    assert run_logger.RUN_LOGS_DIR in roots
     assert roots[0] == run_logger.RUN_LOGS_DIR
+    assert run_logger.LEGACY_RUN_LOGS_DIR in roots

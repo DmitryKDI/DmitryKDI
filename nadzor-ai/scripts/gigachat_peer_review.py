@@ -167,14 +167,17 @@ def _runtime_root_score(root: Path) -> int:
 def _runtime_root_candidates() -> list[Path]:
     """Каталоги, где могут лежать логи прогонов, в порядке доверия.
 
-    Первым идёт тот, куда пишет ``app.run_logger``: если его переопределили
-    переменной окружения, читать надо оттуда же, иначе сводка снова окажется
-    пустой при существующих прогонах. ``packages/data/run_logs`` — устаревший
-    каталог прежних версий, он оставлен только на чтение.
+    Источник истины — сам логгер: читать надо ровно тот каталог, в который он
+    пишет, включая переопределение переменной окружения. Раньше пути здесь и
+    в логгере разошлись, и сводка всегда выходила пустой при существующих
+    прогонах. ``LEGACY_RUN_LOGS_DIR`` — каталог прежних версий, только на
+    чтение; ``ROOT / "run_logs"`` — выходная папка самого review.
     """
+    from app.run_logger import LEGACY_RUN_LOGS_DIR, RUN_LOGS_DIR
+
     override = os.environ.get("NADZOR_RUN_LOGS_DIR")
-    candidates = [Path(override)] if override else [ROOT / "data" / "run_logs"]
-    candidates.append(ROOT / "packages" / "data" / "run_logs")
+    candidates = [Path(override)] if override else [RUN_LOGS_DIR]
+    candidates.append(LEGACY_RUN_LOGS_DIR)
     candidates.append(ROOT / "run_logs")
     unique: list[Path] = []
     for path in candidates:

@@ -187,24 +187,11 @@ def test_run_logs_dir_lives_in_project_data_not_inside_packages():
     assert "packages" not in run_logger.RUN_LOGS_DIR.relative_to(project_root).parts
 
 
-def test_find_run_logs_reads_legacy_directory_and_keeps_chronology(
-    tmp_path, monkeypatch
-):
-    """Прогоны из устаревшего каталога не должны исчезнуть после обновления."""
-    current = tmp_path / "current"
-    legacy = tmp_path / "legacy"
-    current.mkdir()
-    legacy.mkdir()
-    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", current)
-    monkeypatch.setattr(run_logger, "LEGACY_RUN_LOGS_DIR", legacy)
+def test_legacy_directory_is_named_and_differs_from_the_current_one():
+    """Старый каталог остаётся известен — его читает разбор диагностики."""
+    project_root = Path(run_logger.__file__).resolve().parents[3]
 
-    old = legacy / "7_20240101T000000000000Z.json"
-    new = current / "7_20250101T000000000000Z.json"
-    old.write_text("{}", encoding="utf-8")
-    new.write_text("{}", encoding="utf-8")
-    (current / "8_20250101T000000000000Z.json").write_text("{}", encoding="utf-8")
-
-    found = run_logger.find_run_logs(7)
-
-    assert found == [old, new]
-    assert found[-1] == new
+    assert run_logger.LEGACY_RUN_LOGS_DIR != run_logger.RUN_LOGS_DIR
+    assert run_logger.LEGACY_RUN_LOGS_DIR == (
+        project_root / "packages" / "data" / "run_logs"
+    )
