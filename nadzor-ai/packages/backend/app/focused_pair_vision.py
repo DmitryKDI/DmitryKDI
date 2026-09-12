@@ -1,6 +1,7 @@
 """Generic room-focused fallback for blind drawing comparison."""
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from typing import Sequence
@@ -8,7 +9,8 @@ from typing import Sequence
 import pymupdf
 
 from .anchors import normalize_room_key
-from .vision import render_page_to_png_bytes
+from .llm import LlmConfig, call_llm_json, png_bytes_to_data_url
+from .vision import render_page_to_png_bytes, vision_system_prompt
 from .vision_page_compare import room_label_crops
 
 
@@ -50,7 +52,6 @@ def _fit_rect(width: float, height: float, box: pymupdf.Rect) -> pymupdf.Rect:
 
 
 def make_montage(rows: Sequence[tuple[str, bytes]]) -> bytes:
-    """Combine labelled room crops into one bounded image."""
     if not rows:
         return b""
     width = 900.0
@@ -69,14 +70,7 @@ def make_montage(rows: Sequence[tuple[str, bytes]]) -> bytes:
         doc.close()
 
 
-def grounded_rows(
-    before_path: str,
-    before_page: int,
-    after_path: str,
-    after_page: int,
-    rooms: Sequence[str],
-):
-    """Render the first grounded crop for each room on both sides."""
+def grounded_rows(before_path: str, before_page: int, after_path: str, after_page: int, rooms: Sequence[str]):
     before_rows: list[tuple[str, bytes]] = []
     after_rows: list[tuple[str, bytes]] = []
     usable: list[str] = []
@@ -88,16 +82,97 @@ def grounded_rows(
             missing.append(room)
             continue
         try:
-            before_png = render_page_to_png_bytes(
-                before_path, before_page, max_dim=820, clip_frac=before_crops[0]
-            )
-            after_png = render_page_to_png_bytes(
-                after_path, after_page, max_dim=820, clip_frac=after_crops[0]
-            )
-        except Exception:  # noqa: BLE001
+            before_png = render_page_to_png_bytes(before_path, before_page, max_dim=820, clip_frac=before_crops[0])
+            after_png = render_page_to_png_bytes(after_path, after_page, max_dim=820, clip_frac=after_crops[0])
+        except Exception:
             missing.append(room)
             continue
         before_rows.append((room, before_png))
         after_rows.append((room, after_png))
         usable.append(room)
     return before_rows, after_rows, usable, missing
+
+
+def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
+    before_png = make_montage(before_rows)
+    after_png = make_montage(after_rows)
+    if not before_png or not after_png:
+        return {}
+    room_text = ", ".join(room for room, _ in before_rows)
+    digest = hashlib.sha256(before_png + b"\0" + after_png + room_text.encode("utf-8")).hexdigest()
+    user_text = (
+        "Both images are aligned room montages. The first is PD and the second is RD/ID. "
+        f"Compare only matching labels ROOM {room_text}. Focus on engineering systems and equipment. "
+        "If a crop is only a schedule/table or is not readable, do not report a change for that room. "
+        "In every significant item include a rooms array using only the shown ROOM labels."
+    )
+    result = call_llm_json(
+        config,
+        vision_system_prompt(None),
+        user_text,
+        images=[png_bytes_to_data_url(before_png), png_bytes_to_data_url(after_png)],
+        operation="vision",
+        source_digest=digest,
+        prompt_version="focused-room-pair-v1",
+    )
+    return result if isinstance(result, dict) else {}
+
+
+def compare_shared_rooms_focused(
+    before_path: str,
+    before_page: int,
+    after_path: str,
+    after_page: int,
+    shared_rooms: Sequence[str],
+    config: LlmConfig,
+    *,
+    max_calls: int,
+) -> tuple[list[dict], list[dict], int]:
+    if max_calls <= 0 or not shared_rooms:
+        return [], [], 0
+    ordered = select_rooms(shared_rooms)
+    findings: list[dict] = []
+    diagnostics: list[dict] = []
+    calls_used = 0
+    for start in range(0, len(ordered), FOCUSED_ROOMS_PER_CALL):
+        if calls_used >= max_calls:
+            break
+        requested = ordered[start:start + FOCUSED_ROOMS_PER_CALL]
+        before_rows, after_rows, usable, missing = grounded_rows(
+            before_path, before_page, after_path, after_page, requested
+        )
+        if not usable:
+            diagnostics.append({"status": "focused_no_grounded_crops", "requested_rooms": requested, "missing_rooms": missing})
+            continue
+        calls_used += 1
+        try:
+            result = call_focused(before_rows, after_rows, config)
+        except Exception as exc:
+            diagnostics.append({"status": "focused_vision_error", "requested_rooms": requested, "usable_rooms": usable, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        allowed = set(usable)
+        raw_items = result.get("significant") if isinstance(result, dict) else []
+        accepted: list[dict] = []
+        for item in raw_items if isinstance(raw_items, list) else []:
+            if not isinstance(item, dict) or not str(item.get("change") or "").strip():
+                continue
+            grounded: list[str] = []
+            for raw in item.get("rooms") or []:
+                room = normalize_room_key(raw)
+                if room in allowed and room not in grounded:
+                    grounded.append(room)
+            if not grounded:
+                continue
+            normalized = dict(item)
+            normalized["rooms"] = grounded
+            accepted.append(normalized)
+            findings.append(normalized)
+        diagnostics.append({
+            "status": "focused_significant" if accepted else "focused_no_change",
+            "requested_rooms": requested,
+            "usable_rooms": usable,
+            "missing_rooms": missing,
+            "findings": accepted,
+            "noise_note": str(result.get("noise_note") or ""),
+        })
+    return findings, diagnostics, calls_used
