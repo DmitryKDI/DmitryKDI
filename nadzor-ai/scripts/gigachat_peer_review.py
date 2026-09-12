@@ -1,9 +1,11 @@
 """Two-stage blind peer review by the configured GigaChat model.
 
 The script deliberately keeps benchmark ground truth out of the prompt.  It
-reviews actual runtime diagnostics first, then the generic drawing-routing
-architecture.  Two smaller JSON calls are used because a single oversized
-strict-JSON review is less reliable with GigaChat.
+reviews actual runtime diagnostics first, then the requirement-centric
+comparison architecture (evidence search + whole-page-first semantic compare,
+covering both TEXT PD -> DRAWING RD and DRAWING PD -> DRAWING RD).  Two
+smaller JSON calls are used because a single oversized strict-JSON review is
+less reliable with GigaChat.
 """
 from __future__ import annotations
 
@@ -30,12 +32,14 @@ benchmark ground truth, expected rooms/sheets, known violations или дога�
 правильных findings. Technical failure нельзя трактовать как отсутствие
 различий. Верни только компактный JSON без markdown."""
 
-VISION_SYSTEM = """Ты — независимый technical peer reviewer vision-архитектуры
-НАДЗОР.ИИ и эксперт по тому, как GigaChat-3-Ultra лучше анализировать
-строительные чертежи ПД -> РД/ИД. Архитектура должна быть blind и не зависеть
-от заранее известных помещений. Anchors — только navigation evidence, не
-finding. Не используй benchmark ground truth и не делай legal/severity выводов.
-Верни только компактный JSON без markdown."""
+ARCHITECTURE_SYSTEM = """Ты — независимый technical peer reviewer архитектуры
+сравнения ПД->РД/ИД системы НАДЗОР.ИИ и эксперт по тому, как GigaChat-3-Ultra
+лучше сравнивает инженерные решения — по тексту требования и по чертежу.
+Архитектура должна быть blind и не зависеть от заранее известных помещений.
+Anchors (room/axis/equipment/geometry) — только navigation evidence для
+поиска и приоритизации, не finding и не условие запуска сравнения. Не
+используй benchmark ground truth и не делай legal/severity выводов. Верни
+только компактный JSON без markdown."""
 
 RUNTIME_PROMPT = """Проведи runtime review по ACTUAL_RUNTIME_SUMMARY ниже.
 
@@ -62,48 +66,73 @@ RUNTIME_PROMPT = """Проведи runtime review по ACTUAL_RUNTIME_SUMMARY н
 }
 """
 
-VISION_PROMPT = """Проведи review universal high-recall routing.
+ARCHITECTURE_PROMPT = """Проведи review requirement-centric архитектуры
+сравнения ПД->РД/ИД. Цель разворота: единица сравнения — инженерное
+требование/design intent ПД (может быть извлечено из ТЕКСТА ИЛИ из ЧЕРТЕЖА
+ПД), а не пара листов и не anchor. Дальше требование ищет evidence в РД/ИД
+(тоже текст или чертёж) и проверяется одним universal semantic contract —
+и для TEXT PD -> DRAWING RD, и для DRAWING PD -> DRAWING RD.
 
-Текущее направление:
-- ROOM — один из сильных anchors, но не обязательный;
-- fallback routing: room -> axis/system/equipment -> geometry -> PASS0 ->
-  whole-page semantic compare;
-- ROOM и generic region PASS1 получают 4 images: PD general/local + RD
-  general/local;
-- PASS1 перечисляет engineering entities/connections и только затем candidates;
-- PASS2 confirmed/rejected/unclear;
-- rejected не должен удалять candidate при слабой comparability;
-- raster и pair score только routing/prioritization signals;
-- generic geometry fingerprint используется лишь для proposal/pre-filter;
-- PASS0 разрешено предлагать regions, но запрещено создавать findings.
+Текущее состояние кода (проверено чтением, не предположение):
+- система уже разделена на graphical-pair pipeline (control_pair_candidates.py
+  /control_pair_runtime.py: room/axis/equipment/geometry anchors ранжируют И
+  отсеивают candidate pairs порогом anchor-overlap) и отдельный text-requirement
+  pipeline (compliance.py: token match -> LLM text verify -> zрение ТОЛЬКО для
+  требований с номером помещения, максимум 3 страницы);
+- в graphical pipeline whole-page semantic compare вызывается НЕ первым, а
+  ПОСЛЕДНИМ fallback'ом — только если room-focused и non-room-region проходы
+  уже не нашли differences, и под отдельным меньшим бюджетом;
+- существует третий, независимый triangulated pipeline, который дублирует
+  вызов того же graphical pipeline ВНУТРИ себя плюс отдельный token-match
+  requirement path, плюс triangulate() с min_sources=2 (подтверждённая находка
+  требует >=2 независимых источников, иначе остаётся кандидатом на отдельную
+  эскалацию, не подтверждённым finding).
 
-Ответь с точки зрения модели, которая реально будет смотреть чертежи:
-1. какой hybrid anchor order лучше для чертежей без помещений;
-2. как локализовать axis cell/range, а не только подпись оси;
-3. какой context нужен equipment/system anchor;
-4. какие topology invariants добавить к geometry descriptor;
-5. должен ли PASS0 идти до или после deterministic geometry proposals;
-6. оптимальны ли 4 изображения и 2400-2600px long side;
-7. какой universal comparison_region contract нужен без room_id;
-8. какой comparability gate нужен PASS1/PASS2;
-9. как сравнивать schematic <-> plan;
-10. как делить discovery/verification budget между page pairs без starvation;
-11. какие поля region diagnostics логировать;
-12. что сейчас было бы overengineering.
+Вопросы (отвечай с точки зрения модели, которая реально будет и извлекать
+требования, и читать чертежи):
+1. лучше ли для тебя, чтобы whole-page semantic compare запускался ПЕРВЫМ для
+   каждой уже отобранной пары, а room/axis/equipment zoom — ПОСЛЕ, по твоим же
+   candidate_regions, а не наоборот;
+2. насколько надёжно ты сам можешь предлагать candidate_regions (bbox или
+   coarse-область) по одной паре whole-page изображений без anchor-подсказки;
+3. сколько regions на пару разумно предлагать за один вызов;
+4. нужны ли 4 отдельных изображения на local zoom (PD general/local + RD
+   general/local) и для DRAWING->DRAWING, и для TEXT-requirement->DRAWING (во
+   втором случае PD-изображения может не быть вовсе — текст требования вместо
+   него);
+5. какой единый JSON-контракт для engineering diff тебе удобнее — включая поля
+   requirement_status (appears_compliant|candidate_difference|unclear),
+   candidate_regions, comparability, uncertainties;
+6. как тебе лучше сравнивать schematic <-> plan (разный жанр листа, разный
+   масштаб) в рамках ОДНОГО контракта, без отдельной ветки под эту пару жанров;
+7. какие условия достаточны, чтобы safe признать "требование выполнено" —
+   и какие обязательно исключают этот вывод (partial coverage, provider error,
+   budget exhaustion);
+8. как не пропустить unknown/неожиданное отличие, если заранее не известно,
+   какая это система и связано ли оно с room/axis/equipment вообще;
+9. какой top-K кандидатных листов РД на одно требование/пару разумен (high
+   confidence 1-2, medium 3, low-but-discipline-match до 5) — согласен ли ты
+   с этой градацией;
+10. какие из существующих deterministic anchors (room/axis/equipment/geometry)
+    реально полезны тебе как routing/crop-подсказка, а какие избыточны и
+    можно понизить до чистой observability-метаданных;
+11. нужен ли отдельный discovery-бюджет (whole-page по многим парам) и
+    verification-бюджет (zoom по подозрительным regions) с round-robin между
+    парами, вместо одного общего счётчика вызовов на весь прогон;
+12. что из этого было бы overengineering прямо сейчас.
 
 Верни:
 {
-  "anchor_architecture": {},
-  "axis_policy": {},
-  "equipment_system_policy": {},
-  "geometry_policy": {},
-  "pass0_policy": {},
-  "comparison_region": {},
-  "image_policy": {},
-  "comparability_gate": {},
+  "whole_page_first": {"recommended": true, "reason": "..."},
+  "model_driven_regions": {"reliability": "...", "regions_per_call": 0},
+  "image_policy": {"text_requirement_to_drawing": "...", "drawing_to_drawing": "..."},
+  "engineering_diff_contract": {},
   "schematic_vs_plan": {},
-  "fair_scheduler": {},
-  "observability": [],
+  "safe_compliant_conditions": {"allowed_when": [], "never_allowed_when": []},
+  "unknown_violation_coverage": [],
+  "top_k_pairing": {"high": 0, "medium": 0, "low_discipline_match": 0},
+  "anchor_usefulness": {"room": "...", "axis": "...", "equipment": "...", "geometry": "..."},
+  "fair_scheduler": {"discovery_budget": "...", "verification_budget": "..."},
   "avoid_overengineering": [],
   "next_changes": []
 }
@@ -362,9 +391,9 @@ def main() -> int:
         runtime_review = _call_with_retry(
             config, RUNTIME_SYSTEM, runtime_user, "gigachat-peer-runtime-v7"
         )
-        print("Stage 2/2: universal drawing peer review...", file=sys.stderr)
-        vision_review = _call_with_retry(
-            config, VISION_SYSTEM, VISION_PROMPT, "gigachat-peer-vision-v7"
+        print("Stage 2/2: requirement-centric architecture peer review...", file=sys.stderr)
+        architecture_review = _call_with_retry(
+            config, ARCHITECTURE_SYSTEM, ARCHITECTURE_PROMPT, "gigachat-peer-architecture-v8"
         )
     except Exception as exc:  # noqa: BLE001
         print(f"GigaChat peer review failed: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -374,10 +403,10 @@ def main() -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model": config.resolved_model(),
         "blind": True,
-        "review_topic": "runtime_and_universal_non_room_vision",
+        "review_topic": "runtime_and_requirement_centric_architecture",
         "runtime_summary": runtime_summary,
         "runtime_review": runtime_review,
-        "vision_review": vision_review,
+        "architecture_review": architecture_review,
     }
     out_dir = ROOT / "run_logs"
     out_dir.mkdir(parents=True, exist_ok=True)
