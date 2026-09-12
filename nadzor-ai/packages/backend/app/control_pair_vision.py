@@ -5,7 +5,8 @@ This module deliberately does not know benchmark answers.  It combines:
 - ordinary one-to-one page matching;
 - room-anchor expansion for one-to-many PD schematic -> RD plan coverage;
 - deterministic raster evidence;
-- semantic vision that compares engineering scope, not page decoration.
+- semantic vision that compares engineering scope, not page decoration;
+- room-focused montage vision when a whole sheet is too dense to read.
 
 A negative LLM answer never deletes deterministic evidence: raster-only pairs
 remain visible candidates.  Semantic vision can promote a pair and grounded
@@ -20,6 +21,7 @@ from typing import Sequence
 
 from .anchors import normalize_room_key
 from .entity_control import run_room_entity_controls
+from .focused_pair_vision import MAX_FOCUSED_ROOM_CALLS, compare_shared_rooms_focused
 from .llm import LlmConfig, call_llm_json
 from .matching import DocumentInput, match_page_pairs
 from .subsystem import subsystem_lean
@@ -187,8 +189,6 @@ def _candidate_pairs(
                         continue
 
                     overlap = len(shared) / max(1, min(len(before_rooms), len(after_rooms)))
-                    # One common room on very large unrelated plans is weak;
-                    # several rooms or substantial subset coverage is useful.
                     if len(shared) < 2 and overlap < 0.20:
                         continue
 
@@ -297,6 +297,7 @@ def run_targeted_pair_vision(
 
     pairs = _candidate_pairs(before_docs, after_docs)
     llm_used = 0
+    focused_calls_used = 0
 
     for pair in pairs:
         if llm_used >= max_pairs:
@@ -344,8 +345,6 @@ def run_targeted_pair_vision(
             diagnostics.append({**base_diag, "status": "visually_same"})
             continue
 
-        # Preserve deterministic evidence even if semantic vision is unable to
-        # explain it.  This is a candidate, not a confirmed violation.
         signals.append(Signal(
             source="raster_diff",
             domain="page_pair",
@@ -385,14 +384,37 @@ def run_targeted_pair_vision(
             item for item in significant
             if isinstance(item, dict) and str(item.get("change") or "").strip()
         ]
+        focused_for_pair = False
         if not items:
-            diagnostics.append({
-                **base_diag,
-                "status": "raster_only",
-                "semantic_comparable": bool(result.get("comparable", True)),
-                "noise_note": str(result.get("noise_note") or ""),
-            })
-            continue
+            remaining_focus = max(0, MAX_FOCUSED_ROOM_CALLS - focused_calls_used)
+            focused_items, focused_diags, focused_used = compare_shared_rooms_focused(
+                before_path,
+                pair.before_page,
+                after_path,
+                pair.after_page,
+                pair.shared_rooms,
+                config,
+                max_calls=remaining_focus,
+            )
+            focused_calls_used += focused_used
+            for focused_diag in focused_diags:
+                diagnostics.append({
+                    **base_diag,
+                    "control_type": "room_focus",
+                    **focused_diag,
+                })
+            if focused_items:
+                items = focused_items
+                focused_for_pair = True
+            else:
+                diagnostics.append({
+                    **base_diag,
+                    "status": "raster_only",
+                    "semantic_comparable": bool(result.get("comparable", True)),
+                    "noise_note": str(result.get("noise_note") or ""),
+                    "focused_calls_total": focused_calls_used,
+                })
+                continue
 
         changes = [str(item.get("change") or "").strip() for item in items]
         detail = " | ".join(changes[:6])
@@ -415,11 +437,12 @@ def run_targeted_pair_vision(
 
         diagnostics.append({
             **base_diag,
-            "status": "significant",
+            "status": "significant_focused" if focused_for_pair else "significant",
             "semantic_comparable": bool(result.get("comparable", True)),
             "significant_total": len(items),
             "rooms_mentioned": sorted(mentioned),
             "changes": changes[:6],
+            "focused_calls_total": focused_calls_used,
         })
 
     if len(pairs) > llm_used:
@@ -429,6 +452,8 @@ def run_targeted_pair_vision(
             "candidate_pairs_total": len(pairs),
             "llm_pairs_used": llm_used,
             "max_pairs": max_pairs,
+            "focused_calls_used": focused_calls_used,
+            "max_focused_calls": MAX_FOCUSED_ROOM_CALLS,
         })
 
     return signals, diagnostics
