@@ -104,7 +104,7 @@ def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
         "Both images are aligned room montages. The first is PD and the second is RD/ID. "
         f"Compare only matching labels ROOM {room_text}. Focus on engineering systems and equipment. "
         "If a crop is only a schedule/table or is not readable, do not report a change for that room. "
-        "In every significant item include a rooms array using only the shown ROOM labels."
+        "In every significant item, mention the matching ROOM label in the change text."
     )
     result = call_llm_json(
         config,
@@ -113,7 +113,7 @@ def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
         images=[png_bytes_to_data_url(before_png), png_bytes_to_data_url(after_png)],
         operation="vision",
         source_digest=digest,
-        prompt_version="focused-room-pair-v1",
+        prompt_version="focused-room-pair-v2",
     )
     return result if isinstance(result, dict) else {}
 
@@ -150,21 +150,18 @@ def compare_shared_rooms_focused(
         except Exception as exc:
             diagnostics.append({"status": "focused_vision_error", "requested_rooms": requested, "usable_rooms": usable, "error": f"{type(exc).__name__}: {exc}"})
             continue
-        allowed = set(usable)
         raw_items = result.get("significant") if isinstance(result, dict) else []
         accepted: list[dict] = []
         for item in raw_items if isinstance(raw_items, list) else []:
             if not isinstance(item, dict) or not str(item.get("change") or "").strip():
                 continue
-            grounded: list[str] = []
+            normalized = dict(item)
+            valid_rooms: list[str] = []
             for raw in item.get("rooms") or []:
                 room = normalize_room_key(raw)
-                if room in allowed and room not in grounded:
-                    grounded.append(room)
-            if not grounded:
-                continue
-            normalized = dict(item)
-            normalized["rooms"] = grounded
+                if room in usable and room not in valid_rooms:
+                    valid_rooms.append(room)
+            normalized["rooms"] = valid_rooms
             accepted.append(normalized)
             findings.append(normalized)
         diagnostics.append({
