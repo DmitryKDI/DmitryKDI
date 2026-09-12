@@ -182,9 +182,11 @@ def test_run_logs_dir_lives_in_project_data_not_inside_packages():
     """
     project_root = Path(run_logger.__file__).resolve().parents[3]
 
-    assert run_logger.RUN_LOGS_DIR == project_root / "data" / "run_logs"
-    assert run_logger.RUN_LOGS_DIR.parent == project_root / "data"
-    assert "packages" not in run_logger.RUN_LOGS_DIR.relative_to(project_root).parts
+    target = run_logger.default_run_logs_dir()
+
+    assert target == project_root / "data" / "run_logs"
+    assert target.parent == project_root / "data"
+    assert "packages" not in target.relative_to(project_root).parts
 
 
 def test_legacy_directory_is_named_and_differs_from_the_current_one():

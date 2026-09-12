@@ -24,8 +24,18 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 # Раньше здесь было ``parents[2]``, то есть ``packages/data/run_logs``: писали
 # в один каталог, читали из другого, и сводка по прогонам всегда выходила
 # пустой. Молчание тогда выглядело как «прогонов не было» (Г.10).
+def default_run_logs_dir() -> Path:
+    """Каталог логов по умолчанию — рядом с остальными хранилищами проекта.
+
+    Отдельная функция нужна, чтобы проверка пути не зависела от подмены
+    ``RUN_LOGS_DIR`` в тестах: подменённое значение ничего не сказало бы о
+    том, куда логи пишутся на самом деле.
+    """
+    return _PROJECT_ROOT / "data" / "run_logs"
+
+
 RUN_LOGS_DIR = Path(os.environ.get(
-    "NADZOR_RUN_LOGS_DIR", _PROJECT_ROOT / "data" / "run_logs"))
+    "NADZOR_RUN_LOGS_DIR", default_run_logs_dir()))
 TASK_LOGS_DIR = RUN_LOGS_DIR / "tasks"
 
 # Устаревший каталог прежних версий. Запись туда больше не идёт; разбор
