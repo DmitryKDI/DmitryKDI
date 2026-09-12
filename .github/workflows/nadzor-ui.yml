@@ -50,6 +50,7 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_anchors.py'
       - 'nadzor-ai/packages/backend/tests/test_vision_grounding.py'
       - 'nadzor-ai/packages/backend/tests/test_blind_runtime.py'
+      - 'nadzor-ai/scripts/gigachat_peer_review.py'
       - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.github/workflows/nadzor-ui.yml'
@@ -113,6 +114,7 @@ jobs:
           python -m py_compile app/visual_prefilter.py
           python -m py_compile app/vision_page_compare.py
           python -m py_compile app/triangulated_pipeline.py
+          python -m py_compile ../../scripts/gigachat_peer_review.py
       - name: Run runtime regression tests
         run: >-
           pytest -q
