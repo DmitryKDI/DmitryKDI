@@ -358,6 +358,7 @@ def run_targeted_pair_vision(
         llm_used += 1
         clip_raw = evidence.get("hot_zone") if evidence.get("local_cluster") else None
         clip = tuple(clip_raw) if clip_raw else None
+        semantic_error = ""
         try:
             result = _semantic_scope_compare(
                 before_path,
@@ -371,12 +372,14 @@ def run_targeted_pair_vision(
                 clip=clip,
             )
         except Exception as exc:  # noqa: BLE001
+            semantic_error = f"{type(exc).__name__}: {exc}"
+            result = {}
             diagnostics.append({
                 **base_diag,
-                "status": "raster_only_vision_error",
-                "error": f"{type(exc).__name__}: {exc}",
+                "control_type": "whole_page_vision",
+                "status": "vision_error_fallback_started",
+                "error": semantic_error,
             })
-            continue
 
         significant = result.get("significant") if isinstance(result, dict) else None
         significant = significant if isinstance(significant, list) else []
@@ -412,6 +415,7 @@ def run_targeted_pair_vision(
                     "status": "raster_only",
                     "semantic_comparable": bool(result.get("comparable", True)),
                     "noise_note": str(result.get("noise_note") or ""),
+                    "semantic_error": semantic_error,
                     "focused_calls_total": focused_calls_used,
                 })
                 continue
@@ -442,6 +446,7 @@ def run_targeted_pair_vision(
             "significant_total": len(items),
             "rooms_mentioned": sorted(mentioned),
             "changes": changes[:6],
+            "semantic_error": semantic_error,
             "focused_calls_total": focused_calls_used,
         })
 
