@@ -18,7 +18,7 @@
 и не путь: тот же том, загруженный второй раз или под другим именем, уже
 разобран. Вместе с отпечатком в ключ входит версия разборщика: меняется
 код извлечения — прежние записи перестают подходить сами, без ручной
-чистки и без риска отдать разбор по старым правилам.
+чистки и без риска отдать разбор по старым правилам (Г.10).
 
 Отдельная база, а не общая с прогонами: разбор переживает и удаление
 оригинала по сроку хранения, и пересборку схемы основной базы (Г.113).
@@ -29,6 +29,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from sqlalchemy import DateTime, Integer, String, Text, create_engine, func, select
@@ -68,6 +69,12 @@ class StoredFacts(Base):
 
 _engine = None
 _Session = None
+# Background PD/compliance/analysis/triangulated tasks may initialize the facts
+# store concurrently.  Without a lock, one thread can publish `_engine` before
+# `_Session` is assigned; a second thread then skips initialization and calls
+# `_Session()` while it is still None, yielding the exact opaque failure
+# "'NoneType' object is not callable".  Keep initialization atomic.
+_SESSION_INIT_LOCK = threading.RLock()
 
 
 def _session() -> Session:
@@ -75,16 +82,26 @@ def _session() -> Session:
 
     Тест подменяет FACTS_STORE_DB на временный файл, и вычисление пути при
     импорте намертво связало бы модуль с базой машины разработчика.
+    Инициализация engine+sessionmaker атомарна: несколько фоновых прогонов
+    могут впервые обратиться к хранилищу одновременно.
     """
     global _engine, _Session
     path = Path(os.environ.get("FACTS_STORE_DB", str(STORE_PATH)))
     url = f"sqlite:///{path}"
-    if _engine is None or str(_engine.url) != url:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(url, connect_args={"check_same_thread": False})
-        Base.metadata.create_all(bind=_engine)
-        _Session = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
-    return _Session()
+    with _SESSION_INIT_LOCK:
+        if _engine is None or _Session is None or str(_engine.url) != url:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            engine = create_engine(url, connect_args={"check_same_thread": False})
+            Base.metadata.create_all(bind=engine)
+            session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            # Publish both objects only after both are ready.  The lock also
+            # protects replacement when FACTS_STORE_DB changes in tests.
+            _engine = engine
+            _Session = session_factory
+        session_factory = _Session
+    if session_factory is None:  # defensive invariant; should be unreachable
+        raise RuntimeError("facts store session factory is not initialized")
+    return session_factory()
 
 
 def digest_of_file(path: str | Path) -> str:
