@@ -59,8 +59,44 @@ def test_same_without_two_observations_is_not_accepted_as_negative_evidence():
     assert checked[0]["status"] == "unclear"
 
 
+def test_architectural_room_name_change_is_not_engineering_evidence():
+    checked, missing = focused.normalize_checked_rooms(
+        {
+            "checked_rooms": [{
+                "room": "140",
+                "status": "changed",
+                "pd_observation": "учебное помещение",
+                "rd_observation": "медицинский пункт",
+                "change": "Добавлен медицинский пункт",
+            }]
+        },
+        ["140"],
+    )
+    assert missing == []
+    assert checked[0]["status"] == "unclear"
+    assert checked[0]["change"] == ""
+
+
+def test_engineering_change_survives_even_if_room_name_also_changed():
+    checked, _ = focused.normalize_checked_rooms(
+        {
+            "checked_rooms": [{
+                "room": "140",
+                "status": "changed",
+                "pd_observation": "в ПД показан вытяжной воздуховод",
+                "rd_observation": "в РД воздуховод отсутствует; помещение подписано иначе",
+                "change": "Добавлен медицинский пункт, но вытяжная вентиляция исчезла",
+            }]
+        },
+        ["140"],
+    )
+    assert checked[0]["status"] == "changed"
+    assert "вентиляция" in checked[0]["change"]
+
+
 def test_compare_focused_turns_only_changed_rooms_into_findings(monkeypatch):
     monkeypatch.setattr(focused, "FOCUSED_ROOMS_PER_CALL", 4)
+    monkeypatch.setattr(focused, "MAX_FOCUSED_CALLS_PER_PAIR", 2)
     monkeypatch.setattr(
         focused,
         "grounded_rows",
@@ -79,15 +115,15 @@ def test_compare_focused_turns_only_changed_rooms_into_findings(monkeypatch):
                 {
                     "room": "101",
                     "status": "changed",
-                    "pd_observation": "в ПД показан элемент",
-                    "rd_observation": "в РД элемент отсутствует",
-                    "change": "элемент исчез в РД",
+                    "pd_observation": "в ПД показано оборудование",
+                    "rd_observation": "в РД оборудование отсутствует",
+                    "change": "оборудование исчезло в РД",
                 },
                 {
                     "room": "102",
                     "status": "same",
-                    "pd_observation": "схема читается",
-                    "rd_observation": "схема читается",
+                    "pd_observation": "воздуховод читается",
+                    "rd_observation": "воздуховод читается",
                     "change": "",
                 },
             ],
@@ -101,11 +137,11 @@ def test_compare_focused_turns_only_changed_rooms_into_findings(monkeypatch):
     )
     assert calls == 1
     assert findings == [{
-        "label": "Визуальное различие",
-        "change": "элемент исчез в РД",
+        "label": "Инженерное визуальное различие",
+        "change": "оборудование исчезло в РД",
         "rooms": ["101"],
-        "pd_observation": "в ПД показан элемент",
-        "rd_observation": "в РД элемент отсутствует",
+        "pd_observation": "в ПД показано оборудование",
+        "rd_observation": "в РД оборудование отсутствует",
     }]
     assert diagnostics[0]["status"] == "focused_significant"
     assert diagnostics[0]["checked_rooms"][1]["status"] == "same"
@@ -126,3 +162,44 @@ def test_empty_model_answer_is_unclear_not_no_change(monkeypatch):
     assert calls == 1
     assert diagnostics[0]["status"] == "focused_unclear"
     assert diagnostics[0]["omitted_by_model"] == ["101"]
+
+
+def test_dense_pair_cannot_consume_global_budget(monkeypatch):
+    monkeypatch.setattr(focused, "FOCUSED_ROOMS_PER_CALL", 2)
+    monkeypatch.setattr(focused, "MAX_FOCUSED_CALLS_PER_PAIR", 2)
+    monkeypatch.setattr(focused, "MAX_FOCUSED_ROOMS_PER_PAIR", 20)
+
+    def fake_grounded(_bp, _bpage, _ap, _apage, rooms):
+        return (
+            [(room, b"pd") for room in rooms],
+            [(room, b"rd") for room in rooms],
+            list(rooms),
+            [],
+        )
+
+    monkeypatch.setattr(focused, "grounded_rows", fake_grounded)
+    monkeypatch.setattr(
+        focused,
+        "call_focused",
+        lambda before, after, config: {
+            "checked_rooms": [
+                {
+                    "room": room,
+                    "status": "same",
+                    "pd_observation": "виден воздуховод",
+                    "rd_observation": "виден воздуховод",
+                    "change": "",
+                }
+                for room, _ in before
+            ]
+        },
+    )
+
+    _, diagnostics, calls = focused.compare_shared_rooms_focused(
+        "pd.pdf", 1, "rd.pdf", 1,
+        [str(i) for i in range(1, 11)],
+        LlmConfig(provider="anthropic", api_key="fake"),
+        max_calls=10,
+    )
+    assert calls == 2
+    assert any(item["status"] == "focused_pair_budget" for item in diagnostics)
