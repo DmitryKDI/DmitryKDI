@@ -1,4 +1,9 @@
-"""Fuse independent control signals into inspector control points."""
+"""Fuse independent control signals into inspector control points.
+
+Triangulation enriches confidence but is not a hard gate for semantic Vision.
+A direct semantic observation from Vision is already a valid control point; extra
+registry/raster/routing sources only add corroboration.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -10,6 +15,11 @@ from .anchors import normalize_room_key, normalize_room_references
 CONFIRMED = "confirmed"
 CANDIDATE = "candidate"
 DEFAULT_MIN_SOURCES = 2
+
+# These sources come from semantic inspection of the actual engineering content.
+# They must not be downgraded merely because a cheap independent heuristic did
+# not emit a second signal for the same key.
+_DIRECT_SEMANTIC_SOURCES = {"vision", "vision_pair"}
 
 _ROOM_SIGNAL_TYPES = {"missing_in_rd", "area_changed"}
 _EQUIP_SIGNAL_TYPES = {"missing_in_rd", "qty_changed"}
@@ -47,6 +57,12 @@ def _canonical_signal(signal: Signal) -> Signal | None:
 
 
 def triangulate(signals: Sequence[Signal], min_sources: int = DEFAULT_MIN_SOURCES) -> list[Confirmation]:
+    """Group evidence without requiring two sources for semantic Vision.
+
+    Deterministic/registry-only observations still require `min_sources` to be
+    called confirmed. A semantic Vision observation is confirmed by itself;
+    additional sources remain visible as confidence enrichment.
+    """
     grouped: dict[tuple[str, str], list[Signal]] = defaultdict(list)
     for raw in signals:
         signal = _canonical_signal(raw)
@@ -57,7 +73,8 @@ def triangulate(signals: Sequence[Signal], min_sources: int = DEFAULT_MIN_SOURCE
     for (domain, key), group in grouped.items():
         sources = tuple(sorted({signal.source for signal in group}))
         details = tuple(dict.fromkeys(signal.detail for signal in group if signal.detail))
-        status = CONFIRMED if len(sources) >= min_sources else CANDIDATE
+        has_direct_semantic = any(source in _DIRECT_SEMANTIC_SOURCES for source in sources)
+        status = CONFIRMED if has_direct_semantic or len(sources) >= min_sources else CANDIDATE
         out.append(Confirmation(domain, key, status, sources, details))
     return sorted(out, key=lambda item: (item.domain, item.key))
 
