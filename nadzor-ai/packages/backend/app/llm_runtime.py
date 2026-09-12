@@ -62,11 +62,17 @@ class Metrics:
             "requests", "retries", "rate_limits", "errors", "responses",
             "image_uploads", "image_cache_hits", "result_cache_hits",
             "persistent_cache_hits", "text_characters", "text_batches",
-            "invalid_results",
+            "invalid_results", "provider_queue_events", "provider_slot_acquired",
+            "provider_queue_timeouts",
         ):
             data.setdefault(name, 0)
+        data.setdefault("provider_queue_wait_seconds", 0.0)
         data["mean_response_seconds"] = (
             data.get("response_seconds", 0) / data["responses"] if data["responses"] else None
+        )
+        data["mean_provider_queue_wait_seconds"] = (
+            data.get("provider_queue_wait_seconds", 0) / data["provider_queue_events"]
+            if data["provider_queue_events"] else 0.0
         )
         data["mean_text_batch_characters"] = (
             data["text_characters"] / data["text_batches"] if data["text_batches"] else None
@@ -99,7 +105,13 @@ def measure_run(label: str = ""):
 
 
 class AdaptiveLimiter:
-    """Единый лимит GigaChat с осторожным восстановлением после 429."""
+    """Единый лимит GigaChat с осторожным восстановлением после 429.
+
+    Лимитер не решает семантический приоритет задач, но является единой точкой
+    сериализации для провайдера и явно измеряет ожидание слота. Это позволяет
+    отличить "модель ещё ничего не обработала" от "задача стоит в provider
+    queue", не меняя контракт вызовов LLM.
+    """
 
     def __init__(self, limit: int):
         self.max_limit = max(1, limit)
@@ -128,13 +140,24 @@ class AdaptiveLimiter:
 
     @contextmanager
     def slot(self):
+        wait_started = time.monotonic()
+        queued = False
         with self.condition:
             while self.active >= self.limit or self.not_before > time.monotonic():
+                if not queued:
+                    queued = True
+                    record("provider_queue_events")
                 wait_for = self.not_before - time.monotonic()
                 if wait_for > DEFAULT_WAIT_BUDGET:
+                    record("provider_queue_timeouts")
                     raise RuntimeError("Провайдер требует паузу; проверка пока не выполнена")
                 self.condition.wait(timeout=wait_for if wait_for > 0 else None)
+
+            if queued:
+                record("provider_queue_wait_seconds", max(0.0, time.monotonic() - wait_started))
             self.active += 1
+            record("provider_slot_acquired")
+
         completed = False
         try:
             yield
