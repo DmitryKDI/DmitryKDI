@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from app import run_logger
 
 
-def test_save_task_snapshot_writes_latest_typed_log(tmp_path, monkeypatch):
+def test_save_task_snapshot_writes_immutable_log_and_latest_mirror(tmp_path, monkeypatch):
     monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
     monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
 
@@ -22,47 +22,64 @@ def test_save_task_snapshot_writes_latest_typed_log(tmp_path, monkeypatch):
     )
 
     assert path.parent == tmp_path / "tasks" / "analysis"
-    assert path.name == "latest.json"
+    assert path.name.startswith("17_")
+    assert path.name.endswith(".json")
+    latest = path.parent / "latest.json"
+    assert latest.exists()
+
     payload = json.loads(path.read_text(encoding="utf-8"))
+    latest_payload = json.loads(latest.read_text(encoding="utf-8"))
+    assert payload == latest_payload
     assert payload["run_type"] == "analysis"
     assert payload["run_id"] == 17
     assert payload["status"] == "done"
+    assert payload["technical_status"] == "completed"
+    assert payload["execution_state"] == "completed"
+    assert payload["execution_id"] == "analysis:17"
     assert payload["documents_before"] == ["pd.pdf"]
     assert payload["documents_after"] == ["rd.pdf"]
     assert payload["details"]["pairs_total"] == 5
     assert payload["metrics"]["calls"] == 5
 
 
-def test_task_log_overwrites_previous_run_of_same_type(tmp_path, monkeypatch):
+def test_task_log_preserves_previous_run_and_moves_latest(tmp_path, monkeypatch):
     monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
     monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
 
     first = run_logger.save_task_snapshot(run_type="analysis", run_id=1, status="done")
     second = run_logger.save_task_snapshot(run_type="analysis", run_id=2, status="error")
 
-    assert first == second
-    files = list((tmp_path / "tasks" / "analysis").glob("*.json"))
-    assert files == [second]
-    payload = json.loads(second.read_text(encoding="utf-8"))
+    assert first != second
+    assert first.exists()
+    assert second.exists()
+    folder = tmp_path / "tasks" / "analysis"
+    latest = folder / "latest.json"
+    files = sorted(folder.glob("*.json"))
+    assert len(files) == 3
+    payload = json.loads(latest.read_text(encoding="utf-8"))
     assert payload["run_id"] == 2
     assert payload["status"] == "error"
+    assert payload["technical_status"] == "failed"
 
 
 def test_task_log_paths_do_not_collide_between_run_types(tmp_path, monkeypatch):
     monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
     when = datetime(2026, 9, 11, 18, 0, tzinfo=timezone.utc)
 
-    analysis = run_logger._task_log_path("analysis", 1, when)
-    triangulated = run_logger._task_log_path("triangulated", 1, when)
+    analysis, analysis_latest = run_logger._task_log_paths("analysis", 1, when)
+    triangulated, triangulated_latest = run_logger._task_log_paths("triangulated", 1, when)
 
     assert analysis != triangulated
     assert analysis.parent.name == "analysis"
     assert triangulated.parent.name == "triangulated"
-    assert analysis.name == "latest.json"
-    assert triangulated.name == "latest.json"
+    assert analysis.name.startswith("1_")
+    assert triangulated.name.startswith("1_")
+    assert analysis_latest.name == "latest.json"
+    assert triangulated_latest.name == "latest.json"
+    assert analysis_latest != triangulated_latest
 
 
-def test_stage_log_replaces_only_same_run_type(tmp_path, monkeypatch):
+def test_stage_logs_preserve_history_across_same_run_type(tmp_path, monkeypatch):
     monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
     monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", tmp_path / "tasks")
 
@@ -76,9 +93,6 @@ def test_stage_log_replaces_only_same_run_type(tmp_path, monkeypatch):
         documents_after=[],
         metrics={},
     )
-    # У разных типов прогонов независимые пространства run_id. Используем
-    # разные id, чтобы этот тест проверял именно очистку по run_type, а не
-    # случайную коллизию имени файла с точностью timestamp до секунды.
     compliance = run_logger.save(
         run_id=77,
         run_type="compliance",
@@ -100,14 +114,22 @@ def test_stage_log_replaces_only_same_run_type(tmp_path, monkeypatch):
         metrics={},
     )
 
-    assert not first_pd.exists()
+    assert first_pd.exists()
     assert compliance.exists()
     assert second_pd.exists()
-    payloads = [json.loads(path.read_text(encoding="utf-8")) for path in tmp_path.glob("*.json")]
-    assert sorted(payload["run_type"] for payload in payloads) == ["compliance", "pd"]
-    pd_payload = next(payload for payload in payloads if payload["run_type"] == "pd")
-    assert pd_payload["run_id"] == 2
-    assert pd_payload["documents_before"] == ["pd-v2.pdf"]
+    payloads = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in tmp_path.glob("*.json")
+    ]
+    assert sorted(payload["run_type"] for payload in payloads) == [
+        "compliance",
+        "pd",
+        "pd",
+    ]
+    pd_ids = sorted(
+        payload["run_id"] for payload in payloads if payload["run_type"] == "pd"
+    )
+    assert pd_ids == [1, 2]
 
 
 def test_compact_triangulated_result_keeps_quality_diagnostics_only():
@@ -133,11 +155,11 @@ def test_compact_triangulated_result_keeps_quality_diagnostics_only():
         "requirements": {"coded": {"total": 2}},
         "triangulation": {
             "signals_count": 8,
-            "confirmed": [{"key": "267"}],
-            "candidates": [{"key": "012"}, {"key": "140"}],
+            "confirmed": [{"key": "A"}],
+            "candidates": [{"key": "B"}, {"key": "C"}],
         },
-        "verdicts": [{"key": "267"}],
-        "escalation_tickets": [{"key": "012"}],
+        "verdicts": [{"key": "A"}],
+        "escalation_tickets": [{"key": "B"}],
     })
 
     assert compact["rooms"]["findings_total"] == 1
