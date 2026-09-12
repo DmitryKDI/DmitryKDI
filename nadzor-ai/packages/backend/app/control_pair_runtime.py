@@ -9,6 +9,7 @@ from .anchors import normalize_room_key
 from .control_pair_candidates import candidate_pairs, page_text
 from .entity_control import run_room_entity_controls
 from .focused_pair_vision import MAX_FOCUSED_ROOM_CALLS, compare_shared_rooms_focused
+from .generic_region_vision import MAX_GENERIC_REGION_CALLS, compare_non_room_regions
 from .llm import LlmConfig, call_llm_json
 from .matching import DocumentInput
 from .triangulation import Signal
@@ -80,7 +81,7 @@ def run_targeted_pair_vision(before_docs: Sequence[DocumentInput], after_docs: S
 
     all_pairs = candidate_pairs(before_docs, after_docs)
     pairs = all_pairs[:MAX_GRAPHICAL_CANDIDATE_PAIRS]
-    focused_used = whole_used = raster_significant = 0
+    focused_used = generic_used = whole_used = raster_significant = 0
 
     for pair in pairs:
         before_path, after_path = before_paths[pair.before_file_idx], after_paths[pair.after_file_idx]
@@ -95,6 +96,7 @@ def run_targeted_pair_vision(before_docs: Sequence[DocumentInput], after_docs: S
             "before_page": pair.before_page, "after_page": pair.after_page,
             "before_file_index": pair.before_file_idx, "after_file_index": pair.after_file_idx,
             "score": round(pair.score, 6), "rooms_shared": list(pair.shared_rooms),
+            "anchors_shared": list(getattr(pair, "shared_anchors", ()) or ()),
             "diff_ratio": evidence.get("diff_ratio"), "raw_diff_ratio": evidence.get("raw_diff_ratio"),
             "changed_cells": evidence.get("changed_cells"), "hot_zone": evidence.get("hot_zone"),
             "alignment": evidence.get("alignment"), "raster_significant": bool(evidence.get("significant")),
@@ -104,6 +106,7 @@ def run_targeted_pair_vision(before_docs: Sequence[DocumentInput], after_docs: S
             signals.append(Signal("raster_diff", "page_pair", pair.key, f"структурный raster hint: ratio={evidence.get('diff_ratio')}"))
 
         items = []
+        semantic_path = ""
         if pair.shared_rooms and focused_used < MAX_FOCUSED_ROOM_CALLS:
             remaining = MAX_FOCUSED_ROOM_CALLS - focused_used
             focused_items, focused_diags, used = compare_shared_rooms_focused(
@@ -113,7 +116,31 @@ def run_targeted_pair_vision(before_docs: Sequence[DocumentInput], after_docs: S
             )
             focused_used += used
             items.extend(focused_items)
+            if focused_items:
+                semantic_path = "room_focus"
             diagnostics.extend([{**base, "control_type": "room_focus", **x} for x in focused_diags])
+
+        # Generic comparison regions are the primary local fallback when ROOM
+        # anchors are absent or the room path produced no semantic candidate.
+        # Shared non-room anchors improve routing, but deterministic geometry
+        # clusters can still propose regions when text anchors are absent.
+        if not items and generic_used < MAX_GENERIC_REGION_CALLS:
+            remaining = MAX_GENERIC_REGION_CALLS - generic_used
+            generic_items, generic_diags, used = compare_non_room_regions(
+                before_path,
+                pair.before_page,
+                after_path,
+                pair.after_page,
+                getattr(pair, "shared_anchors", ()) or (),
+                config,
+                max_calls=remaining,
+                discipline=before_doc.discipline_code or after_doc.discipline_code or "",
+            )
+            generic_used += used
+            items.extend(generic_items)
+            if generic_items:
+                semantic_path = "generic_region"
+            diagnostics.extend([{**base, "control_type": "comparison_region", **x} for x in generic_diags])
 
         result = {}
         if not items and whole_used < max_pairs:
@@ -122,12 +149,22 @@ def run_targeted_pair_vision(before_docs: Sequence[DocumentInput], after_docs: S
             clip = tuple(clip_raw) if clip_raw else None
             try:
                 result = semantic_scope_compare(before_path, pair.before_page, after_path, pair.after_page, before_doc, after_doc, pair.shared_rooms, config, clip=clip)
-                items.extend(_difference_items(result))
+                whole_items = _difference_items(result)
+                items.extend(whole_items)
+                if whole_items:
+                    semantic_path = "whole_page"
             except Exception as exc:
                 diagnostics.append({**base, "control_type": "whole_page_vision", "status": "vision_error", "error": f"{type(exc).__name__}: {exc}"})
 
         if not items:
-            diagnostics.append({**base, "status": "no_semantic_change", "unclear_reason": str(result.get("unclear_reason") or ""), "focused_calls_total": focused_used, "whole_page_calls_total": whole_used})
+            diagnostics.append({
+                **base,
+                "status": "compared_no_candidate",
+                "unclear_reason": str(result.get("unclear_reason") or ""),
+                "focused_calls_total": focused_used,
+                "generic_region_calls_total": generic_used,
+                "whole_page_calls_total": whole_used,
+            })
             continue
 
         detail = " | ".join(str(x.get("change") or "").strip() for x in items[:6]) or "наблюдаемое инженерное различие"
@@ -135,13 +172,23 @@ def run_targeted_pair_vision(before_docs: Sequence[DocumentInput], after_docs: S
         rooms = _mentioned_rooms(items, set(pair.shared_rooms))
         for room in sorted(rooms):
             signals.append(Signal("vision", "room", room, detail))
-        diagnostics.append({**base, "status": "significant", "differences_total": len(items), "rooms_mentioned": sorted(rooms), "focused_calls_total": focused_used, "whole_page_calls_total": whole_used})
+        diagnostics.append({
+            **base,
+            "status": "significant",
+            "semantic_path": semantic_path,
+            "differences_total": len(items),
+            "rooms_mentioned": sorted(rooms),
+            "focused_calls_total": focused_used,
+            "generic_region_calls_total": generic_used,
+            "whole_page_calls_total": whole_used,
+        })
 
     diagnostics.append({
         "control_type": "coverage", "status": "complete" if len(all_pairs) <= len(pairs) else "candidate_budget",
         "candidate_pairs_total": len(all_pairs), "candidate_pairs_checked": len(pairs),
         "raster_significant_pairs": raster_significant, "whole_page_calls_used": whole_used,
         "focused_calls_used": focused_used, "max_focused_calls": MAX_FOCUSED_ROOM_CALLS,
+        "generic_region_calls_used": generic_used, "max_generic_region_calls": MAX_GENERIC_REGION_CALLS,
         "max_candidate_pairs": MAX_GRAPHICAL_CANDIDATE_PAIRS,
     })
     return signals, diagnostics
