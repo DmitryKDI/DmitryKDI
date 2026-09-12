@@ -1,13 +1,15 @@
 """Blind graphical controls with high-recall candidate preservation.
 
-The graphical stage is intentionally factual: first detect and describe visible
-PD -> RD differences, then let later stages decide what they mean.  Runtime
-never receives benchmark answers.  A negative/unclear LLM answer never deletes
-raster evidence, and dense sheets can fall back to room-focused montages.
+The graphical stage is factual: detect and describe visible PD -> RD/ID
+engineering differences, then let later stages decide what they mean. Runtime
+never receives benchmark answers. Deterministic raster evidence is never
+deleted by a negative LLM answer. Shared ROOM anchors are checked first with
+small paired crops; whole-sheet vision is now a fallback instead of the gate.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from typing import Sequence
@@ -24,6 +26,19 @@ from .visual_prefilter import visual_change_evidence
 
 _ROOM_NUMBER_RE = re.compile(r"(?<!\d)(\d{1,4}(?:\.\d+)?)(?!\d)")
 
+
+def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+MAX_GRAPHICAL_CANDIDATE_PAIRS = _positive_int_env(
+    "NADZOR_MAX_GRAPHICAL_CANDIDATE_PAIRS", 18, 1, 60
+)
+
 _SCOPE_COMPARE_PROMPT = f"""\
 Ты сравниваешь инженерные решения ПД и РД/ИД. На этом этапе нужна только
 фиксация конкретных ВИДИМЫХ различий. Не делай юридических выводов, не оценивай
@@ -34,15 +49,17 @@ severity и не предлагай действия инспектору.
 масштаба, рамки или расположения надписей. Сравнивай инженерный смысл по
 переданным общим помещениям/зонам и текстовым якорям.
 
-Ищи наблюдаемые изменения ПД -> РД/ИД:
+Перед выводом обязательно проверь: состав оборудования и элементов, топологию
+трасс, подключения/вводы/выводы и читаемые параметры/маркировки. Ищи:
 - инженерный элемент, ветка или оборудование появились/исчезли;
 - изменились состав, количество, тип, подключение, трасса, конфигурация;
 - решение заметно перенесено или выполнено иначе.
 
-Не считай различием штамп, рамку, масштаб, цвет, шрифт, качество рендера или
-компоновку листа. Не делай вывод об отсутствии инженерного элемента только
-по отсутствию слова. Если сравнение не позволяет доказать изменение, оставь
-список differences пустым и объясни неопределённость в unclear_reason.
+Не считай различием штамп, рамку, масштаб, цвет, шрифт, качество рендера,
+компоновку листа, мебель или само название помещения. Не делай вывод об
+отсутствии инженерного элемента только по отсутствию слова. Если сравнение не
+позволяет доказать изменение, оставь differences пустым и объясни это в
+unclear_reason.
 
 {UNTRUSTED_INPUT_RULE}
 
@@ -113,7 +130,6 @@ def _mentioned_rooms(text: str, allowed: set[str]) -> set[str]:
 
 
 def _difference_items(result: dict) -> list[dict]:
-    """Accept the new factual contract and the old key for graceful upgrades."""
     if not isinstance(result, dict):
         return []
     raw = result.get("differences")
@@ -261,7 +277,7 @@ def _semantic_scope_compare(
         images=[before_img, after_img],
         operation="vision",
         source_digest=source_digest,
-        prompt_version="blind-scope-compare-v3",
+        prompt_version="blind-scope-compare-v4-focused-first",
     )
     return result if isinstance(result, dict) else {}
 
@@ -275,7 +291,7 @@ def run_targeted_pair_vision(
     *,
     max_pairs: int = 6,
 ) -> tuple[list[Signal], list[dict]]:
-    """Run bounded blind graphical controls with recall-preserving fusion."""
+    """Run bounded blind graphical controls with room-focused vision first."""
     signals: list[Signal] = []
     diagnostics: list[dict] = []
 
@@ -288,13 +304,13 @@ def run_targeted_pair_vision(
     if max_pairs <= 0:
         return signals, diagnostics
 
-    pairs = _candidate_pairs(before_docs, after_docs)
-    llm_used = 0
+    all_pairs = _candidate_pairs(before_docs, after_docs)
+    pairs = all_pairs[:MAX_GRAPHICAL_CANDIDATE_PAIRS]
+    whole_page_used = 0
     focused_calls_used = 0
+    significant_pairs = 0
 
     for pair in pairs:
-        if llm_used >= max_pairs:
-            break
         before_path = before_paths[pair.before_file_idx]
         after_path = after_paths[pair.after_file_idx]
         before_doc = before_docs[pair.before_file_idx]
@@ -328,14 +344,17 @@ def run_targeted_pair_vision(
             "score": round(float(pair.score), 6),
             "rooms_shared": list(pair.shared_rooms),
             "diff_ratio": evidence.get("diff_ratio"),
+            "raw_diff_ratio": evidence.get("raw_diff_ratio"),
             "changed_cells": evidence.get("changed_cells"),
             "local_cluster": bool(evidence.get("local_cluster")),
             "hot_zone": evidence.get("hot_zone"),
+            "alignment": evidence.get("alignment"),
         }
         if not evidence.get("significant"):
             diagnostics.append({**base_diag, "status": "visually_same"})
             continue
 
+        significant_pairs += 1
         signals.append(Signal(
             source="raster_diff",
             domain="page_pair",
@@ -346,41 +365,14 @@ def run_targeted_pair_vision(
             ),
         ))
 
-        llm_used += 1
-        clip_raw = evidence.get("hot_zone") if evidence.get("local_cluster") else None
-        clip = tuple(clip_raw) if clip_raw else None
-        semantic_error = ""
-        try:
-            result = _semantic_scope_compare(
-                before_path,
-                pair.before_page,
-                after_path,
-                pair.after_page,
-                before_doc,
-                after_doc,
-                pair.shared_rooms,
-                config,
-                clip=clip,
-            )
-        except Exception as exc:  # noqa: BLE001
-            semantic_error = f"{type(exc).__name__}: {exc}"
-            result = {}
-            diagnostics.append({
-                **base_diag,
-                "control_type": "whole_page_vision",
-                "status": "vision_error_fallback_started",
-                "error": semantic_error,
-            })
-
-        items = _difference_items(result)
-        allowed = set(pair.shared_rooms)
-        whole_grounded = _grounded_rooms_in_items(items, allowed)
+        items: list[dict] = []
         focused_for_pair = False
+        semantic_error = ""
+        result: dict = {}
 
-        # If whole-sheet vision found nothing, or only a broad ungrounded change,
-        # ask the simpler room-by-room question instead of treating it as final.
-        needs_focus = bool(pair.shared_rooms) and (not items or not whole_grounded)
-        if needs_focus:
+        # GigaChat itself recommends one-room paired crops. Use that as the
+        # primary semantic path whenever shared room anchors exist.
+        if pair.shared_rooms and focused_calls_used < MAX_FOCUSED_ROOM_CALLS:
             remaining_focus = max(0, MAX_FOCUSED_ROOM_CALLS - focused_calls_used)
             focused_items, focused_diags, focused_used = compare_shared_rooms_focused(
                 before_path,
@@ -395,8 +387,37 @@ def run_targeted_pair_vision(
             for focused_diag in focused_diags:
                 diagnostics.append({**base_diag, "control_type": "room_focus", **focused_diag})
             if focused_items:
-                items = items + focused_items
+                items.extend(focused_items)
                 focused_for_pair = True
+
+        # Whole-sheet vision is a fallback/complement, not a veto. It runs when
+        # focused checks found nothing or when there are no room anchors.
+        if not items and whole_page_used < max_pairs:
+            whole_page_used += 1
+            clip_raw = evidence.get("hot_zone") if evidence.get("local_cluster") else None
+            clip = tuple(clip_raw) if clip_raw else None
+            try:
+                result = _semantic_scope_compare(
+                    before_path,
+                    pair.before_page,
+                    after_path,
+                    pair.after_page,
+                    before_doc,
+                    after_doc,
+                    pair.shared_rooms,
+                    config,
+                    clip=clip,
+                )
+            except Exception as exc:  # noqa: BLE001
+                semantic_error = f"{type(exc).__name__}: {exc}"
+                result = {}
+                diagnostics.append({
+                    **base_diag,
+                    "control_type": "whole_page_vision",
+                    "status": "vision_error",
+                    "error": semantic_error,
+                })
+            items.extend(_difference_items(result))
 
         if not items:
             diagnostics.append({
@@ -406,13 +427,17 @@ def run_targeted_pair_vision(
                 "unclear_reason": str(result.get("unclear_reason") or ""),
                 "semantic_error": semantic_error,
                 "focused_calls_total": focused_calls_used,
+                "whole_page_calls_total": whole_page_used,
             })
             continue
 
         changes = [str(item.get("change") or "").strip() for item in items]
-        detail = " | ".join(changes[:6])
+        detail = " | ".join(change for change in changes[:6] if change)
+        if not detail:
+            detail = "наблюдаемое инженерное различие"
         signals.append(Signal("vision_pair", "page_pair", pair_key, detail))
 
+        allowed = set(pair.shared_rooms)
         mentioned = _grounded_rooms_in_items(items, allowed)
         for room in sorted(mentioned):
             room_details = [
@@ -431,17 +456,20 @@ def run_targeted_pair_vision(
             "changes": changes[:6],
             "semantic_error": semantic_error,
             "focused_calls_total": focused_calls_used,
+            "whole_page_calls_total": whole_page_used,
         })
 
-    if len(pairs) > llm_used:
-        diagnostics.append({
-            "control_type": "coverage",
-            "status": "budget",
-            "candidate_pairs_total": len(pairs),
-            "llm_pairs_used": llm_used,
-            "max_pairs": max_pairs,
-            "focused_calls_used": focused_calls_used,
-            "max_focused_calls": MAX_FOCUSED_ROOM_CALLS,
-        })
+    diagnostics.append({
+        "control_type": "coverage",
+        "status": "complete" if len(all_pairs) <= len(pairs) else "candidate_budget",
+        "candidate_pairs_total": len(all_pairs),
+        "candidate_pairs_checked": len(pairs),
+        "significant_pairs": significant_pairs,
+        "whole_page_calls_used": whole_page_used,
+        "max_whole_page_calls": max_pairs,
+        "focused_calls_used": focused_calls_used,
+        "max_focused_calls": MAX_FOCUSED_ROOM_CALLS,
+        "max_candidate_pairs": MAX_GRAPHICAL_CANDIDATE_PAIRS,
+    })
 
     return signals, diagnostics
