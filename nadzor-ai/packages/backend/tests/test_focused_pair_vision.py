@@ -30,6 +30,7 @@ def test_pass1_candidate_forces_changed_candidate():
     row = normalize.normalize_high_recall({
         "room_visible_pd": True,
         "room_visible_rd": True,
+        "comparability": "high",
         "coverage": FULL,
         "status": "unchanged_candidate",
         "candidate_differences": [{
@@ -42,11 +43,12 @@ def test_pass1_candidate_forces_changed_candidate():
     assert row["candidate_differences"][0]["category"] == "connection"
 
 
-def test_unchanged_candidate_requires_full_visibility_and_coverage():
+def test_unchanged_candidate_requires_full_visibility_coverage_and_comparability():
     row = normalize.normalize_high_recall({
-        "room_visible_pd": False,
+        "room_visible_pd": True,
         "room_visible_rd": True,
-        "coverage": ["inventory"],
+        "comparability": "medium",
+        "coverage": FULL,
         "status": "unchanged_candidate",
         "candidate_differences": [],
     }, "101")
@@ -56,10 +58,26 @@ def test_unchanged_candidate_requires_full_visibility_and_coverage():
 def test_verifier_omission_is_unclear_not_rejected():
     candidates = [{"description": "x"}, {"description": "y"}]
     rows = normalize.normalize_verification({
+        "comparability": "high",
         "verified": [{"idx": 0, "verdict": "confirmed", "reason": "видно"}]
-    }, candidates)
+    }, candidates, "high")
     assert rows[0]["verdict"] == "confirmed"
     assert rows[1]["verdict"] == "unclear"
+
+
+def test_low_comparability_cannot_reject_high_recall_candidate():
+    candidates = [{"description": "x"}]
+    rows = normalize.normalize_verification({
+        "comparability": "medium",
+        "verified": [{"idx": 0, "verdict": "rejected", "reason": "сомнительно"}],
+    }, candidates, "high")
+    assert rows[0]["verdict"] == "unclear"
+
+    rows = normalize.normalize_verification({
+        "comparability": "high",
+        "verified": [{"idx": 0, "verdict": "rejected", "reason": "сомнительно"}],
+    }, candidates, "medium")
+    assert rows[0]["verdict"] == "unclear"
 
 
 def test_pass1_sends_four_separate_images(monkeypatch):
@@ -96,6 +114,7 @@ def test_orchestrator_runs_verifier_and_keeps_unclear_candidate(monkeypatch):
     monkeypatch.setattr(orchestrator, "call_high_recall", lambda *a, **k: {
         "room_visible_pd": True,
         "room_visible_rd": True,
+        "comparability": "medium",
         "coverage": FULL,
         "status": "changed_candidate",
         "candidate_differences": [{
@@ -103,6 +122,7 @@ def test_orchestrator_runs_verifier_and_keeps_unclear_candidate(monkeypatch):
         }],
     })
     monkeypatch.setattr(orchestrator, "call_verifier", lambda *a, **k: {
+        "comparability": "medium",
         "verified": [{"idx": 0, "verdict": "unclear", "reason": "тонкая линия"}]
     })
     findings, diagnostics, used = orchestrator.compare_shared_rooms_focused(
@@ -112,11 +132,12 @@ def test_orchestrator_runs_verifier_and_keeps_unclear_candidate(monkeypatch):
     assert used == 2
     assert len(findings) == 1
     assert findings[0]["verification"] == "unclear"
+    assert findings[0]["comparability"] == "medium"
     row = next(x for x in diagnostics if x.get("pass1"))
     assert row["selected_clips"]["101"]["image_layout"].startswith("D:")
 
 
-def test_rejected_candidate_does_not_become_finding(monkeypatch):
+def test_rejected_candidate_requires_high_comparability(monkeypatch):
     monkeypatch.setattr(orchestrator, "MAX_FOCUSED_CALLS_PER_PAIR", 2)
     monkeypatch.setattr(orchestrator, "prioritize_rooms", lambda *a, **k: (["101"], []))
     monkeypatch.setattr(orchestrator, "grounded_view", lambda *a, **k: {
@@ -126,11 +147,17 @@ def test_rejected_candidate_does_not_become_finding(monkeypatch):
         "pd_text": "", "rd_text": "",
     })
     monkeypatch.setattr(orchestrator, "call_high_recall", lambda *a, **k: {
-        "room_visible_pd": True, "room_visible_rd": True, "coverage": FULL,
-        "candidate_differences": [{"category": "scale_shift", "description": "сдвиг", "side": "both"}],
+        "room_visible_pd": True,
+        "room_visible_rd": True,
+        "comparability": "high",
+        "coverage": FULL,
+        "candidate_differences": [
+            {"category": "scale_shift", "description": "сдвиг", "side": "both"}
+        ],
         "status": "changed_candidate",
     })
     monkeypatch.setattr(orchestrator, "call_verifier", lambda *a, **k: {
+        "comparability": "high",
         "verified": [{"idx": 0, "verdict": "rejected", "reason": "только регистрация"}]
     })
     findings, _, used = orchestrator.compare_shared_rooms_focused(
