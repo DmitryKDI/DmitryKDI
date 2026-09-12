@@ -8,9 +8,11 @@ on:
     paths:
       - 'nadzor-ai/frontend/**'
       - 'nadzor-ai/packages/backend/app/anchors.py'
+      - 'nadzor-ai/packages/backend/app/comparison_anchors.py'
       - 'nadzor-ai/packages/backend/app/entity_control.py'
       - 'nadzor-ai/packages/backend/app/room_entity_check.py'
       - 'nadzor-ai/packages/backend/app/focused_pair_vision.py'
+      - 'nadzor-ai/packages/backend/app/generic_region_vision.py'
       - 'nadzor-ai/packages/backend/app/high_recall_prompts.py'
       - 'nadzor-ai/packages/backend/app/high_recall_roi.py'
       - 'nadzor-ai/packages/backend/app/high_recall_calls.py'
@@ -18,6 +20,7 @@ on:
       - 'nadzor-ai/packages/backend/app/high_recall_orchestrator.py'
       - 'nadzor-ai/packages/backend/app/control_pair_candidates.py'
       - 'nadzor-ai/packages/backend/app/control_pair_runtime.py'
+      - 'nadzor-ai/packages/backend/app/facts_store.py'
       - 'nadzor-ai/packages/backend/app/llm_runtime.py'
       - 'nadzor-ai/packages/backend/app/requirement_llm_extract.py'
       - 'nadzor-ai/packages/backend/app/run_logger.py'
@@ -29,8 +32,10 @@ on:
       - 'nadzor-ai/packages/backend/app/vision_page_compare.py'
       - 'nadzor-ai/packages/backend/app/vision.py'
       - 'nadzor-ai/packages/backend/tests/test_llm_runtime.py'
+      - 'nadzor-ai/packages/backend/tests/test_llm_runtime_queue_metrics.py'
       - 'nadzor-ai/packages/backend/tests/test_performance_regression.py'
       - 'nadzor-ai/packages/backend/tests/test_run_logger.py'
+      - 'nadzor-ai/packages/backend/tests/test_run_logger_snapshots.py'
       - 'nadzor-ai/packages/backend/tests/test_matching.py'
       - 'nadzor-ai/packages/backend/tests/test_matching_confidence.py'
       - 'nadzor-ai/packages/backend/tests/test_triangulation.py'
@@ -38,6 +43,8 @@ on:
       - 'nadzor-ai/packages/backend/tests/test_triangulated_synthesis_budget.py'
       - 'nadzor-ai/packages/backend/tests/test_control_pair_vision.py'
       - 'nadzor-ai/packages/backend/tests/test_focused_pair_vision.py'
+      - 'nadzor-ai/packages/backend/tests/test_generic_region_vision.py'
+      - 'nadzor-ai/packages/backend/tests/test_facts_store_concurrency.py'
       - 'nadzor-ai/packages/backend/tests/test_visual_prefilter.py'
       - 'nadzor-ai/packages/backend/tests/test_entity_control.py'
       - 'nadzor-ai/packages/backend/tests/test_anchors.py'
@@ -84,9 +91,11 @@ jobs:
       - name: Compile changed runtime modules
         run: |
           python -m py_compile app/anchors.py
+          python -m py_compile app/comparison_anchors.py
           python -m py_compile app/entity_control.py
           python -m py_compile app/room_entity_check.py
           python -m py_compile app/focused_pair_vision.py
+          python -m py_compile app/generic_region_vision.py
           python -m py_compile app/high_recall_prompts.py
           python -m py_compile app/high_recall_roi.py
           python -m py_compile app/high_recall_calls.py
@@ -94,6 +103,7 @@ jobs:
           python -m py_compile app/high_recall_orchestrator.py
           python -m py_compile app/control_pair_candidates.py
           python -m py_compile app/control_pair_runtime.py
+          python -m py_compile app/facts_store.py
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/requirement_llm_extract.py
           python -m py_compile app/run_logger.py
@@ -107,8 +117,10 @@ jobs:
         run: >-
           pytest -q
           tests/test_llm_runtime.py
+          tests/test_llm_runtime_queue_metrics.py
           tests/test_performance_regression.py
           tests/test_run_logger.py
+          tests/test_run_logger_snapshots.py
           tests/test_matching.py
           tests/test_matching_confidence.py
           tests/test_triangulation.py
@@ -116,6 +128,8 @@ jobs:
           tests/test_triangulated_synthesis_budget.py
           tests/test_control_pair_vision.py
           tests/test_focused_pair_vision.py
+          tests/test_generic_region_vision.py
+          tests/test_facts_store_concurrency.py
           tests/test_visual_prefilter.py
           tests/test_entity_control.py
           tests/test_anchors.py
