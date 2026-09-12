@@ -32,15 +32,22 @@ def call_high_recall(view, config: LlmConfig, discipline: str = "") -> dict:
         images=_images(view),
         operation="vision",
         source_digest=_digest(view, "pass1"),
-        prompt_version="focused-high-recall-v6-four-images",
+        prompt_version="focused-high-recall-v7-comparability",
     )
     return out if isinstance(out, dict) else {}
 
 
-def call_verifier(view, candidates, config: LlmConfig, discipline: str = "") -> dict:
+def call_verifier(
+    view,
+    candidates,
+    config: LlmConfig,
+    discipline: str = "",
+    pass1_comparability: str = "low",
+) -> dict:
     payload = json.dumps(candidates, ensure_ascii=False)
     text = (
-        f"room_id={view['room']}; discipline={discipline or 'unknown'}.\n"
+        f"room_id={view['room']}; discipline={discipline or 'unknown'}; "
+        f"PASS1 comparability={pass1_comparability}.\n"
         f"Кандидаты PASS 1: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{payload}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
     )
     out = call_llm_json(
@@ -49,7 +56,7 @@ def call_verifier(view, candidates, config: LlmConfig, discipline: str = "") -> 
         text,
         images=_images(view),
         operation="vision",
-        source_digest=_digest(view, payload),
-        prompt_version="focused-verify-v2-four-images",
+        source_digest=_digest(view, payload + pass1_comparability),
+        prompt_version="focused-verify-v3-comparability",
     )
     return out if isinstance(out, dict) else {}
