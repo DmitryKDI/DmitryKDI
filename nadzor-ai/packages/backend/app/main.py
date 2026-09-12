@@ -921,9 +921,14 @@ def _run_pd(run_id: int) -> None:
                 "failed_chunks": failed_chunks if 'failed_chunks' in dir() else 0,
                 "extractor": run.extractor or "",
             }
+            # Причина, названная самим прогоном, обязана попасть в лог: без
+            # неё остановленный или упавший прогон отличался от чистого
+            # только строкой статуса (Г.10).
+            run_errors = [{"run": run.error}] if run and run.error else []
             save_run_log(
                 run_id=run_id,
                 run_type="pd",
+                errors=run_errors,
                 status=run.status or "unknown",
                 provider=run.provider or "",
                 model="",
@@ -1216,9 +1221,11 @@ def _run_compliance(run_id: int) -> None:
                 "counts": run.counts or {},
                 "requirements_total": run.requirements_total or 0,
             }
+            run_errors = [{"run": run.error}] if run and run.error else []
             save_run_log(
                 run_id=run_id,
                 run_type="compliance",
+                errors=run_errors,
                 status=run.status or "unknown",
                 provider=run.provider or "",
                 model="",

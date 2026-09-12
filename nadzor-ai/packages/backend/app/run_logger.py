@@ -82,6 +82,38 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+# Счётчики, которые означают несделанную работу, и то, как они называются
+# в списке причин. Повторы и ожидания частоты сюда НЕ входят: повтор,
+# закончившийся успехом, — это цена вызова, а не сбой прогона.
+_FAILURE_COUNTERS = {
+    "errors": "llm_calls_failed",
+    "invalid_results": "llm_invalid_results",
+}
+
+
+def errors_from_metrics(metrics: dict | None) -> list[dict]:
+    """Ненулевой счётчик сбоев обязан быть и строкой в списке причин.
+
+    Счётчик и список — одно и то же событие, названное дважды. Пока они
+    расходились, прогон с сорванным вызовом выглядел в логе точно так же,
+    как чистый: `metrics.errors` единица, `errors` пуст, статус
+    «завершён». Читающий не мог отличить одно от другого (Г.10).
+
+    Текста сбоя у счётчика нет — он его не хранит; здесь называется факт и
+    количество, а не причина. Причину, если она известна прогону, кладёт
+    вызывающий отдельной строкой, и она не вытесняется этой.
+    """
+    rows: list[dict] = []
+    for counter, name in _FAILURE_COUNTERS.items():
+        try:
+            count = int(float((metrics or {}).get(counter) or 0))
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            rows.append({name: count})
+    return rows
+
+
 def _technical_status(
     status: str,
     errors: list[dict] | None = None,
@@ -135,7 +167,7 @@ def save(
 ) -> Path:
     _ensure_dir()
     timestamp = datetime.now(timezone.utc)
-    error_rows = list(errors or [])
+    error_rows = list(errors or []) + errors_from_metrics(metrics)
     technical_status = _technical_status(status, error_rows)
     payload: dict[str, Any] = {
         "run_id": run_id,
@@ -174,7 +206,7 @@ def save_task_snapshot(
 ) -> Path:
     timestamp = datetime.now(timezone.utc)
     detail_rows = dict(details or {})
-    error_rows = list(errors or [])
+    error_rows = list(errors or []) + errors_from_metrics(metrics)
     technical_status = _technical_status(status, error_rows, detail_rows)
     payload = {
         "run_id": int(run_id),

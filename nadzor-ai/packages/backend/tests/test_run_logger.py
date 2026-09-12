@@ -197,3 +197,55 @@ def test_legacy_directory_is_named_and_differs_from_the_current_one():
     assert run_logger.LEGACY_RUN_LOGS_DIR == (
         project_root / "packages" / "data" / "run_logs"
     )
+
+
+def test_failed_calls_in_metrics_become_named_errors(tmp_path, monkeypatch):
+    """`errors: []` при ненулевом счётчике сбоев — та же тишина вместо причины.
+
+    В реальном прогоне это и наблюдалось: `metrics.errors` равен единице, а
+    список `errors` пуст, и `technical_status` объявлял прогон завершённым.
+    Читающий не мог отличить чистый прогон от прогона с сорванным вызовом
+    (Г.10). Счётчик и список — одно и то же событие, и расходиться они не
+    имеют права.
+    """
+    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
+    path = run_logger.save(
+        run_id=15, run_type="pd", status="done", provider="gigachat", model="",
+        documents_before=["том.pdf"], documents_after=[],
+        metrics={"requests": 10, "errors": 1, "invalid_results": 2},
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["errors"], "сорванный вызов пропал из списка причин"
+    assert payload["technical_status"] == "completed_with_errors"
+    named = {key for row in payload["errors"] for key in row}
+    assert named == {"llm_calls_failed", "llm_invalid_results"}
+
+
+def test_recoverable_retries_are_not_reported_as_errors(tmp_path, monkeypatch):
+    """Повтор, закончившийся успехом, — не сбой прогона."""
+    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
+    path = run_logger.save(
+        run_id=16, run_type="pd", status="done", provider="gigachat", model="",
+        documents_before=["том.pdf"], documents_after=[],
+        metrics={"requests": 10, "retries": 3, "rate_limits": 2, "errors": 0},
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["errors"] == []
+    assert payload["technical_status"] == "completed"
+
+
+def test_explicit_errors_are_kept_alongside_the_counters(tmp_path, monkeypatch):
+    """Причина, названная прогоном, важнее счётчика и не вытесняется им."""
+    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", tmp_path)
+    path = run_logger.save(
+        run_id=17, run_type="compliance", status="error", provider="gigachat", model="",
+        documents_before=["том.pdf"], documents_after=["рд.pdf"],
+        metrics={"errors": 1},
+        errors=[{"run": "связь не прошла"}],
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert {"run": "связь не прошла"} in payload["errors"]
+    assert any("llm_calls_failed" in row for row in payload["errors"])
