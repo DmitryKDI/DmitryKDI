@@ -78,7 +78,24 @@ USER_PROMPT = """Мы строим blind-пайплайн сравнения П�
 }"""
 
 
+def _load_dotenv(path: Path) -> None:
+    """Load the project's simple KEY=VALUE .env without adding a dependency."""
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _credentials() -> str:
+    _load_dotenv(ROOT / ".env")
+
     direct = os.environ.get("GIGACHAT_CREDENTIALS", "").strip()
     if direct:
         return direct
@@ -95,9 +112,9 @@ def main() -> int:
     credentials = _credentials()
     if not credentials:
         print(
-            "GigaChat credentials not found. Configure GIGACHAT_CLIENT_ID + "
-            "GIGACHAT_CLIENT_SECRET, GIGACHAT_CREDENTIALS, or put a gigachat key "
-            "file into nadzor-ai/secrets/.",
+            "GigaChat credentials not found. Configure nadzor-ai/.env with "
+            "GIGACHAT_CLIENT_ID + GIGACHAT_CLIENT_SECRET or GIGACHAT_CREDENTIALS, "
+            "or put a gigachat key file into nadzor-ai/secrets/.",
             file=sys.stderr,
         )
         return 2
