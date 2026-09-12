@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 from collections import Counter
+from pathlib import Path
 
 import pymupdf
 
@@ -178,6 +180,71 @@ def select_candidate_pages(
 
 def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pages: int) -> list[dict]:
     return select_candidate_pages(rooms, room_index, max_pages)
+
+
+def rd_page_pool(sources: list[tuple]) -> list[dict]:
+    """Все листы рабочей документации как кандидаты — по одному разу на прогон.
+
+    Нужен там, где требование ПД не названо номером помещения: без него
+    реестр помещений подобрать лист не может, и раньше просмотр не
+    выполнялся вовсе. Но «не за что зацепиться реестром» — это не «смотреть
+    нечего»: лист выбирается по тексту самого требования, а когда текста на
+    листе нет (подписи чертежа в кривых, Г.8), лист остаётся кандидатом с
+    нулевым весом, а не исчезает — иначе именно графика, ради которой
+    проверка и нужна, выпадала бы первой (Г.10).
+
+    Пул строится один раз: перебор страниц дешёвый, но на каждое требование
+    он повторялся бы десятки раз.
+    """
+    pool: list[dict] = []
+    for source in sources:
+        path, display_name = str(source[0]), str(source[1])
+        file = Path(path)
+        if not file.is_file():
+            continue
+        try:
+            doc = pymupdf.open(path)
+        except Exception as exc:  # noqa: BLE001 — битый файл не роняет подбор
+            print(f"лист не подобран ({exc}): {display_name}", file=sys.stderr)
+            continue
+        try:
+            for index in range(doc.page_count):
+                pool.append({
+                    "path": path,
+                    "page": index + 1,
+                    "text": doc[index].get_text("text").strip(),
+                    "name": display_name,
+                })
+        finally:
+            doc.close()
+    return pool
+
+
+def rank_pool_for_requirement(pool: list[dict], sentence: str, max_pages: int) -> list[dict]:
+    """Листы пула в порядке близости к тексту требования, без отсева.
+
+    Вес — та же редкость общих слов, что и при подборе по помещению
+    (`select_candidate_pages`): одно правило ранжирования на оба пути, а не
+    два расходящихся. Порядок при равенстве — по номеру листа, поэтому
+    кандидаты чередуются между файлами, а не выбираются все из первого
+    (Г.52).
+    """
+    if max_pages <= 0 or not pool:
+        return []
+    words = [set(re.findall(r"\w+", str(entry.get("text") or "").casefold()))
+             for entry in pool]
+    frequencies = Counter(word for tokens in words for word in tokens)
+    query = set(re.findall(r"\w+", str(sentence or "").casefold()))
+    scored = [
+        (sum(1 / frequencies[word] for word in (tokens & query) if frequencies[word]),
+         entry)
+        for tokens, entry in zip(words, pool)
+    ]
+    ordered = sorted(
+        range(len(scored)),
+        key=lambda i: (-scored[i][0], int(scored[i][1]["page"]), str(scored[i][1]["name"])),
+    )
+    return [scored[i][1] for i in ordered[:max_pages]]
 
 
 def _room_tasks(findings: list) -> list[tuple[object, str | None]]:

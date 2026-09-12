@@ -72,10 +72,16 @@ def test_absent_in_text_is_never_called_a_violation():
     assert "наруш" not in body.lower(), body
 
 
-def test_visual_step_runs_only_for_requirements_tied_to_rooms():
-    """Зрение — дорогая ступень, поэтому идёт только туда, где есть за что
-    зацепиться: номер помещения из требования. Требование к объекту целиком
-    визуально проверять не по чему, и это честно помечается."""
+def test_room_anchor_ranks_sheets_but_its_absence_does_not_skip_the_check():
+    """Номер помещения выбирает ЛУЧШИЙ лист, но его отсутствие не отменяет просмотр.
+
+    Раньше требование к объекту целиком визуально не проверялось вовсе:
+    «лист выбрать не по чему». Это и есть запрещённый гейт «нет помещения —
+    не смотреть лист»: реестр помещений — способ ранжировать листы, а не
+    условие, разрешающее сравнение. Теперь лист подбирается по тексту
+    требования; здесь путей к файлам на диске нет, поэтому показать
+    действительно нечего — и отчёт говорит именно это, а не «не за что
+    зацепиться» (Г.10)."""
     tied = _req("В помещениях 140 и 141 предусмотрены местные отсосы.", rooms=["140", "141"])
     general = _req("Все трубопроводы изолируются.")
     seen = []
@@ -95,10 +101,12 @@ def test_visual_step_runs_only_for_requirements_tied_to_rooms():
     )
     by_sentence = {i.requirement.sentence: i for i in result.items}
 
-    assert seen == [["140", "141"]], "зрение вызвано только для требования с помещениями"
+    assert seen == [["140", "141"]], "требование с помещениями просмотрено по ним"
     assert by_sentence[tied.sentence].status == STATUS_CONFIRMED
     assert by_sentence[general.sentence].status == STATUS_NEEDS_CHECK
-    assert "помещени" in by_sentence[general.sentence].detail.lower()
+    detail = by_sentence[general.sentence].detail.lower()
+    assert "нет ни одного листа" in detail, detail
+    assert "не по чему" not in detail, "нельзя выдавать невыполненный шаг за отказ поиска"
 
 
 def test_without_llm_key_nothing_is_declared_confirmed_or_missing():

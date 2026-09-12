@@ -45,7 +45,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 
-from .vision_page_compare import select_candidate_pages
+from .vision_page_compare import (
+    rank_pool_for_requirement,
+    rd_page_pool,
+    select_candidate_pages,
+)
 
 from .llm import LlmConfig
 from .requirement_text_verify import validated_verdict_evidence
@@ -54,6 +58,11 @@ from .requirement_registry import Requirement
 STATUS_CONFIRMED = "подтверждено"
 STATUS_NEEDS_CHECK = "требует проверки"
 STATUS_NOT_CHECKED = "не проверялось"
+
+# Требование без номера помещения: лист выбран по тексту требования, а не
+# по реестру помещений. Инспектор должен видеть, по чему ему подобрали
+# лист, — это догадка другого рода, чем прямое совпадение номера (Г.106).
+_TEXT_PICK_NOTE = (" (требование не привязано к номеру помещения; листы подобраны по близости текста листа к тексту требования)")
 
 # Сколько листов РД смотреть зрением на одно требование. Держится малым
 # намеренно: зрение — самая дорогая ступень (~6 с на лист, Г.30), а цель
@@ -137,6 +146,17 @@ def check_compliance(
     pending = list(requirements)
     if not pending:
         return _finish(result)
+
+    # Пул листов РД на случай требования без номера помещения. Лениво и один
+    # раз: перебор страниц дешёвый, но на каждое требование повторялся бы
+    # десятки раз.
+    page_pool: list[dict] | None = None
+
+    def _pool() -> list[dict]:
+        nonlocal page_pool
+        if page_pool is None:
+            page_pool = rd_page_pool(rd_sources)
+        return page_pool
 
     if config is None:
         for req in pending:
@@ -249,6 +269,19 @@ def check_compliance(
             available = list(dict.fromkeys(candidate_pages(anchor_rooms, rd_sources)))
             result.diagnostics["candidates_available"] += len(available)
             pages = available[:max(0, max_visual_pages)]
+        # Требование к объекту или системе целиком: реестр помещений лист
+        # подобрать не может, но «не за что зацепиться реестром» — это не
+        # «смотреть нечего». Листы берутся по близости текста листа к тексту
+        # требования, а лист без текстового слоя остаётся кандидатом с
+        # нулевым весом: иначе именно графика, ради которой проверка и
+        # нужна, выпадала бы первой (Г.8/Г.10).
+        by_requirement_text = False
+        if not pages:
+            fallback = rank_pool_for_requirement(_pool(), req.sentence, max_visual_pages)
+            if fallback:
+                by_requirement_text = True
+                result.diagnostics["candidates_available"] += len(_pool())
+                pages = [(entry["path"], entry["page"]) for entry in fallback]
         result.diagnostics["candidates_selected"] += len(pages)
         candidate_keys.update(pages)
         result.diagnostics["unique_candidate_pages"] = len(candidate_keys)
@@ -263,7 +296,8 @@ def check_compliance(
             result.items.append(ComplianceItem(
                 requirement=req, status=STATUS_NEEDS_CHECK,
                 detail="в тексте РД не подтверждено; листы для просмотра подобраны, "
-                       "но просмотр изображения не выполнялся" + anchor_note,
+                       "но просмотр изображения не выполнялся"
+                       + (_TEXT_PICK_NOTE if by_requirement_text else anchor_note),
                 pages_to_check=pages))
             continue
 
@@ -271,9 +305,8 @@ def check_compliance(
             # Требование к объекту целиком: лист выбирать не по чему. Гонять
             # зрение вслепую по всему тому дороже и бесполезнее, чем сказать
             # инспектору прямо, что здесь нужен его глаз.
-            reason = ("в тексте РД не подтверждено; требование не привязано к номерам "
-                      "помещений и по названию их подобрать не удалось, поэтому лист "
-                      "для просмотра выбрать не по чему"
+            reason = ("в тексте РД не подтверждено; в рабочей документации нет ни "
+                      "одного листа, который можно было бы показать"
                       if not anchor_rooms else
                       "в тексте РД не подтверждено; подходящих листов РД не найдено"
                       + anchor_note)
@@ -331,7 +364,8 @@ def check_compliance(
                 detail = "листы просмотрены частично: часть вызовов завершилась ошибкой; проверить вручную"
                 status = STATUS_NEEDS_CHECK
             else:
-                detail = "на просмотренных листах подтверждения нет — посмотреть глазами"
+                detail = ("на просмотренных листах подтверждения нет — посмотреть глазами"
+                          + (_TEXT_PICK_NOTE if by_requirement_text else ""))
                 status = STATUS_NEEDS_CHECK
             if errors:
                 result.not_run.append(f"просмотр листов: ошибок {errors} из {len(pages)}")
