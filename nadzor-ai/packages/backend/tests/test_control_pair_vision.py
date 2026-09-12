@@ -48,12 +48,12 @@ def test_deterministic_and_semantic_vision_confirm_page_pair(monkeypatch):
         seen["clip"] = kwargs.get("clip")
         return {
             "comparable": True,
-            "significant": [{
+            "differences": [{
                 "label": "Изменение",
                 "change": "В помещении 012 изменена конфигурация оборудования",
                 "rooms": ["012"],
-                "severity": "существенно",
-                "field_check": "проверить решение в помещении 012",
+                "pd_observation": "одна конфигурация",
+                "rd_observation": "другая конфигурация",
             }],
         }
 
@@ -80,7 +80,7 @@ def test_raster_candidate_is_preserved_when_semantic_vision_finds_nothing(monkey
     monkeypatch.setattr(
         pair_vision,
         "_semantic_scope_compare",
-        lambda *args, **kwargs: {"comparable": True, "significant": []},
+        lambda *args, **kwargs: {"comparable": True, "differences": []},
     )
 
     signals, diagnostics = pair_vision.run_targeted_pair_vision(
@@ -129,11 +129,10 @@ def test_room_number_must_be_grounded_on_both_pages(monkeypatch):
         "_semantic_scope_compare",
         lambda *args, **kwargs: {
             "comparable": True,
-            "significant": [{
+            "differences": [{
                 "change": "Изменение около помещения 999",
                 "rooms": ["999"],
                 "label": "",
-                "field_check": "",
             }],
         },
     )
@@ -144,6 +143,41 @@ def test_room_number_must_be_grounded_on_both_pages(monkeypatch):
     )
     assert not any(signal.domain == "room" for signal in signals)
     assert {signal.source for signal in signals} == {"raster_diff", "vision_pair"}
+
+
+def test_ungrounded_whole_page_difference_starts_room_focused_fallback(monkeypatch):
+    before = [_doc("pd.pdf", ["147"], "147 вентиляция")]
+    after = [_doc("rd.pdf", ["147"], "147 вентиляция")]
+    _disable_entity_control(monkeypatch)
+    monkeypatch.setattr(pair_vision, "visual_change_evidence", lambda *args, **kwargs: _changed(False))
+    monkeypatch.setattr(
+        pair_vision,
+        "_semantic_scope_compare",
+        lambda *args, **kwargs: {
+            "comparable": True,
+            "differences": [{"change": "общая перестройка схемы", "rooms": []}],
+        },
+    )
+    calls = {"focused": 0}
+
+    def fake_focused(*args, **kwargs):
+        calls["focused"] += 1
+        return ([{
+            "label": "Визуальное различие",
+            "change": "в помещении изменена трасса",
+            "rooms": ["147"],
+            "pd_observation": "трасса А",
+            "rd_observation": "трасса Б",
+        }], [{"status": "focused_significant"}], 1)
+
+    monkeypatch.setattr(pair_vision, "compare_shared_rooms_focused", fake_focused)
+    signals, diagnostics = pair_vision.run_targeted_pair_vision(
+        before, after, ["pd.pdf"], ["rd.pdf"],
+        LlmConfig(provider="anthropic", api_key="fake"),
+    )
+    assert calls["focused"] == 1
+    assert any(signal.domain == "room" and signal.key == "147" for signal in signals)
+    assert any(item.get("control_type") == "room_focus" for item in diagnostics)
 
 
 def test_room_anchor_expansion_allows_one_pd_schematic_to_cover_multiple_rd_plans(monkeypatch):
