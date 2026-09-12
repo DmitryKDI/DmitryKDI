@@ -57,6 +57,7 @@ def compare_shared_rooms_focused(
         except Exception as exc:
             diagnostics.append({
                 "status": "focused_vision_error",
+                "execution_state": "failed",
                 "requested_rooms": [room],
                 "error": f"{type(exc).__name__}: {exc}",
             })
@@ -68,11 +69,26 @@ def compare_shared_rooms_focused(
             if used < budget:
                 used += 1
                 try:
-                    verification = normalize_verification(call_verifier(view, candidates, config, discipline), candidates)
+                    raw_verification = call_verifier(
+                        view,
+                        candidates,
+                        config,
+                        discipline,
+                        pass1_comparability=p1["comparability"],
+                    )
+                    verification = normalize_verification(
+                        raw_verification,
+                        candidates,
+                        p1["comparability"],
+                    )
                 except Exception:
-                    verification = normalize_verification({}, candidates)
+                    verification = normalize_verification(
+                        {}, candidates, p1["comparability"]
+                    )
             else:
-                verification = normalize_verification({}, candidates)
+                verification = normalize_verification(
+                    {}, candidates, p1["comparability"]
+                )
 
         accepted = []
         for idx, cand in enumerate(candidates):
@@ -86,6 +102,7 @@ def compare_shared_rooms_focused(
                 "pd_observation": json.dumps(p1["engineering_elements_pd"], ensure_ascii=False),
                 "rd_observation": json.dumps(p1["engineering_elements_rd"], ensure_ascii=False),
                 "differences": [cand],
+                "comparability": p1["comparability"],
                 "verification": verdict,
                 "verification_reason": verification[idx]["reason"] if idx < len(verification) else "",
             }
@@ -97,7 +114,9 @@ def compare_shared_rooms_focused(
         )
         diagnostics.append({
             "status": status,
+            "execution_state": "completed",
             "requested_rooms": [room],
+            "comparability": p1["comparability"],
             "selected_clips": {room: {
                 "before_clip": view["pd_clip"],
                 "after_clip": view["rd_clip"],
