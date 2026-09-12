@@ -1,13 +1,16 @@
-"""Generic room-focused fallback for blind drawing comparison.
+"""Room-focused blind drawing comparison tuned for factual recall.
 
-This stage has one job only: describe observable engineering differences between
-PD and RD/ID.  It deliberately does not ask for legal qualification, severity
-or field actions.  Every shown room must be accounted for as changed, same or
-unclear so an empty model answer can never masquerade as a completed check.
+This stage asks the vision model to do one narrow job: describe observable
+engineering differences between PD and RD/ID.  It deliberately avoids legal
+qualification, severity and field actions.  The default is one ROOM per model
+call because dense multi-room montages were a recurring source of false
+negatives.  Candidate rooms are ranked by a cheap local raster score first so
+LLM budget is spent on the most visually changed zones without benchmark hints.
 """
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 from typing import Sequence
@@ -28,21 +31,29 @@ def _positive_int_env(name: str, default: int, minimum: int, maximum: int) -> in
     return max(minimum, min(maximum, value))
 
 
-# The global budget is shared by all page pairs.  A per-pair cap prevents the
-# first dense plan from consuming every call before later pairs are inspected.
-MAX_FOCUSED_ROOM_CALLS = _positive_int_env("NADZOR_MAX_FOCUSED_ROOM_VISION_CALLS", 12, 0, 48)
-MAX_FOCUSED_CALLS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_CALLS_PER_PAIR", 2, 1, 6)
-# A single paired montage is easier for the model than two independent montage
-# images, so eight rows remain readable while covering substantially more rooms.
-FOCUSED_ROOMS_PER_CALL = _positive_int_env("NADZOR_FOCUSED_ROOMS_PER_CALL", 8, 1, 10)
-MAX_FOCUSED_ROOMS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_ROOMS_PER_PAIR", 24, 1, 40)
+def _float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+# GigaChat peer review recommended one room per vision call and at most two.
+# We keep a larger global budget but cap each pair so early dense sheets cannot
+# starve later candidate pairs.
+MAX_FOCUSED_ROOM_CALLS = _positive_int_env("NADZOR_MAX_FOCUSED_ROOM_VISION_CALLS", 24, 0, 64)
+MAX_FOCUSED_CALLS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_CALLS_PER_PAIR", 4, 1, 8)
+FOCUSED_ROOMS_PER_CALL = _positive_int_env("NADZOR_FOCUSED_ROOMS_PER_CALL", 1, 1, 2)
+MAX_FOCUSED_ROOMS_PER_PAIR = _positive_int_env("NADZOR_MAX_FOCUSED_ROOMS_PER_PAIR", 16, 1, 40)
+FOCUSED_CROP_PADDING = _float_env("NADZOR_FOCUSED_CROP_PADDING", 0.15, 0.0, 0.40)
 
 _ROOM_NUM_RE = re.compile(r"^(\d{1,4})(?:\.(\d+))?([а-яё]?)$", re.IGNORECASE)
 _STATUS_PRIORITY = {"same": 0, "unclear": 1, "changed": 2}
+_READABILITY = {"good", "partial", "poor"}
+_REQUIRED_COVERAGE = {"inventory", "topology", "connections", "parameters"}
+_ALLOWED_KINDS = {"layout", "equipment", "spec", "annotation"}
 
-# These phrases are architectural/function-name changes, not engineering-system
-# evidence by themselves.  They were a generic source of false positives when
-# room crops contained labels more prominently than MEP graphics.
 _ARCHITECTURAL_PHRASES = (
     "добавлено помещение",
     "добавлен медицинский пункт",
@@ -59,51 +70,67 @@ _ENGINEERING_STEMS = (
     "кондиц", "оборуд", "установ", "насос", "теплообмен", "канал",
     "кабел", "элект", "свет", "розет", "вод", "спринкл", "пожар",
     "датчик", "система", "трасс", "коммуникац", "арматур", "вентилят",
+    "диаметр", "сечение", "уклон", "подключ", "ветк", "фланц", "опор",
     "duct", "pipe", "fan", "heater", "radiator", "equipment", "hvac",
 )
 
 _FOCUSED_ROOM_PROMPT = f"""\
-Ты сравниваешь инженерные чертежи ПД и РД/ИД. На этом этапе нужна только
-фиксация ВИДИМЫХ различий. Не делай юридических выводов, не оценивай severity,
-не предлагай проверку на объекте и не решай, является ли различие нарушением.
+Ты — vision-аналитик инженерных чертежей. Сравниваешь ПД -> РД/ИД вслепую.
+На этом этапе нужна ТОЛЬКО фиксация наблюдаемых инженерных различий. Не делай
+юридических выводов, не оценивай severity и не предлагай действия инспектору.
 
-Тебе показано ОДНО изображение-монтаж. В каждой строке есть ROOM <номер>,
-слева фрагмент ПД, справа соответствующий фрагмент РД/ИД. Сравнивай только
-левую и правую половину ОДНОЙ строки. Не сравнивай соседние ROOM между собой.
+Вход — одно paired-изображение: для каждого ROOM слева фрагмент ПД, справа
+соответствующий фрагмент РД/ИД. Обычно показан один ROOM. Сравнивай только
+левую и правую часть одного ROOM.
 
-Проверяй ТОЛЬКО инженерный слой: вентиляцию, отопление, трубопроводы,
-оборудование, воздуховоды, решётки, клапаны, стояки, трассы, подключения и
-другие инженерные системы. Игнорируй изменение названия/назначения помещения,
-архитектурные стены и перегородки, мебель, экспликацию и обычные подписи, если
-они не описывают инженерный элемент. Фраза вроде «добавлен медицинский пункт»
-сама по себе НЕ является инженерным различием.
+Для КАЖДОГО ROOM выполни последовательность и не завершай анализ раньше:
+1) оцени читаемость обеих сторон;
+2) составь инвентарь видимых инженерных элементов: воздуховоды, решётки,
+   клапаны, оборудование, трубопроводы, стояки, арматура, приборы и т.п.;
+3) проверь топологию и непрерывность трасс внутри зоны;
+4) проверь точки входа/выхода и подключения к стоякам/оборудованию;
+5) проверь параметры и обозначения: диаметр/сечение, тип, марку, стрелки,
+   тип линии, монтаж/демонтаж, если это читается;
+6) только после этих шагов выбери changed / same / unclear.
 
-Для КАЖДОГО переданного ROOM обязан вернуть ровно один результат:
-- changed — видишь конкретное инженерное отличие между ПД и РД/ИД;
-- same — обе стороны достаточно читаемы и инженерное решение выглядит одинаковым;
-- unclear — хотя бы одна сторона нечитабельна, показана только таблица/экспликация,
-  зона обрезана или нельзя уверенно сопоставить инженерное решение.
+Правила статуса:
+- changed — есть конкретное инженерное отличие, которое можно назвать;
+- same — ОБЕ стороны хорошо читаемы и все четыре категории coverage
+  inventory/topology/connections/parameters реально проверены;
+- unclear — хотя бы одна сторона читается частично/плохо, зона обрезана,
+  показана таблица/экспликация либо остаётся неоднозначность. Не превращай
+  отсутствие уверенности в same.
 
-Для changed сначала отдельно зафиксируй, что видно в ПД и что видно в РД,
-а затем сформулируй одно конкретное отличие: элемент исчез/появился, изменены
-количество, тип, подключение, трасса, конфигурация или положение. Если не можешь
-назвать конкретный инженерный элемент или систему — ставь unclear, а не changed.
-Если доказательств недостаточно — unclear, а не same. Нельзя пропускать ROOM и
-нельзя придумывать номера вне списка.
+Игнорируй сами по себе: изменение названия/назначения помещения, мебель,
+отделку, стены/перегородки, штамп, рамку, масштаб, цвет, шрифт и качество
+рендера. Не считай отсутствием инженерного элемента только отсутствие слова.
+Если элемент есть в одной версии и отсутствует в другой — это changed, если
+обе зоны действительно сопоставимы.
 
-Не считай различием рамку, штамп, масштаб, цвет, шрифт, качество рендера или
-компоновку листа. Не делай вывод об отсутствии элемента только из отсутствия
-слова в тексте.
+Для changed верни differences[] и разделяй разные сущности. kind:
+layout — трасса/топология/подключение; equipment — наличие/тип оборудования;
+spec — диаметр/сечение/марка/параметр; annotation — инженерная подпись.
+bbox_pd/bbox_rd необязательны; если даёшь, это [x0,y0,x1,y1] в диапазоне 0..1
+относительно соответствующей половины paired-изображения. Не выдумывай bbox.
 
 {UNTRUSTED_INPUT_RULE}
 
 Отвечай только JSON:
-{{"checked_rooms":[
-  {{"room":"101","status":"changed|same|unclear",
-    "pd_observation":"какой инженерный элемент виден в ПД",
-    "rd_observation":"какой инженерный элемент виден в РД/ИД",
-    "change":"конкретное инженерное различие; пусто для same/unclear"}}
-],
+{{"checked_rooms":[{{
+  "room":"101",
+  "readability_pd":"good|partial|poor",
+  "readability_rd":"good|partial|poor",
+  "coverage":["inventory","topology","connections","parameters"],
+  "pd_observation":"кратко: что инженерного видно в ПД",
+  "rd_observation":"кратко: что инженерного видно в РД/ИД",
+  "differences":[{{
+    "kind":"layout|equipment|spec|annotation",
+    "summary_ru":"конкретное инженерное отличие",
+    "bbox_pd":[0.1,0.2,0.3,0.4],
+    "bbox_rd":[0.1,0.2,0.3,0.4]
+  }}],
+  "status":"changed|same|unclear"
+}}],
 "summary":"кратко, только наблюдаемые инженерные различия"}}
 """
 
@@ -117,8 +144,150 @@ def room_sort_key(room: str):
 
 
 def select_rooms(shared_rooms: Sequence[str]) -> list[str]:
-    rooms = {normalize_room_key(room) for room in shared_rooms if normalize_room_key(room)}
-    return sorted(rooms, key=room_sort_key)[:MAX_FOCUSED_ROOMS_PER_PAIR]
+    """Keep room coverage broad instead of always taking the first numbers."""
+    rooms = sorted(
+        {normalize_room_key(room) for room in shared_rooms if normalize_room_key(room)},
+        key=room_sort_key,
+    )
+    limit = MAX_FOCUSED_ROOMS_PER_PAIR
+    if len(rooms) <= limit:
+        return rooms
+    if limit == 1:
+        return [rooms[len(rooms) // 2]]
+    indexes = {
+        int(round(i * (len(rooms) - 1) / (limit - 1)))
+        for i in range(limit)
+    }
+    return [rooms[index] for index in sorted(indexes)]
+
+
+def _expand_clip(clip: tuple[float, float, float, float], pad_ratio: float = FOCUSED_CROP_PADDING):
+    x0, y0, x1, y1 = clip
+    width = max(0.001, x1 - x0)
+    height = max(0.001, y1 - y0)
+    pad_x = width * pad_ratio
+    pad_y = height * pad_ratio
+    return (
+        max(0.0, x0 - pad_x),
+        max(0.0, y0 - pad_y),
+        min(1.0, x1 + pad_x),
+        min(1.0, y1 + pad_y),
+    )
+
+
+def _pixel_gray(pixel) -> float:
+    if not pixel:
+        return 255.0
+    if len(pixel) == 1:
+        return float(pixel[0])
+    return sum(float(value) for value in pixel[:3]) / min(3, len(pixel))
+
+
+def _png_grid(png: bytes, grid: int = 14) -> list[list[float]]:
+    pix = pymupdf.Pixmap(png)
+    out: list[list[float]] = []
+    for gy in range(grid):
+        row: list[float] = []
+        y = min(pix.height - 1, max(0, int((gy + 0.5) / grid * pix.height)))
+        for gx in range(grid):
+            x = min(pix.width - 1, max(0, int((gx + 0.5) / grid * pix.width)))
+            row.append(255.0 - _pixel_gray(pix.pixel(x, y)))
+        out.append(row)
+    return out
+
+
+def _aligned_grid_difference(before_png: bytes, after_png: bytes) -> float:
+    """Cheap local score robust to small crop shifts and modest scale drift."""
+    before = _png_grid(before_png)
+    after = _png_grid(after_png)
+    grid = len(before)
+    center = (grid - 1) / 2.0
+    best = math.inf
+    for scale in (0.90, 1.0, 1.10):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                total = 0.0
+                count = 0
+                for y in range(grid):
+                    ay = int(round(center + (y - center) * scale + dy))
+                    if ay < 0 or ay >= grid:
+                        continue
+                    for x in range(grid):
+                        ax = int(round(center + (x - center) * scale + dx))
+                        if ax < 0 or ax >= grid:
+                            continue
+                        total += abs(before[y][x] - after[ay][ax])
+                        count += 1
+                if count:
+                    best = min(best, total / count / 255.0)
+    return 0.0 if not math.isfinite(best) else float(best)
+
+
+def _render_room_pair_for_score(
+    before_path: str,
+    before_page: int,
+    after_path: str,
+    after_page: int,
+    room: str,
+) -> tuple[float | None, tuple[float, float, float, float] | None, tuple[float, float, float, float] | None]:
+    try:
+        before_crops = room_label_crops(before_path, before_page, room, max_crops=2)
+        after_crops = room_label_crops(after_path, after_page, room, max_crops=2)
+        if not before_crops or not after_crops:
+            return None, None, None
+        best: tuple[float, tuple[float, float, float, float], tuple[float, float, float, float]] | None = None
+        # Try a small bounded cross-product because the same ROOM number can
+        # occur in both a plan and an explication table.
+        for before_clip in before_crops[:2]:
+            for after_clip in after_crops[:2]:
+                b_clip = _expand_clip(before_clip)
+                a_clip = _expand_clip(after_clip)
+                before_png = render_page_to_png_bytes(
+                    before_path, before_page, max_dim=360, clip_frac=b_clip
+                )
+                after_png = render_page_to_png_bytes(
+                    after_path, after_page, max_dim=360, clip_frac=a_clip
+                )
+                score = _aligned_grid_difference(before_png, after_png)
+                if best is None or score > best[0]:
+                    best = (score, b_clip, a_clip)
+        if best is None:
+            return None, None, None
+        return best
+    except Exception:  # noqa: BLE001
+        return None, None, None
+
+
+def prioritize_rooms(
+    before_path: str,
+    before_page: int,
+    after_path: str,
+    after_page: int,
+    shared_rooms: Sequence[str],
+) -> tuple[list[str], list[dict]]:
+    """Rank rooms by cheap local visual change while staying benchmark-blind."""
+    selected = select_rooms(shared_rooms)
+    scored: list[tuple[float, object, str]] = []
+    diagnostics: list[dict] = []
+    for room in selected:
+        score, before_clip, after_clip = _render_room_pair_for_score(
+            before_path, before_page, after_path, after_page, room
+        )
+        numeric_score = -1.0 if score is None else score
+        scored.append((-numeric_score, room_sort_key(room), room))
+        diagnostics.append({
+            "room": room,
+            "local_diff_score": None if score is None else round(score, 6),
+            "before_clip": before_clip,
+            "after_clip": after_clip,
+        })
+    scored.sort()
+    ordered = [room for _, _, room in scored]
+    rank = {room: index + 1 for index, room in enumerate(ordered)}
+    for item in diagnostics:
+        item["priority_rank"] = rank[item["room"]]
+    diagnostics.sort(key=lambda item: item["priority_rank"])
+    return ordered, diagnostics
 
 
 def _fit_rect(width: float, height: float, box: pymupdf.Rect) -> pymupdf.Rect:
@@ -134,7 +303,7 @@ def make_paired_montage(
     before_rows: Sequence[tuple[str, bytes]],
     after_rows: Sequence[tuple[str, bytes]],
 ) -> bytes:
-    """Build one image with PD and RD side-by-side for every room row."""
+    """Build one large paired image; one ROOM per call is the default."""
     if not before_rows or not after_rows:
         return b""
     after_by_room = {room: png for room, png in after_rows}
@@ -142,24 +311,28 @@ def make_paired_montage(
     if not rows:
         return b""
 
-    width = 1400.0
-    header = 42.0
-    row_height = 300.0
-    gap = 16.0
-    label_width = 100.0
+    width = 1800.0
+    header = 48.0
+    row_height = 720.0 if len(rows) == 1 else 520.0
+    gap = 18.0
+    label_width = 120.0
     half_width = (width - label_width - gap * 3) / 2
     doc = pymupdf.open()
     try:
         page = doc.new_page(width=width, height=header + row_height * len(rows))
-        page.insert_text((label_width + gap, 27), "PD", fontsize=15)
-        page.insert_text((label_width + gap * 2 + half_width, 27), "RD / ID", fontsize=15)
+        page.insert_text((label_width + gap, 30), "PD", fontsize=16)
+        page.insert_text((label_width + gap * 2 + half_width, 30), "RD / ID", fontsize=16)
         for index, (room, before_png, after_png) in enumerate(rows):
             y0 = header + index * row_height
-            page.insert_text((12, y0 + 28), f"ROOM {room}", fontsize=13)
-            left = pymupdf.Rect(label_width + gap, y0 + 8,
-                                label_width + gap + half_width, y0 + row_height - 8)
-            right = pymupdf.Rect(label_width + gap * 2 + half_width, y0 + 8,
-                                 width - gap, y0 + row_height - 8)
+            page.insert_text((12, y0 + 32), f"ROOM {room}", fontsize=14)
+            left = pymupdf.Rect(
+                label_width + gap, y0 + 8,
+                label_width + gap + half_width, y0 + row_height - 8,
+            )
+            right = pymupdf.Rect(
+                label_width + gap * 2 + half_width, y0 + 8,
+                width - gap, y0 + row_height - 8,
+            )
             before_pix = pymupdf.Pixmap(before_png)
             after_pix = pymupdf.Pixmap(after_png)
             page.insert_image(
@@ -186,18 +359,20 @@ def grounded_rows(
     after_rows: list[tuple[str, bytes]] = []
     usable: list[str] = []
     missing: list[str] = []
+    selected_clips: dict[str, dict] = {}
     for room in rooms:
-        before_crops = room_label_crops(before_path, before_page, room, max_crops=3)
-        after_crops = room_label_crops(after_path, after_page, room, max_crops=3)
-        if not before_crops or not after_crops:
+        score, before_clip, after_clip = _render_room_pair_for_score(
+            before_path, before_page, after_path, after_page, room
+        )
+        if before_clip is None or after_clip is None:
             missing.append(room)
             continue
         try:
             before_png = render_page_to_png_bytes(
-                before_path, before_page, max_dim=1050, clip_frac=before_crops[0]
+                before_path, before_page, max_dim=1450, clip_frac=before_clip
             )
             after_png = render_page_to_png_bytes(
-                after_path, after_page, max_dim=1050, clip_frac=after_crops[0]
+                after_path, after_page, max_dim=1450, clip_frac=after_clip
             )
         except Exception:  # noqa: BLE001
             missing.append(room)
@@ -205,7 +380,12 @@ def grounded_rows(
         before_rows.append((room, before_png))
         after_rows.append((room, after_png))
         usable.append(room)
-    return before_rows, after_rows, usable, missing
+        selected_clips[room] = {
+            "local_diff_score": None if score is None else round(score, 6),
+            "before_clip": before_clip,
+            "after_clip": after_clip,
+        }
+    return before_rows, after_rows, usable, missing, selected_clips
 
 
 def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
@@ -217,8 +397,9 @@ def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
     digest = hashlib.sha256(montage + room_text.encode("utf-8")).hexdigest()
     user_text = (
         f"Обязательный список ROOM для проверки: {room_text}. "
-        "В каждой строке слева ПД, справа РД/ИД. Верни checked_rooms ровно "
-        "по этим ROOM; ни один не пропускай. Ищи только инженерные различия."
+        "Для каждого ROOM выполни полный порядок: читаемость -> инвентарь -> "
+        "топология -> подключения -> параметры -> статус. Не ставь same, если "
+        "не можешь уверенно закончить все эти проверки."
     )
     result = call_llm_json(
         config,
@@ -227,7 +408,7 @@ def call_focused(before_rows, after_rows, config: LlmConfig) -> dict:
         images=[png_bytes_to_data_url(montage)],
         operation="vision",
         source_digest=digest,
-        prompt_version="focused-room-pair-v4",
+        prompt_version="focused-room-pair-v5-gigachat-review",
     )
     return result if isinstance(result, dict) else {}
 
@@ -239,8 +420,46 @@ def _looks_architectural_only(*parts: str) -> bool:
     return not any(stem in text for stem in _ENGINEERING_STEMS)
 
 
+def _valid_bbox(value) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    try:
+        numbers = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if any(number < 0.0 or number > 1.0 for number in numbers):
+        return None
+    if numbers[2] <= numbers[0] or numbers[3] <= numbers[1]:
+        return None
+    return numbers
+
+
+def _normalized_differences(raw: dict) -> list[dict]:
+    differences = raw.get("differences")
+    if not isinstance(differences, list):
+        legacy = str(raw.get("change") or "").strip()
+        differences = [{"kind": "layout", "summary_ru": legacy}] if legacy else []
+    accepted: list[dict] = []
+    for item in differences:
+        if not isinstance(item, dict):
+            continue
+        summary = str(item.get("summary_ru") or item.get("change") or "").strip()
+        if not summary:
+            continue
+        kind = str(item.get("kind") or "layout").strip().casefold()
+        if kind not in _ALLOWED_KINDS:
+            kind = "layout"
+        accepted.append({
+            "kind": kind,
+            "summary_ru": summary,
+            "bbox_pd": _valid_bbox(item.get("bbox_pd")),
+            "bbox_rd": _valid_bbox(item.get("bbox_rd")),
+        })
+    return accepted
+
+
 def normalize_checked_rooms(result: dict, usable_rooms: Sequence[str]) -> tuple[list[dict], list[str]]:
-    """Validate model output without turning omissions into negative evidence."""
+    """Validate model output; unreadable or incomplete checks never become same."""
     allowed = [normalize_room_key(room) for room in usable_rooms]
     allowed = [room for index, room in enumerate(allowed) if room and room not in allowed[:index]]
     allowed_set = set(allowed)
@@ -254,23 +473,50 @@ def normalize_checked_rooms(result: dict, usable_rooms: Sequence[str]) -> tuple[
         status = str(raw.get("status") or "").strip().casefold()
         if room not in allowed_set or status not in _STATUS_PRIORITY:
             continue
+
         pd_observation = str(raw.get("pd_observation") or "").strip()
         rd_observation = str(raw.get("rd_observation") or "").strip()
-        change = str(raw.get("change") or "").strip()
-        if status == "changed" and not change:
+        readability_pd = str(raw.get("readability_pd") or "").strip().casefold()
+        readability_rd = str(raw.get("readability_rd") or "").strip().casefold()
+        if readability_pd not in _READABILITY:
+            readability_pd = "partial"
+        if readability_rd not in _READABILITY:
+            readability_rd = "partial"
+        coverage_raw = raw.get("coverage") if isinstance(raw.get("coverage"), list) else []
+        coverage = {
+            str(item).strip().casefold()
+            for item in coverage_raw
+            if str(item).strip().casefold() in _REQUIRED_COVERAGE
+        }
+        differences = _normalized_differences(raw)
+
+        if status == "changed" and not differences:
             status = "unclear"
-        if status == "changed" and _looks_architectural_only(
-            pd_observation, rd_observation, change
+        if status == "changed":
+            summaries = " ".join(item["summary_ru"] for item in differences)
+            if _looks_architectural_only(pd_observation, rd_observation, summaries):
+                status = "unclear"
+                differences = []
+        if status == "same" and (
+            readability_pd != "good"
+            or readability_rd != "good"
+            or coverage != _REQUIRED_COVERAGE
+            or not pd_observation
+            or not rd_observation
         ):
             status = "unclear"
-        if status == "same" and (not pd_observation or not rd_observation):
-            status = "unclear"
+
+        change = " | ".join(item["summary_ru"] for item in differences) if status == "changed" else ""
         item = {
             "room": room,
             "status": status,
+            "readability_pd": readability_pd,
+            "readability_rd": readability_rd,
+            "coverage": sorted(coverage),
             "pd_observation": pd_observation,
             "rd_observation": rd_observation,
-            "change": change if status == "changed" else "",
+            "differences": differences if status == "changed" else [],
+            "change": change,
         }
         previous = best.get(room)
         if previous is None or _STATUS_PRIORITY[status] > _STATUS_PRIORITY[previous["status"]]:
@@ -293,9 +539,15 @@ def compare_shared_rooms_focused(
 ) -> tuple[list[dict], list[dict], int]:
     if max_calls <= 0 or not shared_rooms:
         return [], [], 0
-    ordered = select_rooms(shared_rooms)
+
+    ordered, priority = prioritize_rooms(
+        before_path, before_page, after_path, after_page, shared_rooms
+    )
     findings: list[dict] = []
-    diagnostics: list[dict] = []
+    diagnostics: list[dict] = [{
+        "status": "focused_room_priority",
+        "room_priority": priority,
+    }]
     calls_used = 0
     pair_budget = min(max_calls, MAX_FOCUSED_CALLS_PER_PAIR)
 
@@ -303,7 +555,7 @@ def compare_shared_rooms_focused(
         if calls_used >= pair_budget:
             break
         requested = ordered[start:start + FOCUSED_ROOMS_PER_CALL]
-        before_rows, after_rows, usable, missing = grounded_rows(
+        before_rows, after_rows, usable, missing, selected_clips = grounded_rows(
             before_path, before_page, after_path, after_page, requested
         )
         if not usable:
@@ -322,6 +574,7 @@ def compare_shared_rooms_focused(
                 "status": "focused_vision_error",
                 "requested_rooms": requested,
                 "usable_rooms": usable,
+                "selected_clips": selected_clips,
                 "error": f"{type(exc).__name__}: {exc}",
             })
             continue
@@ -337,6 +590,7 @@ def compare_shared_rooms_focused(
                 "rooms": [row["room"]],
                 "pd_observation": row["pd_observation"],
                 "rd_observation": row["rd_observation"],
+                "differences": row["differences"],
             }
             accepted.append(finding)
             findings.append(finding)
@@ -354,6 +608,7 @@ def compare_shared_rooms_focused(
             "requested_rooms": requested,
             "usable_rooms": usable,
             "missing_rooms": missing,
+            "selected_clips": selected_clips,
             "omitted_by_model": omitted,
             "checked_rooms": checked,
             "findings": accepted,
@@ -362,11 +617,12 @@ def compare_shared_rooms_focused(
             "pair_call_budget": pair_budget,
         })
 
-    if len(ordered) > pair_budget * FOCUSED_ROOMS_PER_CALL:
+    scheduled_capacity = pair_budget * FOCUSED_ROOMS_PER_CALL
+    if len(ordered) > scheduled_capacity:
         diagnostics.append({
             "status": "focused_pair_budget",
             "rooms_total": len(ordered),
-            "rooms_scheduled": min(len(ordered), pair_budget * FOCUSED_ROOMS_PER_CALL),
+            "rooms_scheduled": min(len(ordered), scheduled_capacity),
             "calls_used": calls_used,
             "pair_call_budget": pair_budget,
         })
