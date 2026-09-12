@@ -11,13 +11,49 @@ counters, so provider queue time and request timing remain attributable.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
-RUN_LOGS_DIR = Path(__file__).resolve().parents[2] / "data" / "run_logs"
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# Каталог диагностики лежит рядом с остальными хранилищами проекта
+# (``facts_store.py``, ``file_store.py``, ``pd_store.py`` — все ``parents[3]``).
+# Раньше здесь было ``parents[2]``, то есть ``packages/data/run_logs``: писали
+# в один каталог, читали из другого, и сводка по прогонам всегда выходила
+# пустой. Молчание тогда выглядело как «прогонов не было» (Г.10).
+RUN_LOGS_DIR = Path(os.environ.get(
+    "NADZOR_RUN_LOGS_DIR", _PROJECT_ROOT / "data" / "run_logs"))
 TASK_LOGS_DIR = RUN_LOGS_DIR / "tasks"
+
+# Устаревший каталог. Запись туда больше не идёт; чтение оставлено, чтобы уже
+# сделанные на машине инспектора прогоны не исчезли из вида после обновления.
+LEGACY_RUN_LOGS_DIR = Path(__file__).resolve().parents[2] / "data" / "run_logs"
+
+
+def run_log_dirs() -> list[Path]:
+    """Каталоги логов для чтения: текущий, затем устаревший, если он есть."""
+    dirs = [RUN_LOGS_DIR]
+    legacy = LEGACY_RUN_LOGS_DIR
+    if legacy != RUN_LOGS_DIR and legacy.is_dir():
+        dirs.append(legacy)
+    return dirs
+
+
+def find_run_logs(run_id: int) -> list[Path]:
+    """Логи прогона по всем каталогам чтения, старые первыми.
+
+    Имя файла содержит метку времени, поэтому сортировка по имени даёт
+    хронологию независимо от каталога, а последний элемент списка — последний
+    лог. Сортировать надо по имени всего набора, а не каталог за каталогом:
+    иначе старый лог из устаревшего каталога оказался бы «последним».
+    """
+    found: list[Path] = []
+    for folder in run_log_dirs():
+        found.extend(folder.glob(f"{int(run_id)}_*.json"))
+    return sorted(found, key=lambda path: path.name)
 
 
 def _ensure_dir(path: Path | None = None) -> None:

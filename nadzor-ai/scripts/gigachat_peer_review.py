@@ -164,8 +164,27 @@ def _runtime_root_score(root: Path) -> int:
     return score
 
 
+def _runtime_root_candidates() -> list[Path]:
+    """Каталоги, где могут лежать логи прогонов, в порядке доверия.
+
+    Первым идёт тот, куда пишет ``app.run_logger``: если его переопределили
+    переменной окружения, читать надо оттуда же, иначе сводка снова окажется
+    пустой при существующих прогонах. ``packages/data/run_logs`` — устаревший
+    каталог прежних версий, он оставлен только на чтение.
+    """
+    override = os.environ.get("NADZOR_RUN_LOGS_DIR")
+    candidates = [Path(override)] if override else [ROOT / "data" / "run_logs"]
+    candidates.append(ROOT / "packages" / "data" / "run_logs")
+    candidates.append(ROOT / "run_logs")
+    unique: list[Path] = []
+    for path in candidates:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
 def _select_runtime_root() -> Path | None:
-    candidates = [ROOT / "data" / "run_logs", ROOT / "run_logs"]
+    candidates = _runtime_root_candidates()
     ranked = sorted(
         ((_runtime_root_score(path), idx, path) for idx, path in enumerate(candidates)),
         key=lambda row: (-row[0], row[1]),
@@ -231,7 +250,7 @@ def _compact_task(data: dict[str, Any]) -> dict[str, Any]:
 def collect_runtime_summary() -> dict[str, Any]:
     root = _select_runtime_root()
     summary: dict[str, Any] = {
-        "roots_checked": [str(ROOT / "data" / "run_logs"), str(ROOT / "run_logs")],
+        "roots_checked": [str(path) for path in _runtime_root_candidates()],
         "selected_root": str(root) if root else None,
         "stages": {},
     }

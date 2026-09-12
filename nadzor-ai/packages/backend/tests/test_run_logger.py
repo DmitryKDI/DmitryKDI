@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app import run_logger
 
@@ -169,3 +170,41 @@ def test_compact_triangulated_result_keeps_quality_diagnostics_only():
     assert compact["verdicts_total"] == 1
     assert compact["escalation_tickets_total"] == 1
     assert "findings" not in compact["rooms"]
+
+
+def test_run_logs_dir_lives_in_project_data_not_inside_packages():
+    """Логи прогонов должны лежать там же, где их ищет разбор диагностики.
+
+    Раньше путь считался на один уровень выше нужного, каталог оказывался
+    внутри `packages/`, и сводка по прогонам всегда выходила пустой — при том
+    что прогоны были. Проверяем отношением к корню проекта, а не строкой:
+    при переносе каталога проекта тест должен остаться верным.
+    """
+    project_root = Path(run_logger.__file__).resolve().parents[3]
+
+    assert run_logger.RUN_LOGS_DIR == project_root / "data" / "run_logs"
+    assert run_logger.RUN_LOGS_DIR.parent == project_root / "data"
+    assert "packages" not in run_logger.RUN_LOGS_DIR.relative_to(project_root).parts
+
+
+def test_find_run_logs_reads_legacy_directory_and_keeps_chronology(
+    tmp_path, monkeypatch
+):
+    """Прогоны из устаревшего каталога не должны исчезнуть после обновления."""
+    current = tmp_path / "current"
+    legacy = tmp_path / "legacy"
+    current.mkdir()
+    legacy.mkdir()
+    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", current)
+    monkeypatch.setattr(run_logger, "LEGACY_RUN_LOGS_DIR", legacy)
+
+    old = legacy / "7_20240101T000000000000Z.json"
+    new = current / "7_20250101T000000000000Z.json"
+    old.write_text("{}", encoding="utf-8")
+    new.write_text("{}", encoding="utf-8")
+    (current / "8_20250101T000000000000Z.json").write_text("{}", encoding="utf-8")
+
+    found = run_logger.find_run_logs(7)
+
+    assert found == [old, new]
+    assert found[-1] == new

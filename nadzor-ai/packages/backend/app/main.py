@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import glob
 import json
 import os
 import sys
@@ -31,7 +30,7 @@ from . import (
     schemas,
     spec_compare,
 )
-from .run_logger import save as save_run_log, RUN_LOGS_DIR
+from .run_logger import save as save_run_log, find_run_logs
 
 import pymupdf
 from .classification import DISCIPLINE_CODES, classify_document
@@ -977,13 +976,10 @@ def get_pd_run_log(run_id: int, db: Session = Depends(get_session)):
     Возвращает последний сохранённый лог для данного run_id.
     Если лог не найден — 404.
     """
-    import glob
     run = db.get(models.PdRun, run_id)
     if run is None:
         raise HTTPException(404, "not found")
-    # Ищем файлы логов по паттерну {run_id}_*.json
-    pattern = str(RUN_LOGS_DIR / f"{run_id}_*.json")
-    files = sorted(glob.glob(pattern))
+    files = find_run_logs(run_id)
     if not files:
         raise HTTPException(404, "лог не найден — прогон ещё не завершён или логирование отключено")
     with open(files[-1], "r", encoding="utf-8") as f:
@@ -1295,8 +1291,7 @@ def get_compliance_run_log(run_id: int, db: Session = Depends(get_session)):
     run = db.get(models.ComplianceRun, run_id)
     if run is None:
         raise HTTPException(404, "not found")
-    pattern = str(RUN_LOGS_DIR / f"{run_id}_*.json")
-    files = sorted(glob.glob(pattern))
+    files = find_run_logs(run_id)
     if not files:
         raise HTTPException(404, "лог не найден — прогон ещё не завершён или логирование отключено")
     with open(files[-1], "r", encoding="utf-8") as f:

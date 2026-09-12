@@ -53,6 +53,7 @@ on:
       - 'nadzor-ai/scripts/gigachat_peer_review.py'
       - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
+      - '.claude/PROJECT-NADZOR.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
 
