@@ -866,7 +866,11 @@ def compare_non_room_regions(
     )
 
     diagnostics = []
-    if len(proposals) < 2 and budget - used >= 2:
+    if len(proposals) < 2 and used < budget and budget - used >= 2:
+        # A provider attempt consumes exactly one budget slot whether it succeeds
+        # or fails.  Count before entering the call so exception paths cannot
+        # accidentally consume two slots and starve later regions.
+        used += 1
         try:
             adaptive = _pass0_regions(
                 before_path,
@@ -877,7 +881,6 @@ def compare_non_room_regions(
                 proposals,
                 discipline,
             )
-            used += 1
             proposals.extend(adaptive)
             diagnostics.append(
                 {
@@ -887,7 +890,6 @@ def compare_non_room_regions(
                 }
             )
         except Exception as exc:
-            used += 1
             diagnostics.append(
                 {
                     "status": "generic_region_pass0_error",
@@ -922,15 +924,14 @@ def compare_non_room_regions(
     for region in proposals[:discovery_slots]:
         if used >= budget:
             break
+        used += 1
         try:
             view = _view(
                 before_path, before_page, after_path, after_page, region
             )
-            used += 1
             p1 = _normalize_pass1(_call_pass1(view, config, discipline), region)
             discovered.append((region, view, p1))
         except Exception as exc:
-            used += 1
             diagnostics.append(
                 {
                     "status": "generic_region_pass1_error",
@@ -952,13 +953,12 @@ def compare_non_room_regions(
     for region, view, p1 in verify_order:
         if used >= budget:
             break
+        used += 1
         try:
-            used += 1
             verification_by_region[region.region_id] = _verify(
                 view, p1, config, discipline
             )
         except Exception as exc:
-            used += 1
             diagnostics.append(
                 {
                     "status": "generic_region_verify_error",
