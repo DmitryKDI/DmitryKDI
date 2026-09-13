@@ -52,8 +52,76 @@ def _connect(path: Path = MEMORY_PATH) -> sqlite3.Connection:
             created_at REAL NOT NULL
         )"""
     )
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS playbook (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            body TEXT NOT NULL DEFAULT '',
+            lesson_count INTEGER NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL
+        )"""
+    )
     db.commit()
     return db
+
+
+def refresh_master_playbook(
+    *,
+    path: Path = MEMORY_PATH,
+    max_chars: int = 12000,
+) -> str:
+    """Rebuild a compact persistent playbook from all enabled generic lessons.
+
+    This first version is intentionally deterministic: exact/normalized duplicates
+    are collapsed and the remaining generic lessons are kept in learning order.
+    Later versions may replace this with semantic consolidation without changing
+    the runtime contract.
+    """
+    budget = max(1000, min(30000, int(max_chars)))
+    with _connect(path) as db:
+        rows = db.execute(
+            "SELECT lesson FROM lessons WHERE enabled = 1 ORDER BY id ASC"
+        ).fetchall()
+        seen: set[str] = set()
+        items: list[str] = []
+        used = 0
+        for row in rows:
+            lesson = " ".join(str(row[0] or "").split()).strip()
+            key = lesson.casefold()
+            if not lesson or key in seen or not _generic_lesson(lesson):
+                continue
+            line = f"- {lesson}"
+            extra = len(line) + (1 if items else 0)
+            if items and used + extra > budget:
+                break
+            if not items and len(line) > budget:
+                line = line[:budget].rstrip()
+                lesson = line[2:].strip()
+            seen.add(key)
+            items.append(lesson)
+            used += extra
+        body = "\n".join(f"- {item}" for item in items)
+        db.execute(
+            """INSERT INTO playbook(id, body, lesson_count, updated_at)
+               VALUES(1, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 body = excluded.body,
+                 lesson_count = excluded.lesson_count,
+                 updated_at = excluded.updated_at""",
+            (body, len(items), time.time()),
+        )
+        db.commit()
+    return body
+
+
+def master_playbook(*, path: Path = MEMORY_PATH) -> str:
+    """Return the persistent generic playbook, hidden in blind mode."""
+    if blind_mode() or not path.exists():
+        return ""
+    with _connect(path) as db:
+        row = db.execute("SELECT body FROM playbook WHERE id = 1").fetchone()
+    if row and str(row[0] or "").strip():
+        return str(row[0])
+    return refresh_master_playbook(path=path)
 
 
 def add_lesson(
@@ -70,19 +138,25 @@ def add_lesson(
         text = text[:1200].rstrip()
     if not _generic_lesson(text):
         raise ValueError("lesson contains object-specific identifiers")
+    created = False
     with _connect(path) as db:
         row = db.execute(
             "SELECT id FROM lessons WHERE lesson = ? AND enabled = 1",
             (text,),
         ).fetchone()
         if row:
-            return int(row[0])
-        cur = db.execute(
-            "INSERT INTO lessons(lesson, source_type, source_id, created_at) VALUES(?,?,?,?)",
-            (text, str(source_type or "manual"), str(source_id or ""), time.time()),
-        )
-        db.commit()
-        return int(cur.lastrowid)
+            lesson_id = int(row[0])
+        else:
+            cur = db.execute(
+                "INSERT INTO lessons(lesson, source_type, source_id, created_at) VALUES(?,?,?,?)",
+                (text, str(source_type or "manual"), str(source_id or ""), time.time()),
+            )
+            db.commit()
+            lesson_id = int(cur.lastrowid)
+            created = True
+    if created:
+        refresh_master_playbook(path=path)
+    return lesson_id
 
 
 def active_lessons(*, limit: int = 24, path: Path = MEMORY_PATH) -> list[dict]:
@@ -114,6 +188,18 @@ def active_lessons(*, limit: int = 24, path: Path = MEMORY_PATH) -> list[dict]:
 
 
 def lessons_prompt(*, limit: int = 24, path: Path = MEMORY_PATH) -> str:
+    """Return the long-term inspector experience injected into each new analysis."""
+    if blind_mode():
+        return ""
+    playbook = master_playbook(path=path)
+    if playbook:
+        return (
+            "\nMASTER PLAYBOOK ИНСПЕКТОРА. Это накопленные ОБЩИЕ правила прошлых "
+            "проверок, а не подсказки о текущем комплекте. Не считай их "
+            "доказательством; используй как стратегию поиска и перепроверки:\n"
+            + playbook
+            + "\n"
+        )
     lessons = active_lessons(limit=limit, path=path)
     if not lessons:
         return ""
