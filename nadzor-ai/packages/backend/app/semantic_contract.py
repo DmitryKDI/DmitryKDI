@@ -1,10 +1,10 @@
 """Universal semantic evidence contract for PD -> RD/ID comparison.
 
-The contract is intentionally modality-neutral.  A PD claim may come from text
+The contract is intentionally modality-neutral. A PD claim may come from text
 or a drawing; RD evidence may come from a plan, schematic, detail, schedule or
-text.  What changes is the attachment, not the meaning of the result.
+text. What changes is the attachment, not the meaning of the result.
 
-Core rule: NOT_OBSERVED_ON_THIS_EVIDENCE is never promoted to absence.  A
+Core rule: NOT_OBSERVED_ON_THIS_EVIDENCE is never promoted to absence. A
 presence/absence contradiction needs explicit scope and local evidence; when
 scope is insufficient the result remains a candidate/unclear state.
 """
@@ -32,8 +32,9 @@ DIFFERENCE_KINDS = {
 
 REGIONS_PER_CALL = 3
 BBOX_AREA_MIN = 0.02
-BBOX_AREA_MAX = 0.40
-BBOX_MAX_OVERLAP = 0.25
+BBOX_AREA_MAX = 0.25
+BBOX_MAX_OVERLAP = 0.30
+SAFE_COVERAGE_MIN = 0.75
 
 
 def normalize_state(value: object) -> str:
@@ -101,11 +102,7 @@ def _intersection(a, b) -> float:
 
 
 def overlap_ratio(a, b) -> float:
-    """Intersection relative to the smaller region.
-
-    This intentionally catches near-duplicate zooms even if one box encloses
-    the other.  It is a coverage rule, not geometry evidence.
-    """
+    """Intersection relative to the smaller region."""
     denom = min(bbox_area(a), bbox_area(b))
     return _intersection(a, b) / denom if denom > 0 else 0.0
 
@@ -113,8 +110,8 @@ def overlap_ratio(a, b) -> float:
 def normalize_regions(value: object, *, limit: int = REGIONS_PER_CALL) -> list[dict]:
     """Accept only genuinely local, diverse regions.
 
-    Whole-page or tiny boxes are rejected.  The caller can then request fresh
-    region discovery instead of pretending that a second whole-page image was
+    Whole-page, oversized and tiny boxes are rejected. The caller can then
+    request fresh region discovery instead of pretending that a broad crop was
     a local verification.
     """
     out: list[dict] = []
@@ -164,6 +161,18 @@ def normalize_inventory(value: object, *, limit: int = 80) -> list[dict]:
     return out
 
 
+def _bounded_fraction(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, number))
+
+
+def _text_list(value: object) -> list[str]:
+    return [str(x).strip() for x in value if str(x).strip()] if isinstance(value, list) else []
+
+
 def normalize_finding(item: object) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -179,6 +188,15 @@ def normalize_finding(item: object) -> dict | None:
     }
     if not all(fields.values()):
         return None
+
+    scope_check = item.get("scope_check") if isinstance(item.get("scope_check"), dict) else {}
+    evidence_quality = item.get("evidence_quality") if isinstance(item.get("evidence_quality"), dict) else {}
+    attempted_bboxes = []
+    for raw in item.get("attempted_bboxes") or []:
+        box = normalize_bbox(raw)
+        if box is not None:
+            attempted_bboxes.append(box)
+
     kind = normalize_difference_kind(item.get("difference_kind"))
     return {
         **fields,
@@ -186,9 +204,24 @@ def normalize_finding(item: object) -> dict | None:
         "difference_kind": kind,
         "where": str(item.get("where") or "").strip(),
         "evidence_scope": str(item.get("evidence_scope") or "").strip().casefold(),
+        "coverage_pct": _bounded_fraction(item.get("coverage_pct")),
         "absence_verified": bool(item.get("absence_verified")),
         "requires_additional_evidence": bool(item.get("requires_additional_evidence")),
-        "corroboration_refs": [str(x).strip() for x in (item.get("corroboration_refs") or []) if str(x).strip()],
+        "corroboration_refs": _text_list(item.get("corroboration_refs")),
+        "alternative_sheet_refs": _text_list(item.get("alternative_sheet_refs")),
+        "attempted_sheets": _text_list(item.get("attempted_sheets")),
+        "attempted_bboxes": attempted_bboxes,
+        "zoom_request_reason": str(item.get("zoom_request_reason") or "").strip(),
+        "scope_check": {
+            "genre_required": scope_check.get("genre_required"),
+            "scale_match": scope_check.get("scale_match"),
+            "discipline_match": scope_check.get("discipline_match"),
+            "reason": str(scope_check.get("reason") or "").strip(),
+        },
+        "evidence_quality": {
+            "provider_error": str(evidence_quality.get("provider_error") or "").strip(),
+            "unreadable_labels": _text_list(evidence_quality.get("unreadable_labels")),
+        },
     }
 
 
@@ -203,8 +236,6 @@ def normalize_findings(value: object) -> list[dict]:
 
 
 def finding_needs_local_verification(finding: dict) -> bool:
-    # Every graphical contradiction is locally verified.  Presence/absence is
-    # additionally scope-sensitive and cannot be confirmed from one crop.
     return True
 
 
@@ -221,14 +252,17 @@ def finding_can_confirm(
         return False
     if finding.get("requires_additional_evidence"):
         return False
+    quality = finding.get("evidence_quality") if isinstance(finding.get("evidence_quality"), dict) else {}
+    if quality.get("provider_error") or quality.get("unreadable_labels"):
+        return False
     if finding.get("difference_kind") == "presence_absence":
-        # Absence is a stronger claim than a configuration contradiction.
-        # Require explicit model acknowledgement that the inspected evidence
-        # scope is complete plus at least one independent corroboration ref.
+        coverage = finding.get("coverage_pct")
         return (
             bool(finding.get("absence_verified"))
             and finding.get("evidence_scope") == "complete"
-            and len(finding.get("corroboration_refs") or []) >= 1
+            and coverage is not None
+            and coverage >= SAFE_COVERAGE_MIN
+            and len(finding.get("corroboration_refs") or []) >= 2
         )
     return True
 
@@ -244,6 +278,11 @@ def safe_no_change(
     pending_high_regions: bool,
     errors: Iterable[object],
     cache_only: bool = False,
+    coverage_pct: float | None = None,
+    provider_error: str = "",
+    unreadable_labels: Iterable[str] = (),
+    scope_match: bool = True,
+    budget_exhausted: bool = False,
 ) -> bool:
     return (
         normalize_state(state) == APPEARS_COMPLIANT
@@ -254,4 +293,9 @@ def safe_no_change(
         and not pending_high_regions
         and not list(errors)
         and not cache_only
+        and not provider_error
+        and not list(unreadable_labels)
+        and scope_match
+        and not budget_exhausted
+        and (coverage_pct is None or coverage_pct >= SAFE_COVERAGE_MIN)
     )

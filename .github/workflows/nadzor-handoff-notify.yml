@@ -1,0 +1,54 @@
+name: NADZOR GigaChat handoff notification
+
+on:
+  push:
+    branches:
+      - 'claude/new-session-d44es2'
+    paths:
+      - 'nadzor-ai/handoff/latest_handoff.json'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'nadzor-ai/handoff/latest_handoff.json';
+            const h = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = 'NADZOR · GigaChat review updates';
+            const freshness = h.runtime_review?.freshness?.classification ?? 'unknown';
+            const technical = h.runtime_review?.execution?.technical_gaps?.length ?? 0;
+            const coverage = h.runtime_review?.execution?.coverage_gaps?.length ?? 0;
+            const link = `https://github.com/${owner}/${repo}/blob/${context.sha}/${path}`;
+            const body = [
+              `@${owner} новый GigaChat review готов.`,
+              '',
+              `- source commit: \`${h.source_git_sha ?? 'unknown'}\``,
+              `- freshness: **${freshness}**`,
+              `- technical gaps: **${technical}**`,
+              `- coverage gaps: **${coverage}**`,
+              `- [Открыть санитизированный handoff](${link})`,
+              '',
+              'Полные runtime-логи и имена документов в GitHub не публикуются.'
+            ].join('\n');
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100
+            });
+            const existing = issues.find(i => !i.pull_request && i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number, body
+              });
+            } else {
+              await github.rest.issues.create({ owner, repo, title, body });
+            }
