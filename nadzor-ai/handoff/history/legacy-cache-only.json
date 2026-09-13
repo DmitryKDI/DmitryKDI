@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "legacy-cache-only",
+  "freshness": "cache_only",
+  "runtime_health": {
+    "requests": 0,
+    "responses": 0,
+    "persistent_cache_hits": 39
+  },
+  "note": "Historical comparison point only; not valid evidence of current prompt/model behavior."
+}
