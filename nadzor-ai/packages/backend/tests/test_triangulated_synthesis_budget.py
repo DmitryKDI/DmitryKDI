@@ -24,7 +24,7 @@ def _prepare(monkeypatch):
     monkeypatch.setattr(lean, "extract_requirements_llm", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         lean,
-        "check_compliance",
+        "check_requirements_semantic",
         lambda *args, **kwargs: SimpleNamespace(counts={}, not_run=[], diagnostics={}, items=[]),
     )
 
@@ -49,6 +49,7 @@ def test_active_runtime_does_not_run_legacy_synthesis(monkeypatch):
     assert result["triangulation"]["active"] is False
     assert result["legacy_runtime"]["verdict_synthesis"] is False
     assert result["legacy_runtime"]["mandatory_triangulation"] is False
+    assert result["legacy_runtime"]["legacy_compliance_ladder"] is False
 
 
 def test_registry_and_routing_branches_are_not_part_of_active_result(monkeypatch):
