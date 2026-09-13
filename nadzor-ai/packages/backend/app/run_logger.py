@@ -334,8 +334,11 @@ def _compact_visual_results(block: object) -> dict[str, Any]:
         "pd_clip", "rd_clip", "image_layout", "general_max_dim", "local_max_dim",
         "verification_executed", "calls_used", "calls_budget", "proposals_total",
         "regions_discovered", "regions_verified", "discovery_first",
-        "whole_page_done", "candidate_regions_total", "candidate_regions_checked",
+        "whole_page_done", "region_discovery_done", "candidate_regions_total",
+        "candidate_regions_checked", "min_local_checks_for_no_change",
         "differences_total", "semantic_architecture", "evidence_complete",
+        "pd_inventory", "rd_inventory", "confirmed_findings", "unverified_candidates",
+        "coverage_notes", "uncertainties", "errors",
     }
     for item in block.get("results") or []:
         if not isinstance(item, dict):
@@ -375,11 +378,15 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
     return {
         "valid": result.get("valid"),
         "reason": result.get("reason"),
+        "active_architecture": result.get("active_architecture"),
+        "legacy_runtime": result.get("legacy_runtime") or {},
         "skipped_files": result.get("skipped_files") or [],
         "llm": result.get("llm") or {},
         "not_run": result.get("not_run") or [],
         "performance": result.get("performance") or {},
+        "semantic_findings": result.get("semantic_findings") or [],
         "rooms": {
+            "active": rooms.get("active"),
             "total_pd": rooms.get("total_pd"),
             "total_rd": rooms.get("total_rd"),
             "matched": rooms.get("matched"),
@@ -388,6 +395,7 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
             "signals_total": rooms.get("signals_total"),
         },
         "equipment": {
+            "active": equipment.get("active"),
             "total_pd": equipment.get("total_pd"),
             "total_rd": equipment.get("total_rd"),
             "matched": equipment.get("matched"),
@@ -403,6 +411,7 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
             "auto_selected": bool(routing.get("auto_selected")),
         } if routing else None,
         "triangulation": {
+            "active": triangulation.get("active"),
             "signals_count": triangulation.get("signals_count"),
             "confirmed_total": len(triangulation.get("confirmed") or []),
             "candidates_total": len(triangulation.get("candidates") or []),
