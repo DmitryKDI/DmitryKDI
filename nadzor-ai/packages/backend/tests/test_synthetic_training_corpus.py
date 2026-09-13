@@ -9,6 +9,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from generate_synthetic_corpus import CASES, generate  # noqa: E402
+from simple_competition_compare import DETECT_SYSTEM, VERIFY_SYSTEM  # noqa: E402
 
 
 def test_synthetic_case_mix_is_stable():
@@ -37,3 +38,12 @@ def test_generator_writes_readable_pdf_and_ground_truth(tmp_path):
     gt = json.loads(gt_path.read_text(encoding="utf-8"))
     assert gt["positive"] is True
     assert gt["allowed_training_abstraction"]["lesson"]
+
+
+def test_simple_comparator_rejects_wording_only_differences():
+    detector = DETECT_SYSTEM.casefold()
+    verifier = VERIFY_SYSTEM.casefold()
+    assert "отличие формулировки само по себе не является инженерным отклонением" in detector
+    assert "semantic equivalence" in verifier
+    assert "verdict=rejected" in verifier
+    assert "не превращай грамматическое направление текста в инженерное направление" in verifier
