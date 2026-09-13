@@ -169,6 +169,31 @@ def _restore_preserved(saved: dict[str, list[dict]]) -> None:
             conn.execute(table.insert(), rows)
 
 
+def clear_workspace() -> dict[str, int]:
+    """Очистить рабочие данные прошлой сессии, не трогая настройки ИИ.
+
+    Пользователь запускает локальный инструмент как одноразовое рабочее место:
+    новый запуск должен начинаться без старых документов, прогонов, находок и
+    статусов. При этом Settings сохраняются — там лежит выбранный провайдер и
+    введённый вручную API-ключ.
+
+    Удаляем таблицы в обратном порядке зависимостей metadata, поэтому сначала
+    уходят findings/page_pairs и только потом documents/runs. Файловое blob-
+    хранилище намеренно не стирается: оно является кэшем по digest и не видно
+    в интерфейсе; повторная загрузка того же PDF может переиспользовать байты.
+    """
+    from . import models  # noqa: F401 — регистрирует модели в Base.metadata
+
+    deleted: dict[str, int] = {}
+    with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            if table.name in _PRESERVED:
+                continue
+            result = conn.execute(table.delete())
+            deleted[table.name] = int(result.rowcount or 0)
+    return deleted
+
+
 def _repair_document_paths() -> int:
     """Восстановить переносимые пути к оригиналам по digest.
 
