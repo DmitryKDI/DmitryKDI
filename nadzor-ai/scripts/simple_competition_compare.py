@@ -18,9 +18,11 @@ import fitz
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "packages" / "backend"
 sys.path.insert(0, str(BACKEND))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.inspector_memory import lessons_prompt  # noqa: E402
 from app.llm import LlmConfig, call_llm_json, credentials_from_file  # noqa: E402
+from entity_guided_retrieval import priority_rd_context  # noqa: E402
 
 MAX_PAGE_CHARS = int(os.environ.get("NADZOR_SIMPLE_PAGE_CHARS", "16000"))
 MAX_TOTAL_CHARS = int(os.environ.get("NADZOR_SIMPLE_TOTAL_CHARS", "180000"))
@@ -52,6 +54,9 @@ DETECT_SYSTEM = """Ты — эксперт-аудитор инженерной �
     и пассивная форма, обратный порядок слов, синонимы и описание направления
     потока не создают нарушение. Инженерная разница должна менять хотя бы один
     узел, связь, роль, количество, параметр, порядок секций, положение или scope.
+11. Блок PRIORITY_RD_CONTEXT является только навигационной подсказкой, автоматически
+    выбранной по сущностям текущей ПД. Он не является ground truth. Используй его,
+    чтобы не пропускать релевантные страницы, но подтверждай вывод по документам.
 
 Верни только JSON:
 {"suspicions":[{
@@ -129,12 +134,16 @@ def _pack_documents(pd_path: Path, rd_paths: Sequence[Path]) -> str:
     packed = "\n\n".join(parts)
     if len(packed) <= MAX_TOTAL_CHARS:
         return packed
-    # Keep page boundaries and preferentially trim the longest page bodies.
     budget = max(2000, MAX_TOTAL_CHARS // max(1, len(parts)))
     compact = []
     for part in parts:
         compact.append(part if len(part) <= budget else part[:budget] + "\n[page text truncated]")
     return "\n\n".join(compact)[:MAX_TOTAL_CHARS]
+
+
+def _priority_context(pd_path: Path, rd_paths: Sequence[Path]) -> str:
+    pd_pages = extract_pdf_pages(pd_path)
+    return priority_rd_context(pd_pages, rd_paths, extract_pdf_pages)
 
 
 def _config(model: str) -> LlmConfig:
@@ -146,13 +155,16 @@ def _config(model: str) -> LlmConfig:
 
 def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig) -> dict:
     documents = _pack_documents(pd_path, rd_paths)
+    priority = _priority_context(pd_path, rd_paths)
     learned = lessons_prompt()
     prompt = (
-        documents
+        (priority + "\n\n" if priority else "")
+        + documents
         + learned
         + "\nЗАДАНИЕ: сравни РД с решениями ПД. Найди все инженерно значимые отклонения. "
           "Сначала связывай сущности, затем сравнивай их функцию/параметры/топологию. "
           "Не считай перефразирование инженерным изменением. "
+          "Особенно перепроверь требования ПД, чьи сущности встречаются в PRIORITY_RD_CONTEXT. "
           "Верни только JSON по заданной схеме."
     )
     first = call_llm_json(
@@ -161,7 +173,7 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         prompt,
         operation="text_verify",
         source_digest="simple-competition-detect:" + str(pd_path) + ":" + "|".join(map(str, rd_paths)),
-        prompt_version="simple-competition-v2",
+        prompt_version="simple-competition-v3-retrieval",
         use_cache=False,
     )
     if not isinstance(first, dict):
@@ -200,10 +212,11 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         else:
             merged.append(row)
     return {
-        "architecture": "simple_pd_rd_two_pass",
+        "architecture": "simple_pd_rd_two_pass+entity_guided_retrieval",
         "model": config.resolved_model(),
         "pd": str(pd_path),
         "rd": [str(x) for x in rd_paths],
+        "priority_context_used": bool(priority),
         "suspicions": merged,
         "rejected_suspicions": rejected,
     }
