@@ -85,6 +85,7 @@ jobs:
           pytest -q
           tests/test_conversation_resilience.py
           tests/test_stateful_investigator.py
+          tests/test_inspector_memory.py
           tests/test_synthetic_training_corpus.py
           tests/test_semantic_contract.py
           tests/test_triangulated_pipeline.py
