@@ -1,20 +1,13 @@
-"""Clean evidence-first drawing comparison runtime.
+"""Evidence-first DRAWING PD -> DRAWING RD/ID semantic runtime.
 
 Active flow:
+    candidate pair -> whole-page inventory/scope -> region discovery
+    -> local verification -> confirmed/candidate/unclear/no-change
 
-    candidate pair
-      -> whole-page inventory of PD and RD
-      -> evidence comparison
-      -> region discovery when coverage is not yet sufficient
-      -> model-driven local zoom
-      -> finding / unclear / compared-no-candidate
-
-The module intentionally does not import legacy room/non-room/raster
-orchestrators. Pair metadata may rank work, but once a pair is selected it
-cannot suppress semantic comparison. A finding is accepted only when the model
-gives explicit observations for BOTH PD and RD and states a direct
-contradiction. A clean/no-change result is allowed only after local coverage;
-a single whole-page glance at a dense engineering sheet is never enough.
+Routing metadata chooses work only.  It never proves a difference and never
+suppresses semantic comparison after a pair is selected.  A whole-page answer
+is discovery evidence, not final graphical proof: every contradiction must be
+locally re-observed before it can be confirmed.
 """
 from __future__ import annotations
 
@@ -26,6 +19,20 @@ from typing import Sequence
 from .control_pair_candidates import candidate_pairs
 from .llm import LlmConfig, call_llm_json
 from .matching import DocumentInput
+from .semantic_contract import (
+    APPEARS_COMPLIANT,
+    NOT_OBSERVED_ON_THIS_EVIDENCE,
+    OBSERVED_CONTRADICTION,
+    REGIONS_PER_CALL,
+    WRONG_OR_INSUFFICIENT_SCOPE,
+    finding_can_confirm,
+    normalize_findings,
+    normalize_inventory,
+    normalize_regions,
+    normalize_sheet_type,
+    normalize_state,
+    safe_no_change,
+)
 from .triangulation import Signal
 from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
 
@@ -39,92 +46,112 @@ def _int_env(name: str, default: int, lo: int, hi: int) -> int:
 
 
 MAX_GRAPHICAL_CANDIDATE_PAIRS = _int_env("NADZOR_MAX_GRAPHICAL_CANDIDATE_PAIRS", 18, 1, 60)
-MAX_REGION_ZOOMS_PER_PAIR = _int_env("NADZOR_MAX_REGION_ZOOMS_PER_PAIR", 3, 0, 6)
+MAX_REGION_ZOOMS_PER_PAIR = _int_env("NADZOR_MAX_REGION_ZOOMS_PER_PAIR", 3, 1, 6)
 MIN_LOCAL_CHECKS_FOR_NO_CHANGE = _int_env("NADZOR_MIN_LOCAL_CHECKS_FOR_NO_CHANGE", 2, 1, 4)
-MAX_DISCOVERED_REGIONS = _int_env("NADZOR_MAX_DISCOVERED_REGIONS", 4, 2, 6)
 
-_PAIR_PROMPT = f"""Ты выполняешь blind-сравнение инженерных решений ПД и РД/ИД.
-Нужно находить только НАБЛЮДАЕМЫЕ расхождения. Нельзя выводить нарушение из
-общего инженерного знания, типовой практики, нормативных ожиданий, вероятных
-последствий или предположений о том, как система 'должна' быть устроена.
+_PAIR_PROMPT = f"""Ты выполняешь blind-сравнение инженерного решения ПД и РД/ИД.
+Работай только по наблюдаемым данным. Нельзя выводить нарушение из типовой
+практики, норм, вероятных последствий или того, как система обычно устроена.
 
 {UNTRUSTED_INPUT_RULE}
 
-КРИТИЧЕСКОЕ ПРАВИЛО ДОКАЗАТЕЛЬНОСТИ:
-Finding допустим только если одновременно есть:
-1) конкретно наблюдаемое проектное решение на ПД;
-2) конкретно наблюдаемый факт на РД/ИД;
-3) прямое противоречие между 1 и 2.
-Если любой из трёх пунктов не наблюдается — не придумывай. Верни uncertainty
-и candidate_region для увеличения.
+СНАЧАЛА ОПРЕДЕЛИ SCOPE:
+- sheet_type каждой стороны: SCHEMATIC|PLAN|RCP|DETAIL|SCHEDULE|UNKNOWN;
+- discipline/level/scale/orientation, только если реально читаются;
+- достаточно ли именно этого типа evidence для проверяемого утверждения.
+Разный жанр листа сам по себе НЕ расхождение. Схема и план могут описывать
+одно решение разными способами.
 
-Запрещено считать доказательством формулировки вроде: 'вероятно', 'обычно',
-'это подразумевает', 'должно быть', 'может привести', 'типично для'. Не делай
-legal/severity conclusions и не объясняй возможные причины изменения.
+СТАТУСЫ evidence_state:
+- OBSERVED_CONTRADICTION — на обеих сторонах наблюдаются факты и между ними
+  есть прямое противоречие;
+- NOT_OBSERVED_ON_THIS_EVIDENCE — искомый элемент здесь не увиден, но это НЕ
+  означает его отсутствия в РД;
+- WRONG_OR_INSUFFICIENT_SCOPE — жанр/масштаб/читаемость/охват не позволяют
+  делать вывод;
+- APPEARS_COMPLIANT — проверенный scope согласуется, но только для реально
+  просмотренного evidence.
 
-ПОРЯДОК АНАЛИЗА ОБЯЗАТЕЛЕН:
-A. Сначала независимо опиши инженерный inventory ПД.
-B. Затем независимо опиши инженерный inventory РД.
-C. Только затем сопоставь элементы, связи, ветви, трассы, параметры и
-   конфигурацию и сформулируй прямые противоречия.
-D. Если whole-page просмотр не дал finding, это НЕ финальный вывод. Для
-   плотного инженерного листа предложи 2-4 наиболее информативные зоны для
-   локальной проверки. Предпочитай зоны с высокой инженерной насыщенностью,
-   узлами соединений, установками, коллекторами, разветвлениями и группами
-   терминалов. Не выбирай штамп/экспликацию, если инженерная графика есть.
+КРИТИЧЕСКОЕ ПРАВИЛО ABSENCE:
+Фраза «не вижу на этом листе» никогда не равна «отсутствует в РД».
+Для presence_absence finding нужны одновременно: локально читаемая зона,
+полный evidence_scope для данного утверждения и независимая corroboration
+(например, другой вид/лист/спецификация/явная маркировка). Иначе возвращай
+NOT_OBSERVED_ON_THIS_EVIDENCE либо candidate с requires_additional_evidence.
 
-Сравнивай инженерную суть: наличие/отсутствие элементов, состав оборудования,
-количество, маркировки, параметры, подключения, ветви, трассы и topology.
-Разный жанр листа (схема/план) сам по себе не является отличием.
+ПОРЯДОК:
+1. Независимый inventory ПД.
+2. Независимый inventory РД.
+3. Scope/genre comparability.
+4. Только затем direct contradiction.
+5. Whole-page проход НЕ подтверждает finding окончательно. Он обязан вернуть
+   до 3 действительно локальных candidate_regions для проверки спорных или
+   инженерно насыщенных мест.
 
-Если даны 2 изображения: первое ПД, второе РД/ИД.
-Если даны 4 изображения: PD general, PD local, RD general, RD local.
+REGION RULES:
+- максимум 3 зоны;
+- bbox нормирован [x1,y1,x2,y2];
+- bbox должен занимать примерно 2-40% страницы;
+- зоны должны быть разными, без сильного перекрытия;
+- [0,0,1,1] не является local zoom;
+- если локализовать нельзя — state=WRONG_OR_INSUFFICIENT_SCOPE и объясни, какой
+  дополнительный вид/evidence нужен.
 
-Для каждого finding верни evidence contract:
-- pd_claim: что именно установлено по ПД;
-- pd_evidence: что конкретно видно/читается на ПД;
-- rd_claim: что именно установлено по РД;
-- rd_evidence: что конкретно видно/читается на РД;
-- difference: прямое противоречие;
-- where: помещение/ось/марка/зона, если читается.
+Если 2 изображения: PD general, RD general.
+Если 4 изображения: PD general, PD local (или general если PD bbox невозможно
+сопоставить), RD general, RD local. В local режиме вывод делай прежде всего по
+увеличенным зонам, а general используй для контекста.
 
-comparability:
-- high: обе стороны достаточно читаемы для данного вывода;
-- medium: инженерная графика есть, но часть деталей неразборчива;
-- low: нужная инженерная информация не видна.
-
-candidate_regions: для drawing->drawing желательно дать bbox обеих сторон.
-Координаты нормированы [x1,y1,x2,y2] от 0 до 1.
+Для finding обязательно:
+- state=OBSERVED_CONTRADICTION;
+- pd_claim, pd_evidence_ref;
+- rd_claim, rd_evidence_ref;
+- difference и difference_kind: presence_absence|configuration|connection|
+  parameter|topology|quantity|location|coverage|other;
+- evidence_scope: complete|partial|unknown;
+- absence_verified=true только когда условия absence действительно выполнены;
+- corroboration_refs — независимые подтверждения, если есть;
+- requires_additional_evidence=true, если утверждение ещё нельзя считать
+  доказанным.
 
 Ответ только JSON:
 {{
+  "evidence_state":"OBSERVED_CONTRADICTION|NOT_OBSERVED_ON_THIS_EVIDENCE|WRONG_OR_INSUFFICIENT_SCOPE|APPEARS_COMPLIANT",
   "comparability":"high|medium|low",
+  "pd_sheet":{{"sheet_type":"SCHEMATIC|PLAN|RCP|DETAIL|SCHEDULE|UNKNOWN","scale":"","level":"","orientation":""}},
+  "rd_sheet":{{"sheet_type":"SCHEMATIC|PLAN|RCP|DETAIL|SCHEDULE|UNKNOWN","scale":"","level":"","orientation":""}},
   "pd_inventory":[{{"entity":"...","observation":"...","where":"..."}}],
   "rd_inventory":[{{"entity":"...","observation":"...","where":"..."}}],
   "findings":[{{
-    "pd_claim":"...",
-    "pd_evidence":"...",
-    "rd_claim":"...",
-    "rd_evidence":"...",
-    "difference":"...",
-    "where":"..."
+    "state":"OBSERVED_CONTRADICTION",
+    "pd_claim":"...","pd_evidence_ref":"...",
+    "rd_claim":"...","rd_evidence_ref":"...",
+    "difference":"...","difference_kind":"configuration",
+    "where":"...","evidence_scope":"complete|partial|unknown",
+    "absence_verified":false,"corroboration_refs":[],
+    "requires_additional_evidence":false
   }}],
-  "candidate_regions":[{{
-    "reason":"...",
-    "pd_bbox_norm":[0.0,0.0,1.0,1.0],
-    "rd_bbox_norm":[0.0,0.0,1.0,1.0],
-    "priority":"high|medium|low"
-  }}],
+  "candidate_regions":[{{"reason":"...","pd_bbox_norm":[0.1,0.1,0.4,0.4],"rd_bbox_norm":[0.1,0.1,0.4,0.4],"priority":"high|medium|low"}}],
   "coverage_notes":["..."],
-  "uncertainties":["..."]
+  "uncertainties":["..."],
+  "additional_evidence_needed":["..."]
 }}"""
 
-_REGION_DISCOVERY_INSTRUCTION = """\nРЕЖИМ REGION DISCOVERY. На whole-page проходе не получено достаточного локального покрытия.
-Не пытайся закончить сравнением 'различий нет'. Выбери от 2 до 4 разных
-инженерно насыщенных зон, которые надо увеличить, чтобы проверить тонкие
-изменения конфигурации/наличия/ветвления. Верни их в candidate_regions.
-Если корректно сопоставить зоны между ПД и РД невозможно — всё равно назови
-RD bbox и объясни uncertainty; не выдумывай finding."""
+_DISCOVERY_NOTE = """
+РЕЖИМ REGION DISCOVERY. Не завершай пару выводом «различий нет». Выбери до 3
+разных локальных инженерно насыщенных зон (2-40% страницы каждая), которые
+лучше всего проверят inventory и возможные тонкие изменения. Whole-page bbox
+запрещён. Если scope/жанр не позволяет корректно локализовать сравнение —
+верни WRONG_OR_INSUFFICIENT_SCOPE и additional_evidence_needed.
+"""
+
+_LOCAL_NOTE = """
+РЕЖИМ LOCAL VERIFICATION. Перепроверь конкретную увеличенную область. Не
+повторяй finding из whole-page по инерции: он подтверждается только если
+противоречие реально видно в local evidence. NOT_OBSERVED не повышай до
+absence. Для presence_absence укажи, достаточен ли evidence_scope и есть ли
+independent corroboration.
+"""
 
 
 def _page_text(document: DocumentInput, page: int) -> str:
@@ -140,86 +167,14 @@ def _comparability(result: dict) -> str:
     return value if value in {"high", "medium", "low"} else "low"
 
 
-def _bbox(value: object) -> tuple[float, float, float, float] | None:
-    if not isinstance(value, (list, tuple)) or len(value) != 4:
-        return None
-    try:
-        x1, y1, x2, y2 = (float(v) for v in value)
-    except (TypeError, ValueError):
-        return None
-    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
-    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return (x1, y1, x2, y2)
-
-
-def _regions(value: object, limit: int = MAX_DISCOVERED_REGIONS) -> list[dict]:
-    out: list[dict] = []
-    if not isinstance(value, list):
-        return out
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        rd_box = _bbox(item.get("rd_bbox_norm") or item.get("bbox_norm"))
-        if rd_box is None:
-            continue
-        pd_box = _bbox(item.get("pd_bbox_norm"))
-        priority = str(item.get("priority") or "medium").strip().casefold()
-        out.append({
-            "reason": str(item.get("reason") or "").strip(),
-            "pd_bbox_norm": pd_box,
-            "rd_bbox_norm": rd_box,
-            "priority": priority if priority in {"high", "medium", "low"} else "medium",
-        })
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _inventory(value: object, limit: int = 80) -> list[dict]:
-    out: list[dict] = []
-    if not isinstance(value, list):
-        return out
-    for item in value:
-        if isinstance(item, dict):
-            entity = str(item.get("entity") or "").strip()
-            observation = str(item.get("observation") or "").strip()
-            where = str(item.get("where") or "").strip()
-            if entity or observation:
-                out.append({"entity": entity, "observation": observation, "where": where})
-        elif str(item).strip():
-            out.append({"entity": "", "observation": str(item).strip(), "where": ""})
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _grounded_findings(result: dict) -> list[dict]:
-    """Keep only findings with explicit evidence on both sides."""
-    raw = result.get("findings")
-    if not isinstance(raw, list):
-        raw = result.get("differences")
-    out: list[dict] = []
-    for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, dict):
-            continue
-        pd_claim = str(item.get("pd_claim") or item.get("pd_observation") or "").strip()
-        pd_evidence = str(item.get("pd_evidence") or item.get("pd_observation") or "").strip()
-        rd_claim = str(item.get("rd_claim") or item.get("rd_observation") or "").strip()
-        rd_evidence = str(item.get("rd_evidence") or item.get("rd_observation") or "").strip()
-        difference = str(item.get("difference") or item.get("change") or "").strip()
-        if not all((pd_claim, pd_evidence, rd_claim, rd_evidence, difference)):
-            continue
-        out.append({
-            "pd_claim": pd_claim,
-            "pd_evidence": pd_evidence,
-            "rd_claim": rd_claim,
-            "rd_evidence": rd_evidence,
-            "difference": difference,
-            "where": str(item.get("where") or "").strip(),
-        })
-    return out
+def _sheet_meta(value: object) -> dict:
+    row = value if isinstance(value, dict) else {}
+    return {
+        "sheet_type": normalize_sheet_type(row.get("sheet_type")),
+        "scale": str(row.get("scale") or "").strip(),
+        "level": str(row.get("level") or "").strip(),
+        "orientation": str(row.get("orientation") or "").strip(),
+    }
 
 
 def _dedupe(items: list[dict]) -> list[dict]:
@@ -238,6 +193,15 @@ def _dedupe(items: list[dict]) -> list[dict]:
     return out
 
 
+def _merge_regions(existing: list[dict], new: list[dict]) -> list[dict]:
+    # Re-normalize the full set so overlap rules apply across both calls.
+    raw = [
+        {k: v for k, v in item.items() if k in {"reason", "pd_bbox_norm", "rd_bbox_norm", "priority"}}
+        for item in [*existing, *new]
+    ]
+    return normalize_regions(raw, limit=REGIONS_PER_CALL)
+
+
 @dataclass
 class _State:
     pair: object
@@ -248,37 +212,51 @@ class _State:
     base: dict
     whole_page_done: bool = False
     region_discovery_done: bool = False
+    semantic_state: str = WRONG_OR_INSUFFICIENT_SCOPE
     comparability: str = "low"
-    regions: list[dict] = field(default_factory=list)
-    regions_seen: int = 0
+    pd_sheet: dict = field(default_factory=dict)
+    rd_sheet: dict = field(default_factory=dict)
     pd_inventory: list[dict] = field(default_factory=list)
     rd_inventory: list[dict] = field(default_factory=list)
+    regions: list[dict] = field(default_factory=list)
+    checked_regions: list[dict] = field(default_factory=list)
     confirmed: list[dict] = field(default_factory=list)
     candidates: list[dict] = field(default_factory=list)
     uncertainties: list[str] = field(default_factory=list)
     coverage_notes: list[str] = field(default_factory=list)
+    additional_evidence_needed: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
-    def local_coverage_sufficient(self) -> bool:
-        required = min(MIN_LOCAL_CHECKS_FOR_NO_CHANGE, MAX_REGION_ZOOMS_PER_PAIR)
-        return required > 0 and self.regions_seen >= required
+    @property
+    def regions_seen(self) -> int:
+        return len(self.checked_regions)
 
     def status(self) -> str:
         if self.confirmed:
             return "confirmed_difference"
         if self.candidates:
             return "candidate_difference_unverified"
-        if not self.whole_page_done or self.errors:
+        if self.errors or not self.whole_page_done:
             return "technical_incomplete"
-        if self.comparability != "high":
-            return "unclear"
-        if not self.pd_inventory or not self.rd_inventory:
-            return "unclear"
-        if not self.local_coverage_sufficient():
-            return "unclear"
-        if any(r["priority"] == "high" for r in self.regions[self.regions_seen:]):
-            return "technical_incomplete"
-        return "compared_no_candidate"
+        if self.semantic_state == WRONG_OR_INSUFFICIENT_SCOPE:
+            return "wrong_or_insufficient_scope"
+        if self.semantic_state == NOT_OBSERVED_ON_THIS_EVIDENCE:
+            return "not_observed_on_this_evidence"
+        required = min(MIN_LOCAL_CHECKS_FOR_NO_CHANGE, MAX_REGION_ZOOMS_PER_PAIR)
+        pending_high = any(r.get("priority") == "high" for r in self.regions[self.regions_seen:])
+        if safe_no_change(
+            state=self.semantic_state,
+            comparability=self.comparability,
+            pd_inventory=self.pd_inventory,
+            rd_inventory=self.rd_inventory,
+            checked_regions=self.regions_seen,
+            required_regions=required,
+            pending_high_regions=pending_high,
+            errors=self.errors,
+            cache_only=False,
+        ):
+            return "compared_no_candidate"
+        return "unclear"
 
 
 def _call_model(
@@ -292,7 +270,7 @@ def _call_model(
     pd_general = render_page_to_data_url(state.before_path, pair.before_page)
     rd_general = render_page_to_data_url(state.after_path, pair.after_page)
     images = [pd_general, rd_general]
-    region_note = ""
+    mode_note = ""
     if region is not None:
         pd_clip = region.get("pd_bbox_norm")
         rd_clip = region.get("rd_bbox_norm")
@@ -302,21 +280,24 @@ def _call_model(
         )
         rd_local = render_page_to_data_url(state.after_path, pair.after_page, clip_frac=rd_clip)
         images = [pd_general, pd_local, rd_general, rd_local]
-        region_note = f"\nПроверяемая зона: {region.get('reason') or 'model proposed zoom'}."
+        mode_note = (
+            f"\nПроверяемая local region: reason={region.get('reason')!r}; "
+            f"pd_bbox={pd_clip}; rd_bbox={rd_clip}.\n{_LOCAL_NOTE}"
+        )
+    elif discover_regions:
+        mode_note = _DISCOVERY_NOTE
 
     pd_text = _page_text(state.before_doc, pair.before_page)[:3000]
     rd_text = _page_text(state.after_doc, pair.after_page)[:3000]
     user_text = (
-        "Эта пара уже выбрана routing-слоем. Не решай заново, являются ли листы парой. "
-        "Routing score и anchors не являются evidence.\n"
+        "Пара уже выбрана routing-слоем. Routing score/rooms/anchors не являются evidence.\n"
         f"ПД text layer: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{pd_text}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n"
-        f"РД text layer: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{rd_text}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
-        f"{region_note}"
-        f"{_REGION_DISCOVERY_INSTRUCTION if discover_regions else ''}"
+        f"РД text layer: <НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{rd_text}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>\n"
+        f"{mode_note}"
     )
     digest = hashlib.sha256(
         f"{state.before_path}:{pair.before_page}:{state.after_path}:{pair.after_page}:"
-        f"{region}:{discover_regions}".encode()
+        f"{region}:{discover_regions}:semantic-pair-v4".encode()
     ).hexdigest()
     result = call_llm_json(
         config,
@@ -325,49 +306,66 @@ def _call_model(
         images=images,
         operation="vision",
         source_digest=digest,
-        prompt_version="semantic-pair-v3-inventory-local-coverage",
+        prompt_version="semantic-pair-v4-scope-local-contract",
     )
     return result if isinstance(result, dict) else {}
 
 
-def _merge_regions(existing: list[dict], new: list[dict]) -> list[dict]:
-    out = list(existing)
-    seen = {(r.get("pd_bbox_norm"), r.get("rd_bbox_norm")) for r in out}
-    for region in new:
-        key = (region.get("pd_bbox_norm"), region.get("rd_bbox_norm"))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(region)
-        if len(out) >= MAX_DISCOVERED_REGIONS:
-            break
-    return out
+def _append_texts(target: list[str], value: object) -> None:
+    for item in value if isinstance(value, list) else []:
+        text = str(item).strip()
+        if text and text not in target:
+            target.append(text)
 
 
-def _apply_result(state: _State, result: dict, *, whole_page: bool) -> None:
+def _apply_result(state: _State, result: dict, *, whole_page: bool, region: dict | None = None) -> None:
     comp = _comparability(result)
+    semantic_state = normalize_state(result.get("evidence_state") or result.get("state"))
+    findings = normalize_findings(result.get("findings") or result.get("differences"))
+
     if whole_page:
         state.whole_page_done = True
         state.comparability = comp
-        state.regions = _regions(result.get("candidate_regions"))
-        state.pd_inventory = _inventory(result.get("pd_inventory"))
-        state.rd_inventory = _inventory(result.get("rd_inventory"))
-    elif comp == "high" or (comp == "medium" and state.comparability == "low"):
-        state.comparability = comp
-
-    findings = _grounded_findings(result)
-    if comp == "high":
-        state.confirmed.extend(findings)
-    else:
+        state.semantic_state = semantic_state
+        state.pd_sheet = _sheet_meta(result.get("pd_sheet"))
+        state.rd_sheet = _sheet_meta(result.get("rd_sheet"))
+        state.pd_inventory = normalize_inventory(result.get("pd_inventory"))
+        state.rd_inventory = normalize_inventory(result.get("rd_inventory"))
+        state.regions = normalize_regions(result.get("candidate_regions"))
+        # Whole-page contradictions are hypotheses only; local re-observation
+        # is mandatory before graphical confirmation.
         state.candidates.extend(findings)
-    state.uncertainties.extend(
-        str(x).strip() for x in (result.get("uncertainties") or [])
-        if str(x).strip()
-    )
-    state.coverage_notes.extend(
-        str(x).strip() for x in (result.get("coverage_notes") or [])
-        if str(x).strip()
-    )
+    else:
+        if comp == "high" or (comp == "medium" and state.comparability == "low"):
+            state.comparability = comp
+        if semantic_state == OBSERVED_CONTRADICTION:
+            state.semantic_state = OBSERVED_CONTRADICTION
+        elif state.semantic_state != OBSERVED_CONTRADICTION:
+            state.semantic_state = semantic_state
+
+        for finding in findings:
+            if finding_can_confirm(
+                finding,
+                comparability=comp,
+                local_verified=True,
+                scope_state=semantic_state,
+            ):
+                state.confirmed.append(finding)
+            else:
+                state.candidates.append(finding)
+        state.checked_regions.append({
+            "reason": region.get("reason") if region else "",
+            "pd_bbox_norm": region.get("pd_bbox_norm") if region else None,
+            "rd_bbox_norm": region.get("rd_bbox_norm") if region else None,
+            "comparability": comp,
+            "evidence_state": semantic_state,
+            "findings": findings,
+            "uncertainties": [str(x).strip() for x in (result.get("uncertainties") or []) if str(x).strip()],
+        })
+
+    _append_texts(state.uncertainties, result.get("uncertainties"))
+    _append_texts(state.coverage_notes, result.get("coverage_notes"))
+    _append_texts(state.additional_evidence_needed, result.get("additional_evidence_needed"))
 
 
 def run_targeted_pair_vision(
@@ -379,7 +377,7 @@ def run_targeted_pair_vision(
     *,
     max_pairs: int = 6,
 ):
-    """Run the clean semantic path and adapt confirmed findings to old Signal API."""
+    """Run the active graphical semantic path and preserve the old Signal API."""
     signals: list[Signal] = []
     diagnostics: list[dict] = []
     if max_pairs <= 0:
@@ -389,7 +387,7 @@ def run_targeted_pair_vision(
     pairs = all_pairs[: min(max_pairs, MAX_GRAPHICAL_CANDIDATE_PAIRS)]
     states: list[_State] = []
 
-    # Pass 1: every selected pair is inspected whole-page before any zoom.
+    # Pass 1: whole-page discovery for every selected pair before any zoom.
     for pair in pairs:
         state = _State(
             pair=pair,
@@ -413,41 +411,39 @@ def run_targeted_pair_vision(
         states.append(state)
         try:
             _apply_result(state, _call_model(state, config), whole_page=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             state.errors.append(f"whole-page vision failed: {type(exc).__name__}: {exc}")
 
-    # Pass 1b: a clean whole-page result must produce enough local regions.
-    # If it did not, ask the same model explicitly for region discovery.
+    # Pass 1b: insufficient/duplicate/whole-page regions are rejected by the
+    # universal contract, then the model gets one explicit discovery request.
+    required = min(MIN_LOCAL_CHECKS_FOR_NO_CHANGE, MAX_REGION_ZOOMS_PER_PAIR)
     for state in states:
-        if state.confirmed or state.errors or not state.whole_page_done:
-            continue
-        needed = min(MIN_LOCAL_CHECKS_FOR_NO_CHANGE, MAX_REGION_ZOOMS_PER_PAIR)
-        if len(state.regions) >= needed:
+        if state.errors or not state.whole_page_done or len(state.regions) >= required:
             continue
         try:
             discovered = _call_model(state, config, discover_regions=True)
             state.region_discovery_done = True
             state.regions = _merge_regions(
-                state.regions, _regions(discovered.get("candidate_regions"))
+                state.regions, normalize_regions(discovered.get("candidate_regions"))
             )
-            state.uncertainties.extend(
-                str(x).strip() for x in (discovered.get("uncertainties") or [])
-                if str(x).strip()
-            )
-        except Exception as exc:
+            _append_texts(state.uncertainties, discovered.get("uncertainties"))
+            _append_texts(state.additional_evidence_needed, discovered.get("additional_evidence_needed"))
+            if normalize_state(discovered.get("evidence_state") or discovered.get("state")) == WRONG_OR_INSUFFICIENT_SCOPE:
+                state.semantic_state = WRONG_OR_INSUFFICIENT_SCOPE
+        except Exception as exc:  # noqa: BLE001
             state.errors.append(f"region discovery failed: {type(exc).__name__}: {exc}")
 
-    # Pass 2: model-requested zoom, fair round-robin across pairs.
+    # Pass 2: fair round-robin local verification.  Whole-page candidates do
+    # not short-circuit this stage.
     for round_index in range(MAX_REGION_ZOOMS_PER_PAIR):
         for state in states:
-            if state.confirmed or round_index >= len(state.regions):
+            if round_index >= len(state.regions):
                 continue
             region = state.regions[round_index]
             try:
                 result = _call_model(state, config, region)
-                _apply_result(state, result, whole_page=False)
-                state.regions_seen = round_index + 1
-            except Exception as exc:
+                _apply_result(state, result, whole_page=False, region=region)
+            except Exception as exc:  # noqa: BLE001
                 state.errors.append(
                     f"zoom {round_index + 1} failed: {type(exc).__name__}: {exc}"
                 )
@@ -455,40 +451,56 @@ def run_targeted_pair_vision(
     for state in states:
         state.confirmed = _dedupe(state.confirmed)
         state.candidates = _dedupe(state.candidates)
+        # A candidate identical to a locally confirmed finding is no longer
+        # unverified.
+        confirmed_keys = {
+            (x.get("pd_claim"), x.get("rd_claim"), x.get("difference")) for x in state.confirmed
+        }
+        state.candidates = [
+            x for x in state.candidates
+            if (x.get("pd_claim"), x.get("rd_claim"), x.get("difference")) not in confirmed_keys
+        ]
         status = state.status()
-        record = {
+        diagnostics.append({
             **state.base,
             "status": status,
             "whole_page_done": state.whole_page_done,
             "region_discovery_done": state.region_discovery_done,
+            "evidence_state": state.semantic_state,
             "comparability": state.comparability,
+            "pd_sheet": state.pd_sheet,
+            "rd_sheet": state.rd_sheet,
             "pd_inventory": state.pd_inventory,
             "rd_inventory": state.rd_inventory,
+            "candidate_regions": state.regions,
             "candidate_regions_total": len(state.regions),
             "candidate_regions_checked": state.regions_seen,
+            "checked_regions": state.checked_regions,
             "min_local_checks_for_no_change": MIN_LOCAL_CHECKS_FOR_NO_CHANGE,
             "confirmed_findings": state.confirmed,
             "unverified_candidates": state.candidates,
             "coverage_notes": state.coverage_notes,
             "uncertainties": state.uncertainties,
+            "additional_evidence_needed": state.additional_evidence_needed,
             "errors": state.errors,
-        }
+        })
         if state.confirmed:
             detail = " | ".join(item["difference"] for item in state.confirmed[:8])
             signals.append(Signal("vision_pair", "page_pair", state.pair.key, detail))
-        diagnostics.append(record)
 
     diagnostics.append({
         "control_type": "coverage",
         "status": "complete" if len(all_pairs) <= len(pairs) else "candidate_budget",
         "candidate_pairs_total": len(all_pairs),
         "candidate_pairs_checked": len(pairs),
-        "semantic_architecture": "pair_discovery->inventory->region_discovery->local_zoom->evidence_contract",
+        "semantic_architecture": "pair_discovery->scope_inventory->region_discovery->local_verification->universal_evidence_contract",
         "legacy_room_runtime_active": False,
         "legacy_generic_region_runtime_active": False,
         "raster_gate_active": False,
         "triangulation_required_for_vision": False,
+        "whole_page_finding_final": False,
         "whole_page_no_change_allowed": False,
+        "region_limit": REGIONS_PER_CALL,
         "min_local_checks_for_no_change": MIN_LOCAL_CHECKS_FOR_NO_CHANGE,
     })
     return signals, diagnostics
