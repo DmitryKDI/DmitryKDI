@@ -1,8 +1,8 @@
-"""Minimal competition comparator: PD + RD text -> suspicions -> one verifier pass.
+"""Competition comparator: fast whole-document pass plus optional deep requirement pass.
 
-This intentionally mirrors the successful interactive GigaChat workflow instead
-of running a long autonomous tool loop. Learned inspector memory contributes only
-general search habits; it is disabled when --blind is used.
+The default path stays cheap for synthetic curriculum. ``--deep-retrieval`` adds
+requirement extraction and per-requirement RD retrieval for real transfer checks.
+Everything is derived only from the current PD/RD and generic inspector memory.
 """
 from __future__ import annotations
 
@@ -23,9 +23,19 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from app.inspector_memory import lessons_prompt  # noqa: E402
 from app.llm import LlmConfig, call_llm_json, credentials_from_file  # noqa: E402
 from entity_guided_retrieval import priority_rd_context  # noqa: E402
+from requirement_driven_retrieval import (  # noqa: E402
+    REQUIREMENT_COMPARE_SYSTEM,
+    REQUIREMENT_EXTRACT_SYSTEM,
+    normalize_requirements,
+    requirement_batches,
+    requirement_rd_context,
+    requirements_prompt,
+)
 
 MAX_PAGE_CHARS = int(os.environ.get("NADZOR_SIMPLE_PAGE_CHARS", "16000"))
 MAX_TOTAL_CHARS = int(os.environ.get("NADZOR_SIMPLE_TOTAL_CHARS", "180000"))
+DEEP_REQUIREMENT_LIMIT = int(os.environ.get("NADZOR_DEEP_REQUIREMENT_LIMIT", "28"))
+DEEP_BATCH_SIZE = int(os.environ.get("NADZOR_DEEP_BATCH_SIZE", "4"))
 
 DETECT_SYSTEM = """Ты — эксперт-аудитор инженерной документации.
 Твоя задача — найти потенциальные несоответствия между Проектной документацией
@@ -57,6 +67,9 @@ DETECT_SYSTEM = """Ты — эксперт-аудитор инженерной �
 11. Блок PRIORITY_RD_CONTEXT является только навигационной подсказкой, автоматически
     выбранной по сущностям текущей ПД. Он не является ground truth. Используй его,
     чтобы не пропускать релевантные страницы, но подтверждай вывод по документам.
+12. Номер помещения, марка системы и марка оборудования — точные идентификаторы.
+    Не заменяй одну сущность другой только из-за похожего назначения. Сопоставление
+    разных IDs допустимо только при явной таблице/указании перенумерации в документах.
 
 Верни только JSON:
 {"suspicions":[{
@@ -91,9 +104,8 @@ VERIFY_SYSTEM = """Ты — второй независимый проход п�
   расположение или покрытие.
 - Если граф и значения совпадают, а различается лишь формулировка, залог,
   направление описания фразы, порядок слов или равнозначные термины — verdict=rejected.
-- Фраза вида «ветку подключить к вентилятору через клапан» и равнозначное описание
-  того же пути «ветка через клапан приходит на вентилятор» не меняют топологию сами
-  по себе. Не превращай грамматическое направление текста в инженерное направление.
+- Номер помещения/марка — идентификатор. Нельзя подтверждать вывод для одного ID
+  доказательствами по другому ID без явного соответствия/перенумерации в документах.
 - Если доказательств инженерной разницы недостаточно, используй needs_more, а не
   confirmed_suspicion.
 
@@ -142,8 +154,7 @@ def _pack_documents(pd_path: Path, rd_paths: Sequence[Path]) -> str:
 
 
 def _priority_context(pd_path: Path, rd_paths: Sequence[Path]) -> str:
-    pd_pages = extract_pdf_pages(pd_path)
-    return priority_rd_context(pd_pages, rd_paths, extract_pdf_pages)
+    return priority_rd_context(extract_pdf_pages(pd_path), rd_paths, extract_pdf_pages)
 
 
 def _config(model: str) -> LlmConfig:
@@ -153,7 +164,155 @@ def _config(model: str) -> LlmConfig:
     return LlmConfig(provider="gigachat", api_key=credentials, model=model)
 
 
-def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig) -> dict:
+def _extract_requirements(pd_path: Path, config: LlmConfig) -> list[dict]:
+    pages = extract_pdf_pages(pd_path)
+    payload = call_llm_json(
+        config,
+        REQUIREMENT_EXTRACT_SYSTEM,
+        requirements_prompt(pages),
+        operation="text_verify",
+        source_digest="requirements:" + str(pd_path),
+        prompt_version="requirements-v1",
+        use_cache=False,
+    )
+    return normalize_requirements(payload, limit=DEEP_REQUIREMENT_LIMIT)
+
+
+def _pd_context_for_batch(pd_pages: Sequence[dict], batch: Sequence[dict]) -> str:
+    wanted = {int(x.get("pd_page") or 0) for x in batch if int(x.get("pd_page") or 0) > 0}
+    rows = [x for x in pd_pages if int(x.get("page") or 0) in wanted]
+    if not rows:
+        rows = list(pd_pages)
+    parts = ["<PD_EVIDENCE_FOR_REQUIREMENTS>"]
+    for row in rows:
+        parts.append(f"[PD page {row.get('page')}]\n{row.get('text') or ''}")
+    parts.append("</PD_EVIDENCE_FOR_REQUIREMENTS>")
+    return "\n\n".join(parts)
+
+
+def _deep_requirement_pass(
+    pd_path: Path,
+    rd_paths: Sequence[Path],
+    config: LlmConfig,
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    requirements = _extract_requirements(pd_path, config)
+    if not requirements:
+        return [], [], [], []
+
+    pd_pages = extract_pdf_pages(pd_path)
+    learned = lessons_prompt()
+    suspicions: list[dict] = []
+    coverage: list[dict] = []
+    audit_rows: list[dict] = []
+
+    for batch_index, batch in enumerate(requirement_batches(requirements, size=DEEP_BATCH_SIZE), 1):
+        candidate_context, batch_coverage = requirement_rd_context(
+            batch,
+            rd_paths,
+            extract_pdf_pages,
+        )
+        coverage.extend(batch_coverage)
+        prompt = (
+            _pd_context_for_batch(pd_pages, batch)
+            + "\n\n<REQUIREMENT_SET>\n"
+            + json.dumps(batch, ensure_ascii=False)
+            + "\n</REQUIREMENT_SET>\n\n"
+            + candidate_context
+            + learned
+            + "\nПроверь каждое требование из REQUIREMENT_SET. Верни строку результата для каждого ID."
+        )
+        payload = call_llm_json(
+            config,
+            REQUIREMENT_COMPARE_SYSTEM,
+            prompt,
+            operation="text_verify",
+            source_digest=(
+                "requirement-compare:"
+                + str(pd_path)
+                + ":"
+                + "|".join(map(str, rd_paths))
+                + f":batch{batch_index}"
+            ),
+            prompt_version="requirement-compare-v1",
+            use_cache=False,
+        )
+        rows = payload.get("results") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+        batch_ids = {str(x.get("id") or "") for x in batch}
+        seen_ids: set[str] = set()
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            req_id = str(raw.get("requirement_id") or "")
+            if req_id not in batch_ids:
+                continue
+            seen_ids.add(req_id)
+            status = str(raw.get("status") or "not_observed").strip().lower()
+            audit_rows.append({
+                "requirement_id": req_id,
+                "status": status,
+                "reason": str(raw.get("reason") or ""),
+            })
+            suspicion = raw.get("suspicion")
+            if status == "suspicion" and isinstance(suspicion, dict):
+                row = dict(suspicion)
+                row["source_requirement_id"] = req_id
+                row["origin"] = "requirement_driven"
+                suspicions.append(row)
+        for req_id in sorted(batch_ids - seen_ids):
+            audit_rows.append({
+                "requirement_id": req_id,
+                "status": "not_observed",
+                "reason": "requirement comparator returned no row",
+            })
+
+    return requirements, coverage, audit_rows, suspicions
+
+
+def _norm_list(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(sorted({" ".join(str(x).casefold().split()) for x in value if str(x).strip()}))
+
+
+def _dedupe_suspicions(rows: Sequence[dict]) -> list[dict]:
+    chosen: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        req_id = str(row.get("source_requirement_id") or "")
+        rooms = _norm_list(row.get("rooms"))
+        equipment = _norm_list(row.get("equipment"))
+        systems = _norm_list(row.get("systems"))
+        kind = str(row.get("difference_type") or "").casefold().strip()
+        if req_id:
+            key = ("req", req_id, kind)
+        elif rooms or equipment or systems:
+            key = ("entity", rooms, equipment[:4], systems[:4], kind)
+        else:
+            key = ("text", " ".join(str(row.get("title") or "").casefold().split()), kind)
+        previous = chosen.get(key)
+        if previous is None:
+            chosen[key] = row
+            order.append(key)
+        elif float(row.get("confidence") or 0.0) > float(previous.get("confidence") or 0.0):
+            chosen[key] = row
+    out = [chosen[key] for key in order]
+    for index, row in enumerate(out, 1):
+        row["id"] = f"SUSP-{index:03d}"
+    return out
+
+
+def detect_suspicions(
+    pd_path: Path,
+    rd_paths: Sequence[Path],
+    config: LlmConfig,
+    *,
+    deep_retrieval: bool = False,
+) -> dict:
     documents = _pack_documents(pd_path, rd_paths)
     priority = _priority_context(pd_path, rd_paths)
     learned = lessons_prompt()
@@ -163,8 +322,7 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         + learned
         + "\nЗАДАНИЕ: сравни РД с решениями ПД. Найди все инженерно значимые отклонения. "
           "Сначала связывай сущности, затем сравнивай их функцию/параметры/топологию. "
-          "Не считай перефразирование инженерным изменением. "
-          "Особенно перепроверь требования ПД, чьи сущности встречаются в PRIORITY_RD_CONTEXT. "
+          "Не считай перефразирование инженерным изменением и не подменяй точные IDs. "
           "Верни только JSON по заданной схеме."
     )
     first = call_llm_json(
@@ -173,17 +331,30 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         prompt,
         operation="text_verify",
         source_digest="simple-competition-detect:" + str(pd_path) + ":" + "|".join(map(str, rd_paths)),
-        prompt_version="simple-competition-v3-retrieval",
+        prompt_version="simple-competition-v4-exact-ids",
         use_cache=False,
     )
     if not isinstance(first, dict):
         first = {"suspicions": []}
     suspicions = first.get("suspicions") if isinstance(first.get("suspicions"), list) else []
+    suspicions = [dict(x, origin="whole_document") for x in suspicions if isinstance(x, dict)]
+
+    requirements: list[dict] = []
+    requirement_coverage: list[dict] = []
+    requirement_results: list[dict] = []
+    if deep_retrieval:
+        requirements, requirement_coverage, requirement_results, deep_rows = _deep_requirement_pass(
+            pd_path, rd_paths, config
+        )
+        suspicions.extend(deep_rows)
+
+    suspicions = _dedupe_suspicions(suspicions)
     verify_prompt = (
-        documents
+        (priority + "\n\n" if priority else "")
+        + documents
         + "\n<SUSPICIONS>\n"
         + json.dumps(suspicions, ensure_ascii=False)
-        + "\n</SUSPICIONS>\nПерепроверь только эти подозрения и сначала исключи смыслово эквивалентные формулировки."
+        + "\n</SUSPICIONS>\nПерепроверь только эти подозрения. Строго проверь точные IDs сущностей и semantic equivalence."
     )
     second = call_llm_json(
         config,
@@ -191,7 +362,7 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         verify_prompt,
         operation="text_verify",
         source_digest="simple-competition-verify:" + str(pd_path) + ":" + "|".join(map(str, rd_paths)),
-        prompt_version="simple-competition-verify-v2",
+        prompt_version="simple-competition-verify-v3-exact-ids",
         use_cache=False,
     )
     verification = second.get("verification") if isinstance(second, dict) and isinstance(second.get("verification"), list) else []
@@ -199,8 +370,6 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
     merged: list[dict] = []
     rejected: list[dict] = []
     for item in suspicions:
-        if not isinstance(item, dict):
-            continue
         row = dict(item)
         check = by_id.get(
             str(item.get("id") or ""),
@@ -211,34 +380,50 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
             rejected.append(row)
         else:
             merged.append(row)
+
     return {
-        "architecture": "simple_pd_rd_two_pass+entity_guided_retrieval",
+        "architecture": (
+            "hybrid_whole_document+requirement_driven_retrieval+verifier"
+            if deep_retrieval
+            else "simple_pd_rd_two_pass+entity_guided_retrieval"
+        ),
         "model": config.resolved_model(),
         "pd": str(pd_path),
         "rd": [str(x) for x in rd_paths],
         "priority_context_used": bool(priority),
+        "deep_retrieval_used": bool(deep_retrieval),
+        "requirements_extracted": requirements,
+        "requirement_coverage": requirement_coverage,
+        "requirement_results": requirement_results,
         "suspicions": merged,
         "rejected_suspicions": rejected,
     }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Simple two-pass PD->RD comparator")
+    parser = argparse.ArgumentParser(description="Two-pass PD->RD comparator with optional deep requirement retrieval")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
     parser.add_argument("--model", default="GigaChat-3-Ultra")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--blind", action="store_true", help="ignore learned inspector lessons")
+    parser.add_argument(
+        "--deep-retrieval",
+        action="store_true",
+        help="extract PD requirements and compare each against independently retrieved RD pages",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if args.blind:
-        os.environ["NADZOR_BLIND_BENCHMARK"] = "1"
-    else:
-        os.environ["NADZOR_BLIND_BENCHMARK"] = "0"
-    result = detect_suspicions(args.pd, args.rd, _config(args.model))
+    os.environ["NADZOR_BLIND_BENCHMARK"] = "1" if args.blind else "0"
+    result = detect_suspicions(
+        args.pd,
+        args.rd,
+        _config(args.model),
+        deep_retrieval=bool(args.deep_retrieval),
+    )
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
