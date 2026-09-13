@@ -1,0 +1,38 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+vision-keys.env
+data/demo/generated/
+data/storage/
+*.db
+*.db-wal
+*.db-shm
+node_modules/
+dist/
+.coverage
+htmlcov/
+frontend/node_modules/
+frontend/dist/
+frontend/dev-dist/
+logs/
+.setup-stamps/
+# Сертификаты машины сюда кладут локально и в репозиторий не коммитят.
+# Исключение — официальная выгрузка публичного удостоверяющего центра,
+# добавленная осознанно и с отпечатками в certs/README.md: без неё стенд
+# не поднимается на чистой машине.
+certs/*.pem
+certs/*.crt
+certs/*.cer
+certs/.cache/
+secrets/*
+# ...кроме объяснения, что сюда класть: без него каталог выглядит лишним
+# и ключ уходит в поле интерфейса, откуда его теряет пересборка базы.
+!secrets/README.md
+
+# Кэш ответов модели и диагностика прогонов — это локальные артефакты
+# работы, а не исходники. В логах прогонов встречаются имена документов
+# реального объекта, поэтому в git они не идут (Г.12).
+*.sqlite3
+data/run_logs/
