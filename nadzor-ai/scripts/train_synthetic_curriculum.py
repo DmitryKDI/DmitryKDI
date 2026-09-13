@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,13 @@ def _candidate_text(row: dict) -> str:
 
 
 def _is_hit(result: dict, expected: dict | None, positive: bool) -> tuple[bool, str]:
+    """Score by the concrete entity first, discipline/system second.
+
+    Earlier scoring used a broad discipline token such as VENT/HEAT as if it were
+    the concrete system identifier. That incorrectly marked correct findings like
+    FAN-77 and AIR-84 as misses. Ground truth may now include ``mark``; older
+    corpora still fall back to ``system``.
+    """
     suspicions = result.get("suspicions") if isinstance(result, dict) else []
     suspicions = [x for x in suspicions if isinstance(x, dict)] if isinstance(suspicions, list) else []
     if not positive:
@@ -47,19 +55,31 @@ def _is_hit(result: dict, expected: dict | None, positive: bool) -> tuple[bool, 
         return (not material, "negative_control_false_positive" if material else "negative_control_ok")
     if not expected:
         return False, "missing_ground_truth"
+
     room = _norm(expected.get("room"))
+    mark = _norm(expected.get("mark"))
     system = _norm(expected.get("system"))
     kind = _norm(expected.get("type"))
+    system_terms = [x for x in system.replace("/", " ").split() if x]
+
     for row in suspicions:
         text = _candidate_text(row)
         room_ok = not room or room in text
-        system_terms = [x for x in system.replace("/", " ").split() if x]
-        system_ok = not system_terms or any(x in text for x in system_terms)
+        mark_ok = bool(mark and mark in text)
+        system_ok = bool(system_terms and any(x in text for x in system_terms))
+        entity_ok = mark_ok or (not mark and system_ok)
         kind_ok = not kind or kind in _norm(row.get("difference_type")) or kind in text
-        if room_ok and system_ok and kind_ok:
+
+        if room_ok and entity_ok and kind_ok:
+            return True, "matched_room_entity_type"
+        if room_ok and entity_ok:
+            return True, "matched_room_entity"
+        # Backward compatibility for old generated ground truth without `mark`.
+        if not mark and room_ok and system_ok and kind_ok:
             return True, "matched_room_system_type"
-        if room_ok and system_ok:
+        if not mark and room_ok and system_ok:
             return True, "matched_room_system"
+
     return False, "no_matching_suspicion"
 
 
@@ -67,11 +87,47 @@ def _safe_generic_lesson(gt: dict) -> str:
     return str(((gt.get("allowed_training_abstraction") or {}).get("lesson") or "")).strip()
 
 
+def _transient_error(exc: Exception) -> bool:
+    name = type(exc).__name__.casefold()
+    text = str(exc).casefold()
+    return any(token in name or token in text for token in (
+        "connecttimeout",
+        "readtimeout",
+        "connecterror",
+        "winerror 10060",
+        "winerror 10054",
+        "connection reset",
+        "temporarily unavailable",
+    ))
+
+
+def _detect_with_retries(
+    pd_path: Path,
+    rd_path: Path,
+    config: LlmConfig,
+    *,
+    retries: int,
+) -> dict:
+    attempts = max(1, int(retries) + 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            return detect_suspicions(pd_path, [rd_path], config)
+        except Exception as exc:
+            if attempt >= attempts or not _transient_error(exc):
+                raise
+            delay = min(6.0, 1.5 * attempt)
+            print(f"  transient API error ({type(exc).__name__}); retry {attempt}/{attempts - 1} in {delay:.1f}s")
+            time.sleep(delay)
+    raise RuntimeError("unreachable")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate synthetic corpus and teach generalized lessons cumulatively")
     parser.add_argument("--corpus", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--start-at", type=int, default=1, help="1-based first curriculum case")
     parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--retries", type=int, default=2, help="retries for transient GigaChat/network errors")
     parser.add_argument("--no-teach", action="store_true")
     parser.add_argument("--report", type=Path, default=ROOT / "data" / "synthetic_training" / "latest_training_report.json")
     return parser.parse_args()
@@ -88,18 +144,22 @@ def main() -> int:
     stored_lesson_ids: list[int] = []
     lesson_events: list[dict] = []
     memory_before = len(active_lessons(limit=100))
-    selected = manifest.get("cases", [])[: max(1, args.limit)]
+    all_cases = manifest.get("cases", [])
+    start = max(1, int(args.start_at))
+    selected = all_cases[start - 1 : start - 1 + max(1, int(args.limit))]
+    if not selected:
+        raise RuntimeError(f"No curriculum cases selected: start-at={start}, available={len(all_cases)}")
 
-    for index, item in enumerate(selected, 1):
+    for index, item in enumerate(selected, start):
         cid = item["case_id"]
         gt = json.loads((args.corpus / item["ground_truth"]).read_text(encoding="utf-8"))
         pd_path = args.corpus / item["pd"]
         rd_path = args.corpus / item["rd"]
-        print(f"[{index}/{len(selected)}] {cid} {gt['category']}")
+        print(f"[{index}/{len(all_cases)}] {cid} {gt['category']}")
         try:
             # detect_suspicions() rereads inspector memory on every call, so a
             # lesson stored after this case is visible to the very next case.
-            result = detect_suspicions(pd_path, [rd_path], config)
+            result = _detect_with_retries(pd_path, rd_path, config, retries=args.retries)
             hit, reason = _is_hit(result, gt.get("expected"), bool(gt.get("positive")))
             error = ""
         except Exception as exc:
@@ -152,6 +212,7 @@ def main() -> int:
         "architecture": "sequential_synthetic_curriculum->persistent_memory->master_playbook->simple_two_pass",
         "model": config.resolved_model(),
         "sequential_learning": True,
+        "case_range": {"start_at": start, "count": len(rows)},
         "cases": len(rows),
         "passed": passed,
         "score": passed / len(rows) if rows else 0.0,
