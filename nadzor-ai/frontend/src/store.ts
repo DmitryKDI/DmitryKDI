@@ -26,35 +26,18 @@ interface AppState {
   filters: Record<string, Record<string, string>>
   checkedAttention: Record<string, boolean>
   toasts: Toast[]
-  // Состояние экрана "Новый анализ" живёт здесь, а не в useState компонента:
-  // переход на другую вкладку меню размонтирует NewAnalysis, и локальный
-  // useState (включая уже загруженные документы и идущий прогон) терялся бы.
   analysisPendingBefore: PendingUpload[]
   analysisPendingAfter: PendingUpload[]
   analysisRunId: number | null
-  // Прогресс прогона — отдельно от analysisRunId: обновляется фоновым
-  // опросом (см. pollAnalysisRun ниже), который не привязан к тому, что
-  // экран "Новый анализ" сейчас смонтирован, — так прогон реально продолжает
-  // считаться, пока инспектор смотрит другие вкладки, а не замирает.
   analysisRunStatus: BackendAnalysisRun | null
-  // Прогон реального движка Приложения Г (Карта внимания, см.
-  // triangulated_pipeline.py) — тот же принцип фонового опроса, что и у
-  // analysisRunId выше, но отдельный движок и отдельный набор полей: эти
-  // два прогона не смешивают статус друг друга.
   triangulatedRunId: number | null
   triangulatedRunStatus: BackendTriangulatedRun | null
-  // Прогоны трёх кнопок инспектора (разбор ПД, разбор РД, сверка). Здесь, а
-  // не в useState экрана: разбор тома идёт минутами, и переход на другую
-  // вкладку не должен ни останавливать его, ни терять его результат.
-  // Опрос ведётся из стора и переживает размонтирование экрана.
   pdRunId: number | null
   pdRunStatus: BackendPdRun | null
   rdRunId: number | null
   rdRunStatus: BackendPdRun | null
   complianceRunId: number | null
   complianceRunStatus: BackendComplianceRun | null
-  // Какие документы разбирать: пусто — все загруженные с этой стороны.
-  // Выбор живёт рядом с прогоном, потому что относится к тому же действию.
   pdSelected: number[]
   rdSelected: number[]
   toggleMenu: () => void
@@ -148,13 +131,8 @@ export const useApp = create<AppState>()(
         density: s.density,
         filters: s.filters,
         checkedAttention: s.checkedAttention,
-        // Список документов здесь НЕ хранится (Г.114): он живёт на сервере,
-        // и копия в браузере переживала пересборку базы, чужое удаление и
-        // ручную правку раздела — инспектор видел то, чего уже нет.
         analysisRunId: s.analysisRunId,
         triangulatedRunId: s.triangulatedRunId,
-        // Прогон живёт на сервере, поэтому сохраняем только его номер и
-        // выбор томов: состояние подтянется опросом при следующем открытии.
         pdRunId: s.pdRunId,
         rdRunId: s.rdRunId,
         complianceRunId: s.complianceRunId,
@@ -162,14 +140,6 @@ export const useApp = create<AppState>()(
         rdSelected: s.rdSelected,
       }),
       onRehydrateStorage: () => (state) => {
-        // Прогон мог остаться незавершённым, пока страница была закрыта —
-        // одним запросом узнаём актуальный статус и, если он ещё не готов,
-        // продолжаем фоновый опрос сразу, не дожидаясь открытия "Нового
-        // анализа" (см. pollAnalysisRun — опрос не привязан к монтированию
-        // конкретного экрана, поэтому продолжается на любой странице сайта).
-        // setTimeout, а не прямой вызов: гидратация может завершиться синхронно
-        // внутри самого create(), когда переменная useApp ещё не присвоена —
-        // pollAnalysisRun читает её через useApp.getState().
         if (state?.analysisRunId != null) {
           const id = state.analysisRunId
           setTimeout(() => pollAnalysisRun(id), 0)
@@ -178,8 +148,6 @@ export const useApp = create<AppState>()(
           const id = state.triangulatedRunId
           setTimeout(() => pollTriangulatedRun(id), 0)
         }
-        // Разбор и сверка идут на сервере, поэтому переживают перезагрузку
-        // страницы: опрос просто подхватывается заново по сохранённому id.
         if (state?.pdRunId != null) {
           const id = state.pdRunId
           setTimeout(() => pollPdRun('before', id), 0)
@@ -197,9 +165,8 @@ export const useApp = create<AppState>()(
   ),
 )
 
-/** Ответ, после которого повторять бессмысленно: записи больше нет.
- *  Сетевой сбой и «не найдено» требуют разного — первое повторяют, второе
- *  забывают. Без этого различия опрос удалённого прогона крутится вечно. */
+/** A 4xx means the persisted server-side run no longer exists or is no longer
+ * retrievable. Retrying forever only spams the backend after workspace reset. */
 function isGone(error: unknown): boolean {
   return error instanceof BackendApiError && error.status >= 400 && error.status < 500
 }
@@ -213,17 +180,11 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null
 function pollAnalysisRun(runId: number): void {
   if (pollTimer) clearTimeout(pollTimer)
   const tick = async () => {
-    // Пока запрос летел, мог начаться другой прогон (или анализ сбросили) —
-    // не затираем более новое состояние устаревшим ответом.
     if (useApp.getState().analysisRunId !== runId) return
     let data: BackendAnalysisRun
     try {
       data = await backendApi.getAnalysisRun(runId)
     } catch (error) {
-      // Прогона нет — сервер перезапустили с новой схемой базы, запись
-      // удалили. Это навсегда, а не «сеть моргнула»: продолжать опрос
-      // значит бесконечно сыпать 404 в консоль и держать в интерфейсе
-      // работу, которой не существует (Г.112).
       if (isGone(error)) {
         useApp.setState({ analysisRunId: null, analysisRunStatus: null })
         return
@@ -249,7 +210,11 @@ function pollTriangulatedRun(runId: number): void {
     let data: BackendTriangulatedRun
     try {
       data = await backendApi.getTriangulatedRun(runId)
-    } catch {
+    } catch (error) {
+      if (isGone(error)) {
+        useApp.setState({ triangulatedRunId: null, triangulatedRunStatus: null })
+        return
+      }
       triangulatedPollTimer = setTimeout(tick, 800)
       return
     }
@@ -262,9 +227,6 @@ function pollTriangulatedRun(runId: number): void {
   void tick()
 }
 
-// Опрос разбора и сверки. Тот же приём, что у прогонов выше: таймер живёт в
-// модуле, а не в компоненте, поэтому переход на другую вкладку меню не
-// прерывает наблюдение за работой, которая идёт на сервере.
 const pdPollTimers: Record<'before' | 'after', ReturnType<typeof setTimeout> | null> = {
   before: null, after: null,
 }
