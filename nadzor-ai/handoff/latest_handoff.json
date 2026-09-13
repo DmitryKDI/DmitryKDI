@@ -1,6 +1,6 @@
 {
-  "created_at": "2026-09-13T13:52:41.347456+00:00",
-  "source_git_sha": "fc5d1db7a8109fa4ffa36f14085dba56d209b55f",
+  "created_at": "2026-09-13T14:11:42.869362+00:00",
+  "source_git_sha": "3fbe54c1cb29610186e13c98c4df44567476a92f",
   "iteration": 1,
   "blind": true,
   "ground_truth_visible_to_runtime": false,
@@ -8,37 +8,44 @@
   "review_topic": "runtime_and_requirement_centric_architecture",
   "runtime_health": {
     "technical_status": "completed_with_errors",
-    "requests": 16.0,
-    "responses": 16.0,
-    "errors": 1.0,
+    "requests": 38.0,
+    "responses": 38.0,
+    "errors": 4.0,
     "persistent_cache_hits": 0,
     "result_cache_hits": 0,
-    "elapsed_seconds": 68.42892440001015
+    "elapsed_seconds": 213.51998639997328
   },
   "runtime_review": {
     "freshness": {
       "classification": "fresh",
       "evidence": [
-        "requests=16, responses=16, errors=1, cache_hits all zero (image_cache_hits=0, result_cache_hits=0, persistent_cache_hits=0)",
-        "no prior-cache indicators; text_batches=16 aligns with requests"
+        "image_cache_hits: 0",
+        "result_cache_hits: 0",
+        "persistent_cache_hits: 0",
+        "requests: 38, responses: 38"
       ]
     },
     "investigator_execution": {
       "ran": true,
       "finished": false,
       "self_reviewed": false,
-      "turn_budget_exhausted": false,
-      "pages_inspected": 0,
+      "turn_budget_exhausted": true,
+      "pages_inspected": 4,
       "zoom_regions": 0,
       "action_pattern": [
-        "read_text:8",
-        "search:6"
+        "read_text(8)",
+        "inspect_pages(7)",
+        "search(12)",
+        "finish(1)"
       ],
       "technical_gaps": [
-        "ReadError on turn 15 causing premature termination without self-review or verifier run"
+        "4 ошибки в ходе выполнения (errors: 4), детали не приведены",
+        "Отсутствие зума при наличии визуальных/табличных данных — риск пропуска деталей",
+        "Не зафиксированы вызовы независимого верификатора и self-review; итоговое решение отсутствует"
       ],
       "coverage_gaps": [
-        "No pages marked inspected and no zoom regions despite actions; likely incomplete evidence gathering before failure"
+        "Осмотрено только 4 из 11 страниц (≈36%); multi-room coverage не подтверждён",
+        "Поиск доминирует над чтением (12 search vs 8 read_text) без явного подтверждения нахождения целевых листов/секций"
       ]
     },
     "verifier": {
@@ -46,122 +53,124 @@
       "confirmed": 0,
       "unresolved": 0,
       "technical_gaps": [
-        "Verifier not executed due to investigator error at turn 15"
+        "Нет вызовов или результатов verifier'а; невозможно оценить confirmed/unresolved"
       ]
     },
     "false_negative_risks": [
-      "Premature disconnection prevented full search/verification; potential missed confirmations across remaining requirements/pages"
+      "Ранний finish после исчерпания бюджета на неполном покрытии (4/11 страниц)",
+      "Нулевое количество zoom regions повышает FN для мелких подписей, штампов, сносок",
+      "Высокая доля поиска без сопоставления с требованиями может привести к пропуску нужных разделов"
     ],
     "false_positive_risks": [
-      "Low risk of FP given absence of candidates/confirmations; however partial reads could mislead if retried without resetting state"
+      "Finish=1 при unfinished investigator создаёт иллюзию завершённости решения",
+      "При отсутствии кандидатов/верификации любое «найдено» остаётся непроверенным риском FP"
     ],
     "logging_changes": [
-      "Persist per-turn action outcomes including target page/zoom region IDs and counts updated after each tool call",
-      "Log explicit requirement-to-action mapping and progress (% coverage) by requirement_id",
-      "Add retryable-read wrapper with backoff and automatic re-open for Errno 10054; log socket-level diagnostics",
-      "Emit structured event when transitioning to verifier stage; guard against missing this step on non-fatal errors",
-      "Record image/text cache keys and hit/miss even if hits are zero for completeness"
+      "Логировать per-turn trace: выбранное действие, цель запроса, целевой лист/раздел, результат, matched requirement IDs",
+      "Фиксировать причины ошибок LLM/tools с кодами и контекстом вызова",
+      "Явно логировать start/end self-review и verifier invocations с входами/выходами и статусами по каждому требованию",
+      "Добавить метрики покрытия: pages inspected/pages total со списком номеров, reasons for skip",
+      "Включить обязательный capture/zoom summary координат регионов интереса даже если текст читается OCR’ом"
     ],
     "priority_runtime_changes": [
-      "Implement robust read resilience: reconnect/reopen document handle on connection-reset errors; surface as transient_retry instead of hard fail",
-      "Ensure inspector increments pages_inspected and tracks opened pages explicitly; enforce minimum inspection threshold before finish/search dominance",
-      "Trigger independent verifier automatically upon early stop conditions unless fatal unrecoverable error is declared",
-      "Enforce balanced action policy: cap consecutive searches without intervening reads; require periodic cross-page synthesis",
-      "Fail-safe checkpoint every N turns to allow resumable continuation from last good state"
+      "Увеличить max_turns или ввести динамический бюджет до достижения ≥90% page coverage либо exhaustive section map",
+      "Изменить policy действий: требовать минимум N inspect_pages перед первым finish; запретить finish без candidates+verification",
+      "Сделать обязательной стадию document-map building с привязкой требований к листам/разделам до массового search",
+      "Ввести принудительный visual verification path: auto-zoom вокруг найденных совпадений и ключевых таблиц/чертежей",
+      "Сократить бесполезные поиски: кэширование карты документов, раннее сужение scope по требованиям, retry-on-error c backoff"
     ]
   },
   "architecture_review": {
     "stateful_context": {
       "keep": [
-        "PD/RD requirements с привязкой к версиям",
-        "compact document map (sheet_id, role, status)",
-        "explicit topology/configuration hypotheses и их статус",
-        "открытые вопросы/блокеры по листам",
-        "история действий: что открыто, где зум, какие кандидаты отклонены"
+        "PD/RD requirements и их статус (satisfied/open/refuted)",
+        "Объект/проект, версия чертежей, ревизии",
+        "Найденные сущности с координатами: листы, зоны, ссылки на viewports",
+        "Принятые предположения о топологии/configuration с обоснованием",
+        "Открытые вопросы/hypotheses и план следующих действий"
       ],
       "summarize": [
-        "сырой диалог до ключевых решений",
-        "повторяющиеся промежуточные наблюдения без новых сущностей",
-        "листовые заметки после закрытия листа в финальный статус"
+        "Промежуточные навигационные шаги без фактов (какие страницы пролистали и почему)",
+        "Повторяющиеся неудачные гипотезы после N попыток",
+        "Длинные списки совпадений — агрегировать до статистики + ключевые примеры"
       ],
       "risks": [
-        "раздувание контекста длинными растровыми цитатами",
-        "дрейф требований при смене редакции PD/RD",
-        "потеря связей между cross-sheet требованиями"
+        "Схлопывание неоднозначностей в преждевременный вывод",
+        "Потеря привязки к листам/zoom при суммаризации координат",
+        "Контаминация контекста устаревшими выводами из прошлых ревью"
       ]
     },
     "toolset": {
       "keep": [
-        "search",
-        "open_page",
-        "zoom/pan",
-        "ocr_layer_toggle",
-        "metadata_fetch (scale, units, rev)"
+        "search (текст по пакету), open-page, zoom/pan, read-legend/symbols",
+        "read-tables/blocks/xrefs, resolve-references/callouts",
+        "diff-sheets/revisions, measure-distance/scale-check"
       ],
       "add": [
-        "query_topology_graph",
-        "diff_revisions",
-        "trace_net/netlist_probe",
-        "symbol_legend_lookup",
-        "clause_anchor_linking",
-        "scope_sufficiency_check"
+        "path-trace/navigation-graph для кабельных/трубных трасс",
+        "configuration-resolver (сборка системы из фрагментов листов/секций)",
+        "absence-scoper (определение охвата поиска отсутствия)",
+        "sheet-sequence/order validator (E/I/P логика следования листов)"
       ],
-      "remove": []
+      "remove": [
+        "автономные микропайплайны verdict/routing как отдельные runtimes",
+        "жёсткие «важность»-фильтры страниц внутри инструментов"
+      ]
     },
     "stop_policy": {
       "rules": [
-        "продолжать пока есть open_clauses или unscoped_areas",
-        "требовать scope_sufficient=true для absence-решений",
-        "жёсткий cap_turns с динамическим буфером на кросс-проверку",
-        "запрет finish при открытых зависимостях между листами"
+        "Останов только если coverage_gate выполнен AND no_open_hypotheses И self_review чист",
+        "coverage_gate = scope_sufficient_for_presence OR absence_scope_complete",
+        "max_turns динамический от сложности объекта; минимум базового покрытия обязателен"
       ],
       "self_review": [
-        "red-team против false negatives: multi-room, смежные листы, легенды, изменения топологии",
-        "coverage_audit по карте листов",
-        "вариантная проверка гипотез конфигурации перед завершением"
+        "Проверить multi-room/multi-discipline требования",
+        "Легенды/условные обозначения открыты и прочитаны",
+        "Смежные листы и интерфейсы проверены при изменении конфигурации",
+        "Все NOT_OBSERVED помечены корректно; ABSENCE не заявлен без полного охвата"
       ]
     },
     "verifier": {
       "configuration": [
-        "сопоставление координат/сечений из нескольких видов",
-        "валидация атрибутов оборудования по нескольким источникам",
-        "проверка непрерывности цепи через net/trace probe"
+        "Сборка независимых доказательств со ссылками на callouts/tags/coordinates",
+        "Кросс-проверка между дисциплинами и границами систем",
+        "Валидация масштаба/единиц и однозначности идентификаторов"
       ],
       "absence": [
-        "явный отчёт об охваченном scope и его достаточности",
-        "поиск альтернативных представлений (план/сечение/спецификация)",
-        "контроль границ зоны и соседних листов; запрет вывода ABSENCE только по NOT_OBSERVED"
+        "scope_sufficient доказан охватом легенд, матриц связей и смежных листов",
+        "absence_scope_complete подтверждён целевым поиском во всех релевантных зонах",
+        "NOT_OBSERVED остаётся статусом до выполнения обоих условий"
       ]
     },
     "learning_memory": {
       "store": [
-        "устойчивые паттерны чтения жанра документа",
-        "карты символов/легенд проекта",
-        "типовые ловушки конкретного стандарта/дисциплины"
+        "generic reading patterns: где живут legends, типовые ловушки символов",
+        "устойчивые маппинги tag→system локально для данного проекта",
+        "паттерны распределения требований по разделам PD/RD"
       ],
       "never_store": [
-        "персональные данные",
-        "привязки объект→подрядчик/заказчик",
-        "raw-чертежи и бинарные вложения"
+        "объектоспецифичные выводы teacher feedback как универсальные правила",
+        "raw user prompts/content вне текущего кейса",
+        "любые данные, позволяющие деанонимизировать объект или заказчика"
       ],
       "blind_policy": [
-        "полное отключение project-specific memory при NADZOR_BLIND_BENCHMARK=1",
-        "только generic heuristics разрешены"
+        "NADZOR_BLIND_BENCHMARK=1 отключает все project-specific memory",
+        "разрешить только встроенные model priors и явно загруженные документы"
       ]
     },
     "simplify_or_remove": [
-      "legacy routing micro-runtime",
-      "pairwise verdict runner",
-      "requirement микропайплайны вне stateful investigator"
+      "legacy room/equipment micro-runtimes",
+      "pairwise requirement routers",
+      "hard-coded verdict gates перед verifier"
     ],
     "top_7_changes": [
-      "внедрить query_topology_graph + trace_net как первичные инструменты проверки связности",
-      "формализовать diff_revisions и авто-детект изменений топологии между выпусками",
-      "разделить presence vs absence verifiers со строгими preconditions scope_sufficient",
-      "автоматизировать clause_anchor_linking для трассируемости требования↔доказательство",
-      "включить symbol_legend_lookup и нормализацию единиц/масштаба на уровне инструментов",
-      "ужесточить stop_policy: блокировать finish при незакрытых межлистовых зависимостях",
-      "расширить self-review чек-листом variant-check конфигураций и coverage_audit карты"
+      "Добавить path-trace tool и configuration-resolver для связной сборки систем",
+      "Формализовать stop_policy через coverage_gate и чек-лист self-review",
+      "Усилить absenting: отдельный absence_scoper и строгий dual-condition верификатор",
+      "Суммаризация истории с сохранением координат сущностей и статуса требований",
+      "Дифференцировать experienced vs demo память; гарантировать слепой режим benchmark",
+      "Расширить чтение инженерной графики: legend/symbol DB, xref resolver, scale guard",
+      "Удалить legacy routing/verdict runtimes из активного пути решения"
     ]
   },
   "evaluator_exit_code": null,
