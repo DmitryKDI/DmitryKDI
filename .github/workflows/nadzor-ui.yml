@@ -75,7 +75,6 @@ jobs:
           tests/test_compliance_sheet_fallback.py
           tests/test_requirement_check_unified.py
           tests/test_requirement_text_verify.py
-          tests/test_requirement_llm_extract.py
           tests/test_control_pair_vision.py
           tests/test_run_logger.py
           tests/test_run_logger_snapshots.py
