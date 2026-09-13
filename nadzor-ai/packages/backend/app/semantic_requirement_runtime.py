@@ -1,7 +1,7 @@
 """TEXT requirement PD -> RD/ID evidence using the universal semantic contract.
 
-This replaces the active compliance ladder inside the lean runtime.  Room/text
-matching only ranks candidate sheets.  The semantic decision is one contract:
+This replaces the active compliance ladder inside the lean runtime. Room/text
+matching only ranks candidate sheets. The semantic decision is one contract:
 whole-page scope -> local regions -> observed contradiction / compliant /
 not-observed / insufficient scope.
 """
@@ -165,7 +165,7 @@ def _call(
         f"RD source: document={entry.get('name','')}; page={page}.{mode}"
     )
     digest = hashlib.sha256(
-        f"{path}:{page}:{requirement}:{region}:{discover}:requirement-semantic-v1".encode()
+        f"{path}:{page}:{requirement}:{region}:{discover}:requirement-semantic-v2".encode()
     ).hexdigest()
     result = call_llm_json(
         config,
@@ -174,13 +174,27 @@ def _call(
         images=images,
         operation="vision",
         source_digest=digest,
-        prompt_version="requirement-semantic-v1-universal-contract",
+        prompt_version="requirement-semantic-v2-local-finality",
     )
     return result if isinstance(result, dict) else {}
 
 
 def _texts(value: object) -> list[str]:
     return [str(x).strip() for x in value if str(x).strip()] if isinstance(value, list) else []
+
+
+def _unresolved_local_state(local_state: str, findings: list[dict]) -> str:
+    """A local contradiction that cannot pass the evidence guard is unresolved.
+
+    Presence/absence claims are downgraded to NOT_OBSERVED because the local
+    crop may only prove that an item is not visible on that evidence. Other
+    unconfirmed contradictions are insufficient scope, never final findings.
+    """
+    if local_state == NOT_OBSERVED_ON_THIS_EVIDENCE:
+        return NOT_OBSERVED_ON_THIS_EVIDENCE
+    if findings and all(row.get("difference_kind") == "presence_absence" for row in findings):
+        return NOT_OBSERVED_ON_THIS_EVIDENCE
+    return WRONG_OR_INSUFFICIENT_SCOPE
 
 
 def check_requirements_semantic(
@@ -235,6 +249,7 @@ def check_requirements_semantic(
             "pages": [],
             "final_state": WRONG_OR_INSUFFICIENT_SCOPE,
             "confirmed_evidence": None,
+            "confirmed_findings": [],
             "candidate_findings": [],
             "additional_evidence_needed": [],
         }
@@ -248,6 +263,7 @@ def check_requirements_semantic(
 
         compliant_evidence: dict | None = None
         candidate_findings: list[dict] = []
+        confirmed_local_findings: list[dict] = []
         had_success = False
         had_error = False
         best_state = WRONG_OR_INSUFFICIENT_SCOPE
@@ -287,16 +303,18 @@ def check_requirements_semantic(
                 "additional_evidence_needed": _texts(whole.get("additional_evidence_needed")),
             }
 
-            # Whole-page contradictions are candidates only.  Whole-page
-            # compliance also needs a local evidence check before it can close
-            # the requirement on a dense drawing.
+            # Whole-page contradiction is a hypothesis only. It must never set
+            # the final requirement state to OBSERVED_CONTRADICTION before a
+            # local call passes finding_can_confirm().
             candidate_findings.extend(findings)
-            if state == OBSERVED_CONTRADICTION:
-                best_state = OBSERVED_CONTRADICTION
-            elif state == NOT_OBSERVED_ON_THIS_EVIDENCE and best_state != OBSERVED_CONTRADICTION:
+            if state == NOT_OBSERVED_ON_THIS_EVIDENCE:
                 best_state = NOT_OBSERVED_ON_THIS_EVIDENCE
-            elif state == APPEARS_COMPLIANT and best_state not in {OBSERVED_CONTRADICTION, NOT_OBSERVED_ON_THIS_EVIDENCE}:
+            elif state == APPEARS_COMPLIANT and best_state == WRONG_OR_INSUFFICIENT_SCOPE:
                 best_state = APPEARS_COMPLIANT
+            elif state == WRONG_OR_INSUFFICIENT_SCOPE and best_state not in {
+                NOT_OBSERVED_ON_THIS_EVIDENCE, APPEARS_COMPLIANT
+            }:
+                best_state = WRONG_OR_INSUFFICIENT_SCOPE
 
             if len(regions) < MIN_REQUIREMENT_LOCAL_CHECKS:
                 diagnostics["region_discovery_calls"] += 1
@@ -339,10 +357,12 @@ def check_requirements_semantic(
                     "findings": local_findings,
                     "requirement_evidence": local_evidence,
                     "uncertainties": _texts(local.get("uncertainties")),
+                    "additional_evidence_needed": _texts(local.get("additional_evidence_needed")),
                 })
+                req_record["additional_evidence_needed"].extend(_texts(local.get("additional_evidence_needed")))
 
                 if local_state == OBSERVED_CONTRADICTION:
-                    best_state = OBSERVED_CONTRADICTION
+                    local_confirmed = []
                     for finding in local_findings:
                         if finding_can_confirm(
                             finding,
@@ -350,16 +370,22 @@ def check_requirements_semantic(
                             local_verified=True,
                             scope_state=local_state,
                         ):
-                            # A fully confirmed non-absence contradiction is
-                            # still shown to the inspector as a discrepancy,
-                            # not as 'requirement confirmed'.
-                            finding = {**finding, "local_verified": True, "confirmed": True}
-                        candidate_findings.append(finding)
+                            verified = {**finding, "local_verified": True, "confirmed": True}
+                            confirmed_local_findings.append(verified)
+                            candidate_findings.append(verified)
+                            local_confirmed.append(verified)
+                        else:
+                            candidate_findings.append(finding)
+                    if local_confirmed:
+                        best_state = OBSERVED_CONTRADICTION
+                    elif not confirmed_local_findings:
+                        best_state = _unresolved_local_state(local_state, local_findings)
                 elif (
                     local_state == APPEARS_COMPLIANT
                     and local_comp == "high"
                     and bool(local_evidence.get("observed"))
                     and str(local_evidence.get("rd_evidence_ref") or "").strip()
+                    and not confirmed_local_findings
                 ):
                     compliant_evidence = {
                         "document": entry.get("name"),
@@ -368,27 +394,36 @@ def check_requirements_semantic(
                         "rd_evidence_ref": str(local_evidence.get("rd_evidence_ref")),
                         "where": str(local_evidence.get("where") or ""),
                     }
-                    if best_state != OBSERVED_CONTRADICTION:
-                        best_state = APPEARS_COMPLIANT
+                    best_state = APPEARS_COMPLIANT
                     break
-                elif local_state == NOT_OBSERVED_ON_THIS_EVIDENCE and best_state != OBSERVED_CONTRADICTION:
+                elif local_state == NOT_OBSERVED_ON_THIS_EVIDENCE and not confirmed_local_findings:
                     best_state = NOT_OBSERVED_ON_THIS_EVIDENCE
+                elif local_state == WRONG_OR_INSUFFICIENT_SCOPE and not confirmed_local_findings:
+                    best_state = WRONG_OR_INSUFFICIENT_SCOPE
 
             req_record["pages"].append(page_record)
-            if compliant_evidence and best_state != OBSERVED_CONTRADICTION:
+            if confirmed_local_findings:
+                best_state = OBSERVED_CONTRADICTION
+                break
+            if compliant_evidence:
                 break
 
         req_record["candidate_findings"] = candidate_findings
+        req_record["confirmed_findings"] = confirmed_local_findings
         req_record["confirmed_evidence"] = compliant_evidence
         req_record["final_state"] = best_state
+        # Keep this list compact and deterministic for logs/review.
+        req_record["additional_evidence_needed"] = list(dict.fromkeys(req_record["additional_evidence_needed"]))
         diagnostics["results"].append(req_record)
 
-        if best_state == OBSERVED_CONTRADICTION and candidate_findings:
-            summary = "; ".join(dict.fromkeys(str(x.get("difference") or "") for x in candidate_findings if x.get("difference")))
+        if confirmed_local_findings:
+            summary = "; ".join(dict.fromkeys(
+                str(x.get("difference") or "") for x in confirmed_local_findings if x.get("difference")
+            ))
             result.items.append(ComplianceItem(
                 req,
                 STATUS_NEEDS_CHECK,
-                "наблюдается противоречие ПД↔РД; проверить evidence: " + (summary or "semantic contradiction"),
+                "локально подтверждено наблюдаемое противоречие ПД↔РД: " + (summary or "semantic contradiction"),
                 evidence=summary,
                 pages_to_check=[(str(x.get("path")), int(x.get("page") or 0)) for x in pages],
             ))
@@ -409,7 +444,10 @@ def check_requirements_semantic(
         else:
             diagnostics["vision_unclear"] += 1
             detail = {
-                NOT_OBSERVED_ON_THIS_EVIDENCE: "на проверенном evidence решение не наблюдается, но scope недостаточен для вывода об отсутствии",
+                NOT_OBSERVED_ON_THIS_EVIDENCE: (
+                    "на проверенном evidence решение не наблюдается; это не означает его отсутствие в РД — "
+                    "нужен достаточный scope/дополнительный вид"
+                ),
                 WRONG_OR_INSUFFICIENT_SCOPE: "доступный тип/масштаб evidence недостаточен для вывода",
                 APPEARS_COMPLIANT: "whole-page выглядит согласованно, но локального доказательства недостаточно",
             }.get(best_state, "результат semantic verification остаётся неясным")
