@@ -40,10 +40,11 @@ def test_generator_writes_readable_pdf_and_ground_truth(tmp_path):
     assert gt["allowed_training_abstraction"]["lesson"]
 
 
-def test_simple_comparator_rejects_wording_only_differences():
+def test_simple_comparator_rejects_wording_only_differences_and_id_substitution():
     detector = DETECT_SYSTEM.casefold()
     verifier = VERIFY_SYSTEM.casefold()
     assert "отличие формулировки само по себе не является инженерным отклонением" in detector
     assert "semantic equivalence" in verifier
     assert "verdict=rejected" in verifier
-    assert "не превращай грамматическое направление текста в инженерное направление" in verifier
+    assert "направление описания фразы" in verifier
+    assert "номер помещения/марка — идентификатор" in verifier
