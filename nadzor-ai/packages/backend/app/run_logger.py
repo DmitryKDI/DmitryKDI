@@ -1,9 +1,10 @@
 """Automatic JSON diagnostics for background analysis tasks.
 
-Each task snapshot is immutable and a convenience ``latest.json`` mirror is
-updated beside it.  Historical runs are never deleted automatically: mixing
-``latest`` files from different stages can otherwise make an old technical
-failure look like the current semantic result.
+Runtime logging is intentionally latest-only.  Historical timestamped snapshots
+used to accumulate indefinitely and made local diagnosis noisy and easy to mix
+across runs.  The logger now keeps one top-level file per run type and one
+``latest.json`` per background task type.  Old timestamped snapshots are purged
+on import and are not created by new runs.
 
 Background LLM metrics are measured per run, not copied from process-wide
 counters, so provider queue time and request timing remain attributable.
@@ -19,29 +20,14 @@ from typing import Any, Callable
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-# Каталог диагностики лежит рядом с остальными хранилищами проекта
-# (``facts_store.py``, ``file_store.py``, ``pd_store.py`` — все ``parents[3]``).
-# Раньше здесь было ``parents[2]``, то есть ``packages/data/run_logs``: писали
-# в один каталог, читали из другого, и сводка по прогонам всегда выходила
-# пустой. Молчание тогда выглядело как «прогонов не было» (Г.10).
-def default_run_logs_dir() -> Path:
-    """Каталог логов по умолчанию — рядом с остальными хранилищами проекта.
 
-    Отдельная функция нужна, чтобы проверка пути не зависела от подмены
-    ``RUN_LOGS_DIR`` в тестах: подменённое значение ничего не сказало бы о
-    том, куда логи пишутся на самом деле.
-    """
+def default_run_logs_dir() -> Path:
+    """Return the canonical runtime log directory."""
     return _PROJECT_ROOT / "data" / "run_logs"
 
 
-RUN_LOGS_DIR = Path(os.environ.get(
-    "NADZOR_RUN_LOGS_DIR", default_run_logs_dir()))
+RUN_LOGS_DIR = Path(os.environ.get("NADZOR_RUN_LOGS_DIR", default_run_logs_dir()))
 TASK_LOGS_DIR = RUN_LOGS_DIR / "tasks"
-
-# Устаревший каталог прежних версий. Запись туда больше не идёт; разбор
-# диагностики (``scripts/gigachat_peer_review.py``) читает его наравне с
-# текущим, чтобы уже сделанные на машине инспектора прогоны не исчезли из
-# вида после обновления.
 LEGACY_RUN_LOGS_DIR = Path(__file__).resolve().parents[2] / "data" / "run_logs"
 
 
@@ -50,27 +36,26 @@ def _ensure_dir(path: Path | None = None) -> None:
 
 
 def _safe_run_type(run_type: str) -> str:
-    return "".join(
-        ch for ch in str(run_type) if ch.isalnum() or ch in ("-", "_")
-    ) or "task"
+    return "".join(ch for ch in str(run_type) if ch.isalnum() or ch in ("-", "_")) or "task"
 
 
-def _stamp(timestamp: datetime) -> str:
-    return timestamp.strftime("%Y%m%dT%H%M%S%fZ")
+def _log_path(run_id: int, timestamp: datetime, run_type: str | None = None) -> Path:
+    """Stable latest-only top-level path.
+
+    ``run_id`` and ``timestamp`` remain in the signature for compatibility with
+    older tests/callers; retention is keyed by run type, not by timestamp.
+    """
+    del run_id, timestamp
+    return RUN_LOGS_DIR / f"{_safe_run_type(run_type or 'run')}_latest.json"
 
 
-def _log_path(run_id: int, timestamp: datetime) -> Path:
-    return RUN_LOGS_DIR / f"{run_id}_{_stamp(timestamp)}.json"
-
-
-def _task_log_paths(
-    run_type: str, run_id: int, timestamp: datetime
-) -> tuple[Path, Path]:
+def _task_log_paths(run_type: str, run_id: int, timestamp: datetime) -> tuple[Path, Path]:
+    """Return the single retained task snapshot twice for compatibility."""
+    del run_id, timestamp
     folder = TASK_LOGS_DIR / _safe_run_type(run_type)
     _ensure_dir(folder)
-    immutable = folder / f"{int(run_id)}_{_stamp(timestamp)}.json"
     latest = folder / "latest.json"
-    return immutable, latest
+    return latest, latest
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
@@ -82,9 +67,31 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
-# Счётчики, которые означают несделанную работу, и то, как они называются
-# в списке причин. Повторы и ожидания частоты сюда НЕ входят: повтор,
-# закончившийся успехом, — это цена вызова, а не сбой прогона.
+def _purge_old_logs(root: Path) -> None:
+    """Remove obsolete immutable snapshots while preserving latest-only files."""
+    if not root.is_dir():
+        return
+    for path in root.glob("*.json"):
+        if path.name.endswith("_latest.json") or path.name == "latest.json":
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    tasks = root / "tasks"
+    if tasks.is_dir():
+        for folder in tasks.iterdir():
+            if not folder.is_dir():
+                continue
+            for path in folder.glob("*.json"):
+                if path.name == "latest.json":
+                    continue
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
 _FAILURE_COUNTERS = {
     "errors": "llm_calls_failed",
     "invalid_results": "llm_invalid_results",
@@ -92,17 +99,6 @@ _FAILURE_COUNTERS = {
 
 
 def errors_from_metrics(metrics: dict | None) -> list[dict]:
-    """Ненулевой счётчик сбоев обязан быть и строкой в списке причин.
-
-    Счётчик и список — одно и то же событие, названное дважды. Пока они
-    расходились, прогон с сорванным вызовом выглядел в логе точно так же,
-    как чистый: `metrics.errors` единица, `errors` пуст, статус
-    «завершён». Читающий не мог отличить одно от другого (Г.10).
-
-    Текста сбоя у счётчика нет — он его не хранит; здесь называется факт и
-    количество, а не причина. Причину, если она известна прогону, кладёт
-    вызывающий отдельной строкой, и она не вытесняется этой.
-    """
     rows: list[dict] = []
     for counter, name in _FAILURE_COUNTERS.items():
         try:
@@ -114,15 +110,10 @@ def errors_from_metrics(metrics: dict | None) -> list[dict]:
     return rows
 
 
-def _technical_status(
-    status: str,
-    errors: list[dict] | None = None,
-    details: dict | None = None,
-) -> str:
+def _technical_status(status: str, errors: list[dict] | None = None, details: dict | None = None) -> str:
     normalized = str(status or "").strip().casefold()
     errors = list(errors or [])
     details = dict(details or {})
-
     if details.get("valid") is False:
         return "technical_invalid"
     if errors:
@@ -188,7 +179,7 @@ def save(
         payload["pd_stage"] = pd_stage
     if compliance is not None:
         payload["compliance"] = compliance
-    return _write_json(_log_path(run_id, timestamp), payload)
+    return _write_json(_log_path(run_id, timestamp, run_type), payload)
 
 
 def save_task_snapshot(
@@ -224,15 +215,12 @@ def save_task_snapshot(
         "details": detail_rows,
         "errors": error_rows,
     }
-    immutable, latest = _task_log_paths(run_type, run_id, timestamp)
-    _write_json(immutable, payload)
-    _write_json(latest, payload)
-    return immutable
+    latest, _ = _task_log_paths(run_type, run_id, timestamp)
+    return _write_json(latest, payload)
 
 
 def _document_names(db, ids: list[int] | None) -> list[str]:
     from . import models
-
     names: list[str] = []
     for document_id in ids or []:
         doc = db.get(models.Document, document_id)
@@ -256,18 +244,8 @@ def _snapshot_analysis(run_id: int, metrics: dict | None = None) -> None:
         run = db.get(models.AnalysisRun, run_id)
         if run is None:
             return
-        pairs = (
-            db.query(models.PagePair)
-            .filter(models.PagePair.run_id == run_id)
-            .order_by(models.PagePair.id)
-            .all()
-        )
-        findings = (
-            db.query(models.Finding)
-            .filter(models.Finding.run_id == run_id)
-            .order_by(models.Finding.id)
-            .all()
-        )
+        pairs = db.query(models.PagePair).filter(models.PagePair.run_id == run_id).order_by(models.PagePair.id).all()
+        findings = db.query(models.Finding).filter(models.Finding.run_id == run_id).order_by(models.Finding.id).all()
         pair_errors = [
             {
                 "pair_id": pair.id,
@@ -289,20 +267,18 @@ def _snapshot_analysis(run_id: int, metrics: dict | None = None) -> None:
         finding_rows = []
         for finding in findings:
             pair = pair_map.get(finding.pair_id)
-            finding_rows.append(
-                {
-                    "id": finding.id,
-                    "pair_id": finding.pair_id,
-                    "kind": finding.kind,
-                    "label": _short(finding.label, 160),
-                    "change": _short(finding.change_text),
-                    "severity": finding.severity,
-                    "field_check": _short(finding.field_check, 300),
-                    "before_page": pair.before_page if pair else None,
-                    "after_page": pair.after_page if pair else None,
-                    "score": pair.score if pair else None,
-                }
-            )
+            finding_rows.append({
+                "id": finding.id,
+                "pair_id": finding.pair_id,
+                "kind": finding.kind,
+                "label": _short(finding.label, 160),
+                "change": _short(finding.change_text),
+                "severity": finding.severity,
+                "field_check": _short(finding.field_check, 300),
+                "before_page": pair.before_page if pair else None,
+                "after_page": pair.after_page if pair else None,
+                "score": pair.score if pair else None,
+            })
         save_task_snapshot(
             run_type="analysis",
             run_id=run_id,
@@ -351,24 +327,24 @@ def _compact_visual_results(block: object) -> dict[str, Any]:
         "rooms", "sentence", "verdict", "reason", "where", "pages_checked",
         "page", "document", "status", "execution_state", "pair_key",
         "before_page", "after_page", "before_file_index", "after_file_index",
-        "score", "diff_ratio", "changed_cells", "local_cluster", "hot_zone",
+        "score", "routing_score", "diff_ratio", "changed_cells", "local_cluster", "hot_zone",
         "significant_total", "rooms_shared", "rooms_mentioned", "anchors_shared",
         "changes", "error", "semantic_path", "region_id", "anchor_type",
         "anchor_ids", "anchor_provenance", "pair_confidence", "comparability",
         "pd_clip", "rd_clip", "image_layout", "general_max_dim", "local_max_dim",
         "verification_executed", "calls_used", "calls_budget", "proposals_total",
         "regions_discovered", "regions_verified", "discovery_first",
+        "whole_page_done", "candidate_regions_total", "candidate_regions_checked",
+        "differences_total", "semantic_architecture", "evidence_complete",
     }
     for item in block.get("results") or []:
         if not isinstance(item, dict):
             continue
-        results.append(
-            {
-                key: (_short(value) if key in {"sentence", "reason"} else value)
-                for key, value in item.items()
-                if key in kept_keys
-            }
-        )
+        results.append({
+            key: (_short(value) if key in {"sentence", "reason"} else value)
+            for key, value in item.items()
+            if key in kept_keys
+        })
     out = {key: value for key, value in block.items() if key != "results"}
     out["results"] = results
     return out
@@ -378,17 +354,13 @@ def _compact_confirmations(items: object, limit: int = 80) -> list[dict]:
     out: list[dict] = []
     for item in (items or [])[:limit]:
         if isinstance(item, dict):
-            out.append(
-                {
-                    "domain": item.get("domain"),
-                    "key": item.get("key"),
-                    "status": item.get("status"),
-                    "sources": item.get("sources") or [],
-                    "details": [
-                        _short(value, 400) for value in item.get("details") or []
-                    ],
-                }
-            )
+            out.append({
+                "domain": item.get("domain"),
+                "key": item.get("key"),
+                "status": item.get("status"),
+                "sources": item.get("sources") or [],
+                "details": [_short(value, 400) for value in item.get("details") or []],
+            })
     return out
 
 
@@ -396,19 +368,9 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {}
     rooms = result.get("rooms") if isinstance(result.get("rooms"), dict) else {}
-    equipment = (
-        result.get("equipment") if isinstance(result.get("equipment"), dict) else {}
-    )
-    requirements = (
-        result.get("requirements")
-        if isinstance(result.get("requirements"), dict)
-        else {}
-    )
-    triangulation = (
-        result.get("triangulation")
-        if isinstance(result.get("triangulation"), dict)
-        else {}
-    )
+    equipment = result.get("equipment") if isinstance(result.get("equipment"), dict) else {}
+    requirements = result.get("requirements") if isinstance(result.get("requirements"), dict) else {}
+    triangulation = result.get("triangulation") if isinstance(result.get("triangulation"), dict) else {}
     routing = result.get("routing") if isinstance(result.get("routing"), dict) else None
     return {
         "valid": result.get("valid"),
@@ -434,16 +396,12 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
             "signals_total": equipment.get("signals_total"),
         },
         "requirements": requirements,
-        "vision_requirements": _compact_visual_results(
-            result.get("vision_requirements")
-        ),
+        "vision_requirements": _compact_visual_results(result.get("vision_requirements")),
         "pair_vision": _compact_visual_results(result.get("pair_vision")),
         "routing": {
             "room_keys": routing.get("room_keys") or [],
             "auto_selected": bool(routing.get("auto_selected")),
-        }
-        if routing
-        else None,
+        } if routing else None,
         "triangulation": {
             "signals_count": triangulation.get("signals_count"),
             "confirmed_total": len(triangulation.get("confirmed") or []),
@@ -522,28 +480,25 @@ def install_background_task_logging() -> None:
                     return func(*task_args, **task_kwargs)
             finally:
                 try:
-                    raw_run_id = (
-                        task_args[0] if task_args else task_kwargs.get("run_id")
-                    )
+                    raw_run_id = task_args[0] if task_args else task_kwargs.get("run_id")
                     if raw_run_id is not None:
                         snapshot(
                             int(raw_run_id),
-                            metrics=(
-                                measured.snapshot()
-                                if measured is not None
-                                else None
-                            ),
+                            metrics=(measured.snapshot() if measured is not None else None),
                         )
                 except Exception as exc:  # noqa: BLE001
-                    print(
-                        "автолог фоновой задачи не записан: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
+                    print(f"автолог фоновой задачи не записан: {type(exc).__name__}: {exc}")
 
         return original_add_task(self, logged_task, *args, **kwargs)
 
     BackgroundTasks.add_task = add_task_with_logging
     _BACKGROUND_PATCHED = True
 
+
+# Clean up immutable snapshots created by previous versions before registering
+# background logging.  New runs never create them again.
+_purge_old_logs(RUN_LOGS_DIR)
+if LEGACY_RUN_LOGS_DIR != RUN_LOGS_DIR:
+    _purge_old_logs(LEGACY_RUN_LOGS_DIR)
 
 install_background_task_logging()
