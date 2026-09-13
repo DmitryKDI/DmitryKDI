@@ -1,15 +1,14 @@
-"""Тесты HTTP-пайплайна точек контроля без реального провайдера."""
-import sys
+"""Regression tests for the lean active PD -> RD analysis facade."""
+from types import SimpleNamespace
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import pymupdf
-import pytest
 
 from app.llm import LlmConfig
+from app.matching import DocumentInput
 from app.requirement_registry import Requirement
 from app.triangulated_pipeline import run_triangulated_analysis
+import app.lean_analysis_runtime as lean
 
 
 _CYRILLIC_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -26,6 +25,10 @@ def _make_pdf(path: Path, lines: list[str]) -> None:
     doc.close()
 
 
+def _doc(name: str) -> DocumentInput:
+    return DocumentInput(name=name, pages=1, page_kinds={1: "drawing"})
+
+
 def test_invalid_run_when_a_side_has_no_readable_documents(tmp_path):
     result = run_triangulated_analysis(
         [str(tmp_path / "missing.pdf")],
@@ -34,167 +37,122 @@ def test_invalid_run_when_a_side_has_no_readable_documents(tmp_path):
     assert result["valid"] is False
     assert "ПД" in result["reason"] or "РД" in result["reason"]
     assert result["performance"]["duration_seconds"] >= 0
+    assert result["active_architecture"] == "requirement_check + semantic_pair_runtime"
 
 
-@pytest.mark.skipif(not Path(_CYRILLIC_FONT).is_file(), reason="нет системного шрифта с кириллицей")
-def test_room_missing_in_rd_produces_escalation_ticket(tmp_path):
-    pd_path = tmp_path / "AAAA.pdf"
-    rd_path = tmp_path / "BBBB.pdf"
-    _make_pdf(pd_path, ["301", "Школьный зал", "50.0"])
-    _make_pdf(rd_path, ["302", "Учебный кабинет", "40.0"])
+def test_facade_uses_only_lean_semantic_tracks(monkeypatch):
+    monkeypatch.setattr(
+        lean,
+        "_load_documents",
+        lambda paths, names=None: lean.DocumentLoadResult([_doc("pd") if "pd" in paths[0] else _doc("rd")], []),
+    )
+    monkeypatch.setattr(lean, "_load_text_facts", lambda *args, **kwargs: [{"fact_id": 1, "page": 1, "text": "текст", "document": "doc", "section": ""}])
+    monkeypatch.setattr(lean, "_room_index", lambda *args, **kwargs: {})
+
+    requirement = Requirement(rooms=[], page=1, sentence="Предусмотрена система X", code=None)
+    monkeypatch.setattr(lean, "extract_requirements_llm", lambda *args, **kwargs: [requirement])
+
+    compliance = SimpleNamespace(
+        counts={"требует проверки": 1},
+        not_run=[],
+        diagnostics={"vision_calls": 1},
+        items=[],
+    )
+    compliance_calls = []
+
+    def fake_compliance(*args, **kwargs):
+        compliance_calls.append((args, kwargs))
+        return compliance
+
+    monkeypatch.setattr(lean, "check_compliance", fake_compliance)
+    pair_calls = []
+
+    def fake_pair(*args, **kwargs):
+        pair_calls.append((args, kwargs))
+        signal = SimpleNamespace(source="vision_pair", domain="page_pair", key="0:1->0:1", detail="A -> B")
+        return [signal], [
+            {
+                "control_type": "page_pair",
+                "pair_key": "0:1->0:1",
+                "status": "confirmed_difference",
+                "pd_inventory": [{"entity": "A"}],
+                "rd_inventory": [{"entity": "B"}],
+            },
+            {"control_type": "coverage", "status": "complete"},
+        ]
+
+    monkeypatch.setattr(lean, "run_targeted_pair_vision", fake_pair)
 
     result = run_triangulated_analysis(
-        [str(pd_path)], [str(rd_path)],
-        before_names=["ПД Раздел 1.pdf"], after_names=["РД Раздел 1.pdf"],
+        ["pd.pdf"], ["rd.pdf"],
+        llm_config=LlmConfig(provider="anthropic", api_key="fake-key"),
     )
 
     assert result["valid"] is True
-    assert result["documents"] == {
-        "before": ["ПД Раздел 1.pdf"],
-        "after": ["РД Раздел 1.pdf"],
+    assert len(compliance_calls) == 1
+    assert len(pair_calls) == 1
+    assert result["semantic_findings"][0]["source"] == "vision_pair"
+    assert result["pair_vision"]["counts"]["confirmed_difference"] == 1
+    assert result["triangulation"]["active"] is False
+    assert result["legacy_runtime"] == {
+        "room_registry": False,
+        "equipment_registry": False,
+        "composition_registry": False,
+        "routing_diff": False,
+        "general_requirement_filter": False,
+        "verdict_synthesis": False,
+        "mandatory_triangulation": False,
     }
-    assert result["llm"]["used"] is False
-    assert any("requirements_llm_extract" in item for item in result["not_run"])
 
-    room_findings = result["rooms"]["findings"]
-    assert any(
-        finding["room_key"] == "301" and finding["finding_type"] == "missing_in_rd"
-        for finding in room_findings
+
+def test_room_keys_do_not_gate_or_change_semantic_execution(monkeypatch):
+    monkeypatch.setattr(
+        lean,
+        "_load_documents",
+        lambda paths, names=None: lean.DocumentLoadResult([_doc("pd") if "pd" in paths[0] else _doc("rd")], []),
     )
-    tickets = result["escalation_tickets"]
-    ticket = next((item for item in tickets if item["domain"] == "room" and item["key"] == "301"), None)
-    assert ticket is not None
-    assert ticket["sources_present"] == ["room_registry"]
-    assert result["triangulation"]["confirmed"] == []
+    monkeypatch.setattr(lean, "_load_text_facts", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lean, "_room_index", lambda *args, **kwargs: {})
+    monkeypatch.setattr(lean, "extract_requirements_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        lean,
+        "check_compliance",
+        lambda *args, **kwargs: SimpleNamespace(counts={}, not_run=[], diagnostics={}, items=[]),
+    )
+    calls = []
+    monkeypatch.setattr(
+        lean,
+        "run_targeted_pair_vision",
+        lambda *args, **kwargs: (calls.append(True) or ([], [{"control_type": "coverage", "status": "complete"}])),
+    )
+
+    config = LlmConfig(provider="anthropic", api_key="fake-key")
+    first = run_triangulated_analysis(["pd.pdf"], ["rd.pdf"], room_keys=[], llm_config=config)
+    second = run_triangulated_analysis(["pd.pdf"], ["rd.pdf"], room_keys=["999"], llm_config=config)
+
+    assert len(calls) == 2
+    assert first["active_architecture"] == second["active_architecture"]
+    assert first["routing"] is None and second["routing"] is None
 
 
-@pytest.mark.skipif(not Path(_CYRILLIC_FONT).is_file(), reason="нет системного шрифта с кириллицей")
-def test_general_requirements_go_through_llm_filter_when_key_present(tmp_path, monkeypatch):
-    pd_path = tmp_path / "AAAA.pdf"
-    rd_path = tmp_path / "BBBB.pdf"
-    _make_pdf(pd_path, ["301", "Школьный зал", "50.0", "Экраны должны быть негорючими."])
-    _make_pdf(rd_path, ["301", "Школьный зал", "50.0"])
+def test_without_llm_key_legacy_branches_stay_inactive(monkeypatch):
+    monkeypatch.setattr(
+        lean,
+        "_load_documents",
+        lambda paths, names=None: lean.DocumentLoadResult([_doc("pd") if "pd" in paths[0] else _doc("rd")], []),
+    )
+    monkeypatch.setattr(lean, "_load_text_facts", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lean, "extract_requirements", lambda *args, **kwargs: [])
+    monkeypatch.setattr(lean, "_room_index", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        lean,
+        "check_compliance",
+        lambda *args, **kwargs: SimpleNamespace(counts={}, not_run=["нет ключа ИИ"], diagnostics={}, items=[]),
+    )
 
-    import app.triangulated_pipeline as pipeline
-    from app.requirement_llm_filter import RequirementVerdict
-
-    monkeypatch.setattr(pipeline, "extract_requirements_llm", lambda *args, **kwargs: [])
-
-    def fake_classify(requirements, config, **kwargs):
-        return [
-            RequirementVerdict(requirement=requirement, is_requirement=True, reasoning="ok")
-            for requirement in requirements
-        ]
-
-    monkeypatch.setattr(pipeline, "classify_general_requirements", fake_classify)
-    monkeypatch.setattr(pipeline, "diff_room_routing", lambda *args, **kwargs: {})
-
-    config = LlmConfig(provider="anthropic", api_key="fake-key-for-test")
-    result = run_triangulated_analysis([str(pd_path)], [str(rd_path)], llm_config=config)
-
-    assert result["llm"]["used"] is True
-    assert not any("requirement_llm_filter" in item for item in result["not_run"])
-    general = result["requirements"]["general"]["llm_filter"]
-    assert general["used"] is True
-    assert general["kept"] == 1
-    assert general["dropped_as_noise"] == []
-
-
-def test_general_requirements_stay_regex_only_without_llm_key(tmp_path):
-    pd_path = tmp_path / "AAAA.pdf"
-    rd_path = tmp_path / "BBBB.pdf"
-    _make_pdf(pd_path, ["301", "Школьный зал", "50.0"])
-    _make_pdf(rd_path, ["301", "Школьный зал", "50.0"])
-
-    result = run_triangulated_analysis([str(pd_path)], [str(rd_path)])
+    result = run_triangulated_analysis(["pd.pdf"], ["rd.pdf"])
 
     assert result["llm"]["used"] is False
-    assert any("requirement_llm_filter" in item for item in result["not_run"])
-    assert result["requirements"]["general"]["llm_filter"]["used"] is False
-    assert result["requirements"]["general"]["llm_filter"]["kept"] is None
-
-
-@pytest.mark.skipif(not Path(_CYRILLIC_FONT).is_file(), reason="нет системного шрифта с кириллицей")
-def test_targeted_vision_absence_confirms_requirement(tmp_path, monkeypatch):
-    """Требование из ПД + absent по листу РД = два независимых источника."""
-    import app.triangulated_pipeline as pipeline
-
-    pd_path = tmp_path / "pd.pdf"
-    rd_path = tmp_path / "rd.pdf"
-    _make_pdf(pd_path, ["270", "Санузел МГН", "Предусмотрена система подогрева пола"])
-    _make_pdf(rd_path, ["270", "Санузел МГН", "План отопления"])
-
-    requirement = Requirement(
-        rooms=["270"],
-        page=1,
-        sentence="В помещении 270 предусмотрена система подогрева пола",
-        code=None,
-    )
-    monkeypatch.setattr(pipeline, "extract_requirements_llm", lambda *args, **kwargs: [requirement])
-    monkeypatch.setattr(pipeline, "extract_general_requirements", lambda *args, **kwargs: [])
-    monkeypatch.setattr(pipeline, "classify_general_requirements", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        pipeline,
-        "check_visual_candidates",
-        lambda findings, room_index, config, **kwargs: [
-            {
-                "rooms": ["270"],
-                "sentence": requirement.sentence,
-                "verdict": "absent",
-                "reason": "на листе РД система подогрева пола не показана",
-                "where": "помещение 270",
-                "pages_checked": 1,
-            }
-        ],
-    )
-    monkeypatch.setattr(pipeline, "diff_room_routing", lambda *args, **kwargs: {})
-    monkeypatch.setattr(pipeline, "synthesize_all", lambda *args, **kwargs: [])
-
-    result = run_triangulated_analysis(
-        [str(pd_path)], [str(rd_path)],
-        llm_config=LlmConfig(provider="anthropic", api_key="fake-key"),
-    )
-
-    confirmed = {
-        (item["domain"], item["key"]): set(item["sources"])
-        for item in result["triangulation"]["confirmed"]
-    }
-    assert confirmed[("room", "270")] == {"requirement_prose", "vision"}
-    assert result["vision_requirements"]["checked_total"] == 1
-    assert result["vision_requirements"]["counts"]["absent"] == 1
-    assert result["performance"]["stages_seconds"]["targeted_requirement_vision"] >= 0
-
-
-@pytest.mark.skipif(not Path(_CYRILLIC_FONT).is_file(), reason="нет системного шрифта с кириллицей")
-def test_general_llm_filter_changes_actual_cross_check_input(tmp_path, monkeypatch):
-    """Отфильтрованный шум не должен всё равно попадать в cross-check."""
-    import app.triangulated_pipeline as pipeline
-    from app.requirement_llm_filter import RequirementVerdict
-
-    pd_path = tmp_path / "pd.pdf"
-    rd_path = tmp_path / "rd.pdf"
-    _make_pdf(pd_path, ["301", "Помещение", "50.0"])
-    _make_pdf(rd_path, ["301", "Помещение", "50.0"])
-
-    keep = Requirement(rooms=[], page=1, sentence="Применить материал «X».", code=None)
-    drop = Requirement(rooms=[], page=1, sentence="Раздел разработан в соответствии с нормами.", code=None)
-    monkeypatch.setattr(pipeline, "extract_requirements_llm", lambda *args, **kwargs: [])
-    monkeypatch.setattr(pipeline, "extract_general_requirements", lambda *args, **kwargs: [keep, drop])
-    monkeypatch.setattr(
-        pipeline,
-        "classify_general_requirements",
-        lambda *args, **kwargs: [
-            RequirementVerdict(requirement=keep, is_requirement=True, reasoning="технический факт"),
-            RequirementVerdict(requirement=drop, is_requirement=False, reasoning="мета-текст"),
-        ],
-    )
-    monkeypatch.setattr(pipeline, "diff_room_routing", lambda *args, **kwargs: {})
-
-    result = run_triangulated_analysis(
-        [str(pd_path)], [str(rd_path)],
-        llm_config=LlmConfig(provider="anthropic", api_key="fake-key"),
-    )
-
-    assert result["requirements"]["general"]["raw_total"] == 2
-    assert result["requirements"]["general"]["total"] == 1
-    assert result["requirements"]["general"]["llm_filter"]["kept"] == 1
+    assert result["pair_vision"]["results"] == []
+    assert result["triangulation"]["active"] is False
+    assert all(value is False for value in result["legacy_runtime"].values())
