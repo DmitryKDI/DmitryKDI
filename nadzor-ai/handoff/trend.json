@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "history_branch": "nadzor-history",
+  "entries": [
+    {
+      "id": "legacy-cache-only",
+      "created_at": null,
+      "source_git_sha": null,
+      "freshness": "cache_only",
+      "runtime_health": {
+        "requests": 0,
+        "responses": 0,
+        "errors": null,
+        "persistent_cache_hits": 39,
+        "result_cache_hits": null,
+        "elapsed_seconds": null
+      },
+      "note": "Historical comparison point only; not valid evidence of current prompt/model behavior."
+    },
+    {
+      "id": "fresh-20260913T105038Z",
+      "created_at": "2026-09-13T10:50:38.361538+00:00",
+      "source_git_sha": "4806d10398e1b7c2f4a94f86d47dd9afc69a13aa",
+      "freshness": "fresh",
+      "runtime_health": {
+        "technical_status": "completed_with_errors",
+        "requests": 190,
+        "responses": 190,
+        "errors": 7,
+        "persistent_cache_hits": 0,
+        "result_cache_hits": 0,
+        "elapsed_seconds": 628.843492
+      },
+      "semantic_metrics": {
+        "semantic_findings": 0,
+        "pair_status_counts": {
+          "not_observed_on_this_evidence": 2,
+          "wrong_or_insufficient_scope": 1,
+          "technical_incomplete": 1,
+          "candidate_difference_unverified": 1
+        },
+        "candidate_pairs_total": 5,
+        "candidate_pairs_checked": 5,
+        "requirements_total": 8,
+        "requirement_counts": {
+          "confirmed": 3,
+          "needs_check": 4,
+          "not_checked": 1
+        },
+        "requirement_vision_errors": 6,
+        "requirement_zoom_calls": 32,
+        "requirement_region_discovery_calls": 8
+      },
+      "review_metrics": {
+        "technical_gap_count": 2,
+        "coverage_gap_count": 3,
+        "absence_risk": "high",
+        "no_candidate_trust": "low"
+      }
+    }
+  ]
+}
