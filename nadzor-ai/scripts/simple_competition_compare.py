@@ -46,6 +46,12 @@ DETECT_SYSTEM = """Ты — эксперт-аудитор инженерной �
    чем пропустить технически значимое изменение.
 8. Не придумывай нормативы и факты, которых нет в документах.
 9. Если ПД и РД совпадают — не создавай нарушение.
+10. Отличие формулировки само по себе не является инженерным отклонением. Перед
+    созданием suspicion нормализуй смысл в граф сущностей и связей. Если те же
+    сущности соединены в том же порядке и имеют те же роли/значения, то активная
+    и пассивная форма, обратный порядок слов, синонимы и описание направления
+    потока не создают нарушение. Инженерная разница должна менять хотя бы один
+    узел, связь, роль, количество, параметр, порядок секций, положение или scope.
 
 Верни только JSON:
 {"suspicions":[{
@@ -72,6 +78,20 @@ VERIFY_SYSTEM = """Ты — второй независимый проход п�
 Тебе даны исходные тексты документов и список подозрений первого прохода.
 Для каждого подозрения проверь: действительно ли ПД содержит заявленное решение,
 действительно ли РД отличается, и не перепутано ли отсутствие с ненаблюдаемостью.
+
+Обязательная проверка semantic equivalence перед подтверждением:
+- Построй для ПД и РД минимальный граф: сущности -> связи -> роли/параметры.
+- confirmed_suspicion допустим только если можно назвать конкретный инженерный delta:
+  изменился узел, ребро/подключение, роль, количество, параметр, последовательность,
+  расположение или покрытие.
+- Если граф и значения совпадают, а различается лишь формулировка, залог,
+  направление описания фразы, порядок слов или равнозначные термины — verdict=rejected.
+- Фраза вида «ветку подключить к вентилятору через клапан» и равнозначное описание
+  того же пути «ветка через клапан приходит на вентилятор» не меняют топологию сами
+  по себе. Не превращай грамматическое направление текста в инженерное направление.
+- Если доказательств инженерной разницы недостаточно, используй needs_more, а не
+  confirmed_suspicion.
+
 Не добавляй новые нарушения в этом проходе.
 Верни только JSON:
 {"verification":[{
@@ -132,6 +152,7 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         + learned
         + "\nЗАДАНИЕ: сравни РД с решениями ПД. Найди все инженерно значимые отклонения. "
           "Сначала связывай сущности, затем сравнивай их функцию/параметры/топологию. "
+          "Не считай перефразирование инженерным изменением. "
           "Верни только JSON по заданной схеме."
     )
     first = call_llm_json(
@@ -140,7 +161,7 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         prompt,
         operation="text_verify",
         source_digest="simple-competition-detect:" + str(pd_path) + ":" + "|".join(map(str, rd_paths)),
-        prompt_version="simple-competition-v1",
+        prompt_version="simple-competition-v2",
         use_cache=False,
     )
     if not isinstance(first, dict):
@@ -150,7 +171,7 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         documents
         + "\n<SUSPICIONS>\n"
         + json.dumps(suspicions, ensure_ascii=False)
-        + "\n</SUSPICIONS>\nПерепроверь только эти подозрения."
+        + "\n</SUSPICIONS>\nПерепроверь только эти подозрения и сначала исключи смыслово эквивалентные формулировки."
     )
     second = call_llm_json(
         config,
@@ -158,24 +179,33 @@ def detect_suspicions(pd_path: Path, rd_paths: Sequence[Path], config: LlmConfig
         verify_prompt,
         operation="text_verify",
         source_digest="simple-competition-verify:" + str(pd_path) + ":" + "|".join(map(str, rd_paths)),
-        prompt_version="simple-competition-verify-v1",
+        prompt_version="simple-competition-verify-v2",
         use_cache=False,
     )
     verification = second.get("verification") if isinstance(second, dict) and isinstance(second.get("verification"), list) else []
     by_id = {str(row.get("id") or ""): row for row in verification if isinstance(row, dict)}
-    merged = []
+    merged: list[dict] = []
+    rejected: list[dict] = []
     for item in suspicions:
         if not isinstance(item, dict):
             continue
         row = dict(item)
-        row["verification"] = by_id.get(str(item.get("id") or ""), {"verdict":"needs_more","reason":"verifier returned no row","missing_evidence":[]})
-        merged.append(row)
+        check = by_id.get(
+            str(item.get("id") or ""),
+            {"verdict":"needs_more","reason":"verifier returned no row","missing_evidence":[]},
+        )
+        row["verification"] = check
+        if str(check.get("verdict") or "").strip().lower() == "rejected":
+            rejected.append(row)
+        else:
+            merged.append(row)
     return {
         "architecture": "simple_pd_rd_two_pass",
         "model": config.resolved_model(),
         "pd": str(pd_path),
         "rd": [str(x) for x in rd_paths],
         "suspicions": merged,
+        "rejected_suspicions": rejected,
     }
 
 
