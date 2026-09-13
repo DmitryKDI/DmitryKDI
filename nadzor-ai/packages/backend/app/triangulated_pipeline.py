@@ -1,19 +1,15 @@
-"""Compatibility facade for the former triangulated analysis pipeline.
+"""Compatibility facade for the active stateful analysis runtime.
 
-The previous implementation executed many independent branches in one run:
-room/equipment registries, composition checks, requirement filtering, routing,
-pair vision, triangulation and verdict synthesis. That orchestration is retired
-from the active runtime because it duplicated work and made technical silence
-look like semantic evidence.
+The historical endpoint/function name remains stable, but active execution is:
 
-The HTTP/API surface keeps the historical function name, but execution now goes
-directly to :mod:`lean_analysis_runtime`:
+    document map + PD requirements
+        -> stateful GigaChat investigator
+        -> Python search/open/zoom tools
+        -> self-review
+        -> independent verifier.
 
-    PD requirements -> RD evidence -> semantic compliance
-    drawing pairs -> inventory -> region discovery -> local zoom -> evidence
-
-Legacy modules remain in the repository for focused tests and possible offline
-diagnostics; they are not called by this facade.
+Legacy room/equipment/pair/routing/verdict modules remain available only for
+regression tests and forensic comparison. They are not active semantic gates.
 """
 from __future__ import annotations
 
@@ -31,7 +27,6 @@ def run_triangulated_analysis(
     before_names: Optional[list[str]] = None,
     after_names: Optional[list[str]] = None,
 ) -> dict:
-    """Compatibility entrypoint backed by the lean semantic runtime."""
     return run_lean_analysis(
         before_paths,
         after_paths,

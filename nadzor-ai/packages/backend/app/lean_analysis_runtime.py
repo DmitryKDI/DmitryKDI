@@ -1,29 +1,29 @@
 """Lean active PD -> RD/ID analysis runtime.
 
-There are only two discovery adapters and one semantic contract:
-1. TEXT requirement PD -> candidate RD evidence -> universal semantic contract.
-2. DRAWING PD -> candidate drawing RD -> the same evidence states/guardrails.
+Active architecture:
+    document map + PD requirements
+        -> one stateful investigator session with Python tools
+        -> self-review for missed evidence
+        -> independent verifier for every proposed finding.
 
-Legacy registries, routing-diff, verdict synthesis and mandatory triangulation
-remain compatibility code only and are not executed here.
+Legacy pair/room/equipment/routing/verdict runtimes remain compatibility code
+only. They do not gate the active analysis.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
 
 import pymupdf
 
-from .anchors import normalize_room_key
-from .control_pair_vision import run_targeted_pair_vision
 from .facts_store import facts_for
 from .llm import LlmConfig
 from .matching import DocumentInput
 from .requirement_llm_extract import extract_requirements_llm
-from .requirement_registry import extract_requirements
-from .semantic_requirement_runtime import check_requirements_semantic
+from .requirement_registry import Requirement, extract_requirements
+from .stateful_investigator import InvestigatorResult, run_stateful_investigator
 
 
 @dataclass
@@ -93,92 +93,97 @@ def _load_text_facts(paths: list[str], names: Optional[list[str]] = None) -> lis
     return out
 
 
-def _room_index(paths: list[str], names: Optional[list[str]] = None) -> dict[str, list[dict]]:
-    index: dict[str, list[dict]] = {}
-    for file_index, raw_path in enumerate(paths):
-        source = Path(raw_path)
-        if not source.is_file():
-            continue
-        display_name = names[file_index] if names and file_index < len(names) else source.name
-        try:
-            facts = facts_for(str(source), display_name)
-        except Exception:  # noqa: BLE001
-            continue
-        text_by_page = {
-            int(item.get("page") or 0): str(item.get("text") or "")
-            for item in facts.text_facts
-        }
-        for fact in facts.room_facts:
-            key = normalize_room_key(fact.get("key", ""))
-            page = int(fact.get("page") or 0)
-            if not key or page <= 0:
-                continue
-            index.setdefault(key, []).append({
-                "path": str(source),
-                "page": page,
-                "name": display_name,
-                "text": text_by_page.get(page, ""),
-            })
-    return index
-
-
-def _compliance_payload(result) -> dict:
+def _requirement_row(index: int, req: Requirement, finding_ids: set[str]) -> dict:
+    req_id = f"R{index}"
+    linked = req_id in finding_ids
     return {
-        "counts": dict(result.counts or {}),
-        "not_run": list(result.not_run or []),
-        "diagnostics": dict(result.diagnostics or {}),
-        "items": [asdict(item) for item in result.items],
+        "id": req_id,
+        "status": "требует проверки",
+        "requirement": req.summary or req.sentence,
+        "sentence": req.sentence,
+        "document": req.document,
+        "page": req.page,
+        "rooms": list(req.rooms or req.rooms_by_name or []),
+        "confirmed_contradiction": linked,
+        "reason": (
+            "independent verifier подтвердил связанное расхождение"
+            if linked
+            else "требование включено в stateful investigation; отсутствие finding не считается доказательством соответствия"
+        ),
     }
 
 
-def _pair_summary(diagnostics: list[dict]) -> dict:
-    pair_rows = [
-        row for row in diagnostics
-        if isinstance(row, dict) and row.get("control_type") == "page_pair"
-    ]
-    counts: dict[str, int] = {}
-    for row in pair_rows:
-        status = str(row.get("status") or "unknown")
-        counts[status] = counts.get(status, 0) + 1
-    coverage = next(
-        (
-            row for row in reversed(diagnostics)
-            if isinstance(row, dict) and row.get("control_type") == "coverage"
-        ),
-        {},
-    )
-    return {"counts": counts, "results": pair_rows, "coverage": coverage}
+def _requirements_payload(requirements: list[Requirement], investigator: InvestigatorResult | None) -> dict:
+    linked_ids = {
+        req_id
+        for finding in (investigator.findings if investigator else [])
+        for req_id in finding.get("requirement_ids") or []
+    }
+    items = [_requirement_row(index, req, linked_ids) for index, req in enumerate(requirements, 1)]
+    counts = {"требует проверки": len(items)} if items else {}
+    diagnostics = {
+        "architecture": "requirements_as_investigator_context",
+        "requirements_total": len(items),
+        "linked_confirmed_contradictions": len(linked_ids),
+        "no_finding_is_not_compliance": True,
+    }
+    if investigator:
+        diagnostics["investigator_turns"] = investigator.diagnostics.get("turns_used")
+        diagnostics["pages_inspected"] = investigator.diagnostics.get("pages_inspected")
+    return {"counts": counts, "not_run": [], "diagnostics": diagnostics, "items": items}
 
 
-def _pair_candidates(pair_payload: dict) -> list[dict]:
-    out: list[dict] = []
-    for row in pair_payload.get("results") or []:
-        for finding in row.get("unverified_candidates") or []:
-            out.append({
-                "source": "vision_pair_candidate",
-                "pair_key": row.get("pair_key"),
-                "before_page": row.get("before_page"),
-                "after_page": row.get("after_page"),
-                "status": row.get("status"),
-                "finding": finding,
-            })
-    return out
-
-
-def _requirement_candidates(payload: dict) -> list[dict]:
-    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
-    out: list[dict] = []
-    for row in diagnostics.get("results") or []:
-        for finding in row.get("candidate_findings") or []:
-            out.append({
-                "source": "requirement_candidate",
-                "requirement_index": row.get("requirement_index"),
-                "pd_document": row.get("pd_document"),
-                "pd_page": row.get("pd_page"),
-                "final_state": row.get("final_state"),
-                "finding": finding,
-            })
-    return out
+def _pair_compat_payload(investigator: InvestigatorResult | None) -> dict:
+    if investigator is None:
+        return {"counts": {}, "results": [], "coverage": {}}
+    confirmed = len(investigator.findings)
+    unresolved = len(investigator.candidates)
+    counts = {}
+    if confirmed:
+        counts["confirmed_difference"] = confirmed
+    if unresolved:
+        counts["candidate_difference_unverified"] = unresolved
+    coverage = {
+        "status": "complete" if investigator.diagnostics.get("finished") else "incomplete",
+        "semantic_architecture": investigator.diagnostics.get("architecture"),
+        "pages_total": investigator.diagnostics.get("pages_total"),
+        "pages_inspected": investigator.diagnostics.get("pages_inspected"),
+        "turns_used": investigator.diagnostics.get("turns_used"),
+        "max_turns": investigator.diagnostics.get("max_turns"),
+        "self_reviewed": investigator.diagnostics.get("self_reviewed"),
+        "turn_budget_exhausted": investigator.diagnostics.get("turn_budget_exhausted"),
+        "action_counts": investigator.diagnostics.get("action_counts") or {},
+        "zoom_regions_total": investigator.diagnostics.get("zoom_regions_total"),
+        "requirements_total": investigator.diagnostics.get("requirements_total"),
+        "candidates_total": investigator.diagnostics.get("candidates_total"),
+        "confirmed_total": investigator.diagnostics.get("confirmed_total"),
+        "unresolved_total": investigator.diagnostics.get("unresolved_total"),
+        "verifier_errors": investigator.diagnostics.get("verifier_errors"),
+        "errors": investigator.diagnostics.get("errors") or [],
+    }
+    results = []
+    for row in investigator.diagnostics.get("verification") or []:
+        candidate = row.get("candidate") if isinstance(row, dict) else {}
+        verification = row.get("verification") if isinstance(row, dict) else {}
+        if not isinstance(candidate, dict):
+            candidate = {}
+        if not isinstance(verification, dict):
+            verification = {}
+        kind = str(verification.get("difference_kind") or candidate.get("difference_kind") or "").strip().casefold()
+        is_confirmed = (
+            str(verification.get("verdict") or "").casefold() == "confirmed"
+            and bool(verification.get("scope_sufficient"))
+            and (kind != "presence_absence" or bool(verification.get("absence_scope_complete")))
+        )
+        results.append({
+            "control_type": "investigator_candidate",
+            "pair_key": "|".join(list(candidate.get("pd_refs") or []) + list(candidate.get("rd_refs") or [])),
+            "status": "confirmed_difference" if is_confirmed else "candidate_difference_unverified",
+            "confirmed_findings": [candidate] if is_confirmed else [],
+            "unverified_candidates": [] if is_confirmed else [candidate],
+            "verification": verification,
+        })
+    return {"counts": counts, "results": results, "coverage": coverage}
 
 
 def run_lean_analysis(
@@ -189,10 +194,9 @@ def run_lean_analysis(
     before_names: Optional[list[str]] = None,
     after_names: Optional[list[str]] = None,
 ) -> dict:
-    """Run the active blind semantic architecture.
+    """Run the stateful blind-safe semantic investigator.
 
-    `room_keys` stays only for API compatibility. Manually supplied rooms must
-    never change whether semantic comparison executes.
+    ``room_keys`` remains only for API compatibility and cannot gate execution.
     """
     del room_keys
     timings: dict[str, float] = {}
@@ -214,12 +218,12 @@ def run_lean_analysis(
             ),
             "skipped_files": skipped,
             "performance": {"stages_seconds": timings, "duration_seconds": timings["total"]},
-            "active_architecture": "universal_semantic_contract",
+            "active_architecture": "stateful_investigator",
         }
 
     use_llm = bool(
         llm_config is not None
-        and llm_config.api_key
+        and bool(llm_config.api_key)
         and llm_config.provider not in ("", "local")
     )
     call_failures: list[str] = []
@@ -244,54 +248,30 @@ def run_lean_analysis(
         requirement_source = "regex_fallback"
     timings["requirements_extract"] = _elapsed(stage)
 
-    rd_sources = [
-        (str(path), after_names[index] if after_names and index < len(after_names) else Path(path).name)
-        for index, path in enumerate(after_paths)
-        if Path(path).is_file()
-    ]
-
+    investigator: InvestigatorResult | None = None
     stage = perf_counter()
-    compliance = check_requirements_semantic(
-        requirements,
-        rd_sources,
-        llm_config if use_llm else None,
-        room_index=_room_index(after_paths, after_names),
-    )
-    timings["requirement_semantic_compare"] = _elapsed(stage)
-
-    stage = perf_counter()
-    pair_signals = []
-    pair_diagnostics: list[dict] = []
     if use_llm:
         try:
-            pair_signals, pair_diagnostics = run_targeted_pair_vision(
+            investigator = run_stateful_investigator(
                 before.docs,
                 after.docs,
                 before_paths,
                 after_paths,
+                requirements,
                 llm_config,  # type: ignore[arg-type]
             )
         except Exception as exc:  # noqa: BLE001
-            call_failures.append(f"semantic_pair_runtime: {type(exc).__name__}: {exc}")
-    timings["drawing_semantic_compare"] = _elapsed(stage)
+            call_failures.append(f"stateful_investigator: {type(exc).__name__}: {exc}")
+    timings["stateful_investigation"] = _elapsed(stage)
     timings["total"] = _elapsed(total_started)
 
-    requirement_payload = _compliance_payload(compliance)
-    pair_payload = _pair_summary(pair_diagnostics)
-    semantic_findings = [
-        {
-            "source": signal.source,
-            "domain": signal.domain,
-            "key": signal.key,
-            "detail": signal.detail,
-        }
-        for signal in pair_signals
-        if signal.source in {"vision", "vision_pair"}
-    ]
-    semantic_candidates = [
-        *_requirement_candidates(requirement_payload),
-        *_pair_candidates(pair_payload),
-    ]
+    requirement_payload = _requirements_payload(requirements, investigator)
+    if not use_llm:
+        requirement_payload["not_run"] = ["stateful investigator — no AI key"]
+
+    pair_payload = _pair_compat_payload(investigator)
+    semantic_findings = list(investigator.findings if investigator else [])
+    semantic_candidates = list(investigator.candidates if investigator else [])
 
     return {
         "valid": True,
@@ -305,14 +285,11 @@ def run_lean_analysis(
             "provider": llm_config.provider if llm_config else None,
             "call_failures": call_failures,
         },
-        "not_run": (["semantic checks: нет ключа ИИ"] if not use_llm else []),
-        "performance": {
-            "duration_seconds": timings["total"],
-            "stages_seconds": timings,
-        },
+        "not_run": (["stateful semantic investigation: нет ключа ИИ"] if not use_llm else []),
+        "performance": {"duration_seconds": timings["total"], "stages_seconds": timings},
         "active_architecture": (
-            "PD intent -> candidate RD evidence -> scope/inventory -> region discovery -> "
-            "local verification -> universal semantic evidence contract"
+            "PD document map + requirements -> stateful GigaChat investigator "
+            "-> Python page/search/zoom tools -> self-review -> independent verifier"
         ),
         "semantic_contract": {
             "states": [
@@ -322,7 +299,10 @@ def run_lean_analysis(
                 "APPEARS_COMPLIANT",
             ],
             "absence_from_not_observed_forbidden": True,
-            "whole_page_finding_final": False,
+            "investigator_can_confirm_directly": False,
+            "independent_verifier_required": True,
+            "stateful_history": True,
+            "learned_experience_disabled_in_blind_mode": True,
         },
         "requirements": {
             "source": requirement_source,
@@ -331,6 +311,10 @@ def run_lean_analysis(
         },
         "vision_requirements": requirement_payload,
         "pair_vision": pair_payload,
+        "investigator": investigator.diagnostics if investigator else {
+            "architecture": "stateful_investigator",
+            "status": "not_run",
+        },
         "semantic_findings": semantic_findings,
         "semantic_candidates": semantic_candidates,
         "rooms": {"active": False, "findings": [], "signals_total": 0},
@@ -354,5 +338,7 @@ def run_lean_analysis(
             "legacy_compliance_ladder": False,
             "verdict_synthesis": False,
             "mandatory_triangulation": False,
+            "isolated_pair_micro_prompts": False,
+            "isolated_requirement_micro_prompts": False,
         },
     }
