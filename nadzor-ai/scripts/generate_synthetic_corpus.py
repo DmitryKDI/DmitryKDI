@@ -131,7 +131,7 @@ def _pdf(path: Path, case: tuple, *, rd: bool) -> None:
 
 def generate(out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
-    manifest = {"version":"1.0","benchmark_safe":True,"cases":[]}
+    manifest = {"version":"1.1","benchmark_safe":True,"cases":[]}
     for case in CASES:
         idx, category, title, room, mark, system, pd_text, rd_text, fact = case
         cid = f"SYN-{idx:03d}"
@@ -139,7 +139,7 @@ def generate(out: Path) -> dict:
         pd_path, rd_path = cdir / f"{cid}_PD.pdf", cdir / f"{cid}_RD.pdf"
         _pdf(pd_path, case, rd=False); _pdf(rd_path, case, rd=True)
         positive = category != "negative_control"
-        expected = None if not positive else {"type":category,"room":room,"system":system,"pd_page":1,"rd_page":1,"fact":fact}
+        expected = None if not positive else {"type":category,"room":room,"mark":mark,"system":system,"pd_page":1,"rd_page":1,"fact":fact}
         gt = {"case_id":cid,"category":category,"positive":positive,"expected":expected,
               "allowed_training_abstraction":{"category":category,"lesson":LESSONS[category]}}
         cdir.mkdir(parents=True, exist_ok=True)
