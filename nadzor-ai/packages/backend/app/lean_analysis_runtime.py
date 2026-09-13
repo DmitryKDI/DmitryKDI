@@ -1,14 +1,11 @@
 """Lean active PD -> RD/ID analysis runtime.
 
-This is the replacement orchestration for the old triangulated pipeline.
-The active path intentionally contains only two semantic tracks:
+There are only two discovery adapters and one semantic contract:
+1. TEXT requirement PD -> candidate RD evidence -> universal semantic contract.
+2. DRAWING PD -> candidate drawing RD -> the same evidence states/guardrails.
 
-1. TEXT/requirement intent from PD -> relevant RD evidence -> text/vision check.
-2. DRAWING PD -> candidate drawing RD -> semantic_pair_runtime.
-
-Room/equipment registries, routing graphs, composition checks, general-requirement
-filtering, verdict synthesis and mandatory triangulation are not executed here.
-Those modules remain in the repository for compatibility/diagnostics only.
+Legacy registries, routing-diff, verdict synthesis and mandatory triangulation
+remain compatibility code only and are not executed here.
 """
 from __future__ import annotations
 
@@ -20,15 +17,13 @@ from typing import Optional
 import pymupdf
 
 from .anchors import normalize_room_key
-from .compliance import check_compliance
 from .control_pair_vision import run_targeted_pair_vision
 from .facts_store import facts_for
 from .llm import LlmConfig
 from .matching import DocumentInput
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_registry import extract_requirements
-from .requirement_text_verify import verify_general_requirements_llm
-from .vision_page_compare import check_requirement_on_page
+from .semantic_requirement_runtime import check_requirements_semantic
 
 
 @dataclass
@@ -152,11 +147,38 @@ def _pair_summary(diagnostics: list[dict]) -> dict:
         ),
         {},
     )
-    return {
-        "counts": counts,
-        "results": pair_rows,
-        "coverage": coverage,
-    }
+    return {"counts": counts, "results": pair_rows, "coverage": coverage}
+
+
+def _pair_candidates(pair_payload: dict) -> list[dict]:
+    out: list[dict] = []
+    for row in pair_payload.get("results") or []:
+        for finding in row.get("unverified_candidates") or []:
+            out.append({
+                "source": "vision_pair_candidate",
+                "pair_key": row.get("pair_key"),
+                "before_page": row.get("before_page"),
+                "after_page": row.get("after_page"),
+                "status": row.get("status"),
+                "finding": finding,
+            })
+    return out
+
+
+def _requirement_candidates(payload: dict) -> list[dict]:
+    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    out: list[dict] = []
+    for row in diagnostics.get("results") or []:
+        for finding in row.get("candidate_findings") or []:
+            out.append({
+                "source": "requirement_candidate",
+                "requirement_index": row.get("requirement_index"),
+                "pd_document": row.get("pd_document"),
+                "pd_page": row.get("pd_page"),
+                "final_state": row.get("final_state"),
+                "finding": finding,
+            })
+    return out
 
 
 def run_lean_analysis(
@@ -167,10 +189,10 @@ def run_lean_analysis(
     before_names: Optional[list[str]] = None,
     after_names: Optional[list[str]] = None,
 ) -> dict:
-    """Run only the two active semantic tracks.
+    """Run the active blind semantic architecture.
 
-    `room_keys` is accepted for API compatibility but is deliberately ignored:
-    manually supplied rooms must not change whether semantic comparison runs.
+    `room_keys` stays only for API compatibility. Manually supplied rooms must
+    never change whether semantic comparison executes.
     """
     del room_keys
     timings: dict[str, float] = {}
@@ -192,7 +214,7 @@ def run_lean_analysis(
             ),
             "skipped_files": skipped,
             "performance": {"stages_seconds": timings, "duration_seconds": timings["total"]},
-            "active_architecture": "requirement_check + semantic_pair_runtime",
+            "active_architecture": "universal_semantic_contract",
         }
 
     use_llm = bool(
@@ -204,8 +226,7 @@ def run_lean_analysis(
 
     stage = perf_counter()
     pd_text_facts = _load_text_facts(before_paths, before_names)
-    rd_text_facts = _load_text_facts(after_paths, after_names)
-    timings["load_text"] = _elapsed(stage)
+    timings["load_pd_text"] = _elapsed(stage)
 
     stage = perf_counter()
     if use_llm:
@@ -223,22 +244,20 @@ def run_lean_analysis(
         requirement_source = "regex_fallback"
     timings["requirements_extract"] = _elapsed(stage)
 
-    stage = perf_counter()
     rd_sources = [
         (str(path), after_names[index] if after_names and index < len(after_names) else Path(path).name)
         for index, path in enumerate(after_paths)
         if Path(path).is_file()
     ]
-    compliance = check_compliance(
+
+    stage = perf_counter()
+    compliance = check_requirements_semantic(
         requirements,
-        rd_text_facts,
         rd_sources,
         llm_config if use_llm else None,
-        llm_verify=verify_general_requirements_llm if use_llm else None,
-        vision_check=check_requirement_on_page if use_llm else None,
         room_index=_room_index(after_paths, after_names),
     )
-    timings["requirement_check"] = _elapsed(stage)
+    timings["requirement_semantic_compare"] = _elapsed(stage)
 
     stage = perf_counter()
     pair_signals = []
@@ -257,7 +276,7 @@ def run_lean_analysis(
     timings["drawing_semantic_compare"] = _elapsed(stage)
     timings["total"] = _elapsed(total_started)
 
-    compliance_payload = _compliance_payload(compliance)
+    requirement_payload = _compliance_payload(compliance)
     pair_payload = _pair_summary(pair_diagnostics)
     semantic_findings = [
         {
@@ -268,6 +287,10 @@ def run_lean_analysis(
         }
         for signal in pair_signals
         if signal.source in {"vision", "vision_pair"}
+    ]
+    semantic_candidates = [
+        *_requirement_candidates(requirement_payload),
+        *_pair_candidates(pair_payload),
     ]
 
     return {
@@ -288,19 +311,28 @@ def run_lean_analysis(
             "stages_seconds": timings,
         },
         "active_architecture": (
-            "PD requirements -> RD evidence -> semantic compliance; "
-            "drawing pairs -> inventory -> region discovery -> local zoom -> evidence"
+            "PD intent -> candidate RD evidence -> scope/inventory -> region discovery -> "
+            "local verification -> universal semantic evidence contract"
         ),
+        "semantic_contract": {
+            "states": [
+                "OBSERVED_CONTRADICTION",
+                "NOT_OBSERVED_ON_THIS_EVIDENCE",
+                "WRONG_OR_INSUFFICIENT_SCOPE",
+                "APPEARS_COMPLIANT",
+            ],
+            "absence_from_not_observed_forbidden": True,
+            "whole_page_finding_final": False,
+        },
         "requirements": {
             "source": requirement_source,
             "total": len(requirements),
-            "compliance": compliance_payload,
+            "compliance": requirement_payload,
         },
-        "vision_requirements": compliance_payload,
+        "vision_requirements": requirement_payload,
         "pair_vision": pair_payload,
         "semantic_findings": semantic_findings,
-        # Compatibility fields are intentionally inert: these legacy branches
-        # no longer execute in the active runtime.
+        "semantic_candidates": semantic_candidates,
         "rooms": {"active": False, "findings": [], "signals_total": 0},
         "equipment": {"active": False, "findings": [], "signals_total": 0},
         "composition": {"active": False, "findings": []},
@@ -309,7 +341,7 @@ def run_lean_analysis(
             "active": False,
             "signals_count": len(semantic_findings),
             "confirmed": semantic_findings,
-            "candidates": [],
+            "candidates": semantic_candidates,
         },
         "verdicts": [],
         "escalation_tickets": [],
@@ -319,6 +351,7 @@ def run_lean_analysis(
             "composition_registry": False,
             "routing_diff": False,
             "general_requirement_filter": False,
+            "legacy_compliance_ladder": False,
             "verdict_synthesis": False,
             "mandatory_triangulation": False,
         },
