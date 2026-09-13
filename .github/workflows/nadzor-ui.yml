@@ -74,6 +74,7 @@ jobs:
       - name: Run active runtime regression tests
         run: >-
           pytest -q
+          tests/test_conversation_resilience.py
           tests/test_stateful_investigator.py
           tests/test_semantic_contract.py
           tests/test_triangulated_pipeline.py
