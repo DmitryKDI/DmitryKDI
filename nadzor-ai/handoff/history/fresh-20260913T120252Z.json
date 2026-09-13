@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "fresh-20260913T120252Z",
+  "created_at": "2026-09-13T12:02:52.459144+00:00",
+  "source_git_sha": "458a30f004056d54cce8bf70f1282e6f4a649409",
+  "freshness": "fresh",
+  "model": "GigaChat-3-Ultra",
+  "runtime_health": {
+    "technical_status": "completed",
+    "requests": 214,
+    "responses": 214,
+    "errors": 0,
+    "persistent_cache_hits": 0,
+    "result_cache_hits": 0,
+    "elapsed_seconds": 508.4901652999979
+  },
+  "review_metrics": {
+    "technical_gap_count": 0,
+    "coverage_gap_count": 2,
+    "absence_risk": "high",
+    "no_candidate_trust": "low"
+  },
+  "gigachat_top_recommendations": [
+    "Separate observed contradiction, not-observed evidence, insufficient scope, and apparent compliance in one strict result contract; forbid absence conclusions without scope escalation.",
+    "Require genre/scale compatibility checks before schematic-to-plan comparison and escalate incompatible evidence to insufficient scope.",
+    "Use bounded region discovery with several localized candidate regions per call and reject full-page zoom as sufficient localization.",
+    "Unify text-to-drawing and drawing-to-drawing evaluation under the same semantic evidence contract.",
+    "Keep blind evaluation fresh-by-design and simplify the active runtime by removing legacy orchestration layers from the decision path."
+  ],
+  "evaluator_summary": null
+}
