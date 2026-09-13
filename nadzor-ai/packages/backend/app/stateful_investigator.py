@@ -1,21 +1,12 @@
-"""Stateful GigaChat investigator for PD -> RD/ID comparison.
-
-Instead of hundreds of isolated micro-prompts, one investigation keeps a
-textual conversation history. Python exposes deterministic tools (page open,
-text search, zoom). GigaChat decides what to inspect next. Candidate findings
-are always re-checked by an independent verifier before becoming findings.
-
-The runtime is blind-safe: benchmark ground truth is never accepted as input,
-and learned lessons are disabled automatically when NADZOR_BLIND_BENCHMARK=1.
-"""
+"""Stateful GigaChat investigator for full PD -> RD/ID comparison."""
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Sequence
 
 from .conversation_llm import append_turn, call_conversation_json
@@ -23,13 +14,7 @@ from .inspector_memory import blind_mode, lessons_prompt
 from .llm import LlmConfig, call_llm_json
 from .matching import DocumentInput
 from .requirement_registry import Requirement
-from .semantic_contract import (
-    NOT_OBSERVED_ON_THIS_EVIDENCE,
-    OBSERVED_CONTRADICTION,
-    WRONG_OR_INSUFFICIENT_SCOPE,
-    normalize_bbox,
-    normalize_difference_kind,
-)
+from .semantic_contract import OBSERVED_CONTRADICTION, WRONG_OR_INSUFFICIENT_SCOPE, normalize_bbox, normalize_difference_kind
 from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
 
 
@@ -41,104 +26,57 @@ def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
 
-MAX_TURNS = _int_env("NADZOR_INVESTIGATOR_MAX_TURNS", 24, 4, 40)
-MAX_PAGES_PER_ACTION = _int_env("NADZOR_INVESTIGATOR_PAGES_PER_ACTION", 4, 1, 6)
-MAX_REGIONS_PER_ACTION = _int_env("NADZOR_INVESTIGATOR_REGIONS_PER_ACTION", 3, 1, 4)
-MAX_VERIFY_REFS_PER_SIDE = _int_env("NADZOR_INVESTIGATOR_VERIFY_REFS", 2, 1, 3)
-PAGE_HINT_CHARS = _int_env("NADZOR_INVESTIGATOR_PAGE_HINT_CHARS", 420, 120, 1200)
-PAGE_TEXT_CHARS = _int_env("NADZOR_INVESTIGATOR_PAGE_TEXT_CHARS", 7000, 1000, 14000)
+MAX_TURNS_CAP = _int_env("NADZOR_INVESTIGATOR_MAX_TURNS", 64, 16, 96)
+MIN_TURNS = _int_env("NADZOR_INVESTIGATOR_MIN_TURNS", 24, 12, 48)
+MAX_PAGES = _int_env("NADZOR_INVESTIGATOR_PAGES_PER_ACTION", 4, 1, 6)
+MAX_TEXT_PAGES = _int_env("NADZOR_INVESTIGATOR_TEXT_PAGES_PER_ACTION", 6, 1, 10)
+MAX_REGIONS = _int_env("NADZOR_INVESTIGATOR_REGIONS_PER_ACTION", 3, 1, 4)
+MAX_VERIFY_REFS = _int_env("NADZOR_INVESTIGATOR_VERIFY_REFS", 3, 1, 4)
+PAGE_HINT_CHARS = _int_env("NADZOR_INVESTIGATOR_PAGE_HINT_CHARS", 220, 80, 600)
+SEARCH_TEXT_CHARS = _int_env("NADZOR_INVESTIGATOR_SEARCH_TEXT_CHARS", 12000, 1500, 24000)
+PAGE_TEXT_CHARS = _int_env("NADZOR_INVESTIGATOR_PAGE_TEXT_CHARS", 8000, 1000, 16000)
 
-
-INVESTIGATOR_SYSTEM = f"""Ты — один ведущий AI-инспектор строительной документации.
-Твоя задача — самостоятельно исследовать ПД и РД/ИД и найти инженерно
-значимые изменения. У тебя есть память всего текущего расследования и набор
-инструментов. Не пытайся решить всё одним ответом: выбирай следующий лучший
-шаг, изучай evidence, помни уже увиденное и только потом предлагай finding.
-
-{UNTRUSTED_INPUT_RULE}
-
-ГЛАВНЫЕ ПРАВИЛА:
-- Python routing/search — только навигация, не доказательство.
-- «Не вижу на этом листе» != «этого нет в РД».
-- Схема и план могут описывать одно решение разными способами.
-- Если requirement относится к нескольким помещениям/зонам, нельзя считать
-  его выполненным после проверки только одной из них.
-- Не завершай расследование, пока остаются очевидные непросмотренные
-  high-value evidence: требования ПД, релевантные листы, легенды, узлы,
-  спецификации, соседние листы или спорные зоны.
-- Не экономь ходы ради краткости. Цена пропуска сейчас выше цены дополнительной
-  проверки.
-- Любой proposed finding потом будет независимо проверен вторым вызовом модели.
-
-В КАЖДОМ ответе выбери РОВНО ОДНО action и верни только JSON.
-
-1) Найти страницы по смыслу/тегам:
-{{"action":"search","query":"...","reason":"..."}}
-
-2) Открыть до {MAX_PAGES_PER_ACTION} страниц целиком:
-{{"action":"inspect_pages","refs":["PD0:P1","RD0:P3"],"reason":"..."}}
-
-3) Увеличить до {MAX_REGIONS_PER_ACTION} зон:
-{{"action":"zoom","regions":[
-  {{"ref":"RD0:P3","bbox":[0.1,0.2,0.4,0.5],"reason":"..."}}
-],"reason":"..."}}
-
-4) Зафиксировать КАНДИДАТА расхождения и продолжить:
-{{"action":"propose_finding","finding":{{
-  "title":"...",
-  "difference":"...",
-  "difference_kind":"presence_absence|configuration|connection|parameter|topology|quantity|location|coverage|other",
-  "pd_refs":["PD0:P1"],
-  "rd_refs":["RD0:P3"],
-  "pd_observation":"что наблюдается в ПД",
-  "rd_observation":"что наблюдается в РД",
-  "pd_bbox":[0.1,0.2,0.4,0.5],
-  "rd_bbox":[0.2,0.2,0.5,0.5],
-  "requirement_ids":["R1"],
-  "why_it_matters":"..."
-}}}}
-
-5) Завершить, только если действительно исчерпаны разумные проверки:
-{{"action":"finish","summary":"...","requirements_checked":["R1"],"unresolved":[]}}
-
-Не выдавай сложный evidence-contract на каждом ходу. Твоя роль здесь —
-ИССЛЕДОВАТЕЛЬ: решать, куда смотреть дальше, помнить контекст и собирать
-кандидатов. Доказательность проверит отдельный verifier.
-"""
-
-
-VERIFY_SYSTEM = f"""Ты — независимый verifier кандидата расхождения ПД↔РД/ИД.
-Ты НЕ продолжаешь расследование и не доверяешь выводу investigator на слово.
-Смотри на приложенные evidence и реши, есть ли прямое наблюдаемое
-противоречие.
+INVESTIGATOR_SYSTEM = f"""Ты — ведущий AI-инспектор строительной документации.
+Исследуй ПД и РД/ИД и ищи инженерно значимые изменения. У тебя есть память
+расследования и инструменты. Python routing/search — только навигация.
 
 {UNTRUSTED_INPUT_RULE}
 
 Правила:
-- Нужны конкретное наблюдение ПД + конкретное наблюдение РД + прямое отличие.
-- NOT_OBSERVED не повышай до ABSENCE.
-- Для presence_absence confirmed допустим только если показанный scope
-  действительно обязан и достаточно полно отображать проверяемый объект;
-  иначе needs_more.
-- Для требования на несколько помещений scope считается полным только если
-  evidence покрывает все относящиеся к finding помещения/зоны либо finding
-  явно ограничен конкретной проверенной частью требования.
-- Разный жанр листа сам по себе не finding.
-- Если изображения/подписи недостаточно читаемы — needs_more.
+- «не вижу на evidence» != «объект отсутствует»;
+- схема/план/спецификация могут описывать одно решение по-разному;
+- multi-room requirement проверяй по каждой цели отдельно;
+- whole-page observation — гипотеза; локальное изменение перепроверяй zoom;
+- если verifier вернул needs_more, добери именно недостающий evidence;
+- не заканчивай при непросмотренных high-value requirements/листах/легендах;
+- цена пропуска выше цены дополнительного хода.
 
-Ответ только JSON:
-{{
-  "verdict":"confirmed|needs_more|rejected",
-  "state":"OBSERVED_CONTRADICTION|NOT_OBSERVED_ON_THIS_EVIDENCE|WRONG_OR_INSUFFICIENT_SCOPE",
-  "pd_observation":"...",
-  "rd_observation":"...",
-  "difference":"...",
-  "difference_kind":"presence_absence|configuration|connection|parameter|topology|quantity|location|coverage|other",
-  "scope_sufficient":false,
-  "absence_scope_complete":false,
-  "reason":"..."
-}}
+В каждом ответе ровно один action и только JSON:
+{{"action":"search","query":"...","reason":"..."}}
+{{"action":"read_text","refs":["PD0:P1","RD0:P3"],"reason":"..."}}
+{{"action":"inspect_pages","refs":["PD0:P1","RD0:P3"],"reason":"..."}}
+{{"action":"zoom","regions":[{{"ref":"RD0:P3","bbox":[0.1,0.2,0.4,0.5],"reason":"..."}}],"reason":"..."}}
+{{"action":"propose_finding","finding":{{
+"title":"...","difference":"...","difference_kind":"presence_absence|configuration|connection|parameter|topology|quantity|location|coverage|other",
+"pd_refs":["PD0:P1"],"rd_refs":["RD0:P3"],"pd_observation":"...","rd_observation":"...",
+"pd_bbox":[0.1,0.2,0.4,0.5],"rd_bbox":[0.2,0.2,0.5,0.5],"requirement_ids":["R1"],"why_it_matters":"..."}}}}
+{{"action":"finish","summary":"...","requirements_checked":["R1"],"unresolved":[]}}
 """
+
+VERIFY_SYSTEM = f"""Ты — независимый verifier кандидата ПД↔РД/ИД.
+Не доверяй investigator; смотри только на evidence.
+{UNTRUSTED_INPUT_RULE}
+Нужны конкретные наблюдения ПД и РД и прямое отличие.
+NOT_OBSERVED никогда не повышай до ABSENCE.
+Presence/absence подтверждай только при достаточном обязательном scope.
+Если scope/подписи/границы недостаточны — needs_more.
+Ответ только JSON:
+{{"verdict":"confirmed|needs_more|rejected",
+"state":"OBSERVED_CONTRADICTION|NOT_OBSERVED_ON_THIS_EVIDENCE|WRONG_OR_INSUFFICIENT_SCOPE",
+"pd_observation":"...","rd_observation":"...","difference":"...",
+"difference_kind":"presence_absence|configuration|connection|parameter|topology|quantity|location|coverage|other",
+"scope_sufficient":false,"absence_scope_complete":false,
+"missing_evidence":["..."],"reason":"..."}}"""
 
 
 @dataclass
@@ -149,558 +87,348 @@ class InvestigatorResult:
 
 
 def _page_text(document: DocumentInput, page: int) -> str:
-    return "\n".join(
-        str(item.get("text") or "")
-        for item in document.text_facts
-        if int(item.get("page") or 0) == page
-    ).strip()
+    return "\n".join(str(x.get("text") or "") for x in document.text_facts if int(x.get("page") or 0) == page).strip()
 
 
-def _rooms(document: DocumentInput, page: int) -> list[str]:
-    out = []
-    for item in document.room_facts:
+def _labels(items: Sequence[dict], page: int, limit: int = 30) -> list[str]:
+    out: list[str] = []
+    for item in items:
         if int(item.get("page") or 0) != page:
             continue
         key = str(item.get("key") or "").strip()
         name = str(item.get("name") or "").strip()
-        label = key if not name else f"{key} {name}".strip()
+        label = (key if not name else f"{key} {name}").strip()
         if label and label not in out:
             out.append(label)
-    return out[:20]
+    return out[:limit]
 
 
-def _equipment(document: DocumentInput, page: int) -> list[str]:
-    out = []
-    for item in document.equipment_facts:
-        if int(item.get("page") or 0) != page:
-            continue
-        key = str(item.get("key") or "").strip()
-        name = str(item.get("name") or "").strip()
-        label = key if not name else f"{key} {name}".strip()
-        if label and label not in out:
-            out.append(label)
-    return out[:20]
-
-
-def build_page_catalog(
-    before_docs: Sequence[DocumentInput],
-    after_docs: Sequence[DocumentInput],
-) -> list[dict]:
-    """Build a compact non-gating map of every available page."""
+def build_page_catalog(before_docs: Sequence[DocumentInput], after_docs: Sequence[DocumentInput]) -> list[dict]:
     rows: list[dict] = []
     for side, docs in (("PD", before_docs), ("RD", after_docs)):
-        for doc_index, document in enumerate(docs):
+        for di, document in enumerate(docs):
             for page in range(1, int(document.pages) + 1):
-                text = _page_text(document, page)
-                rows.append(
-                    {
-                        "ref": f"{side}{doc_index}:P{page}",
-                        "side": side,
-                        "document_index": doc_index,
-                        "page": page,
-                        "document": document.name,
-                        "page_kind": document.page_kinds.get(page, "unknown"),
-                        "discipline": document.discipline_code or "",
-                        "rooms": _rooms(document, page),
-                        "equipment": _equipment(document, page),
-                        "text_hint": " ".join(text.split())[:PAGE_HINT_CHARS],
-                    }
-                )
+                text = " ".join(_page_text(document, page).split())
+                rows.append({
+                    "ref": f"{side}{di}:P{page}", "side": side, "document": document.name, "page": page,
+                    "page_kind": document.page_kinds.get(page, "unknown"), "discipline": document.discipline_code or "",
+                    "rooms": _labels(document.room_facts, page), "equipment": _labels(document.equipment_facts, page),
+                    "text_hint": text[:PAGE_HINT_CHARS], "search_text": text[:SEARCH_TEXT_CHARS],
+                })
     return rows
 
 
-def _ref_map(
-    before_docs: Sequence[DocumentInput],
-    after_docs: Sequence[DocumentInput],
-    before_paths: Sequence[str],
-    after_paths: Sequence[str],
-) -> dict[str, dict]:
+def _ref_map(before_docs, after_docs, before_paths, after_paths) -> dict[str, dict]:
     out: dict[str, dict] = {}
-    for side, docs, paths in (
-        ("PD", before_docs, before_paths),
-        ("RD", after_docs, after_paths),
-    ):
-        for doc_index, document in enumerate(docs):
-            if doc_index >= len(paths):
+    for side, docs, paths in (("PD", before_docs, before_paths), ("RD", after_docs, after_paths)):
+        for di, document in enumerate(docs):
+            if di >= len(paths):
                 continue
             for page in range(1, int(document.pages) + 1):
-                out[f"{side}{doc_index}:P{page}"] = {
-                    "side": side,
-                    "document": document,
-                    "document_index": doc_index,
-                    "path": str(paths[doc_index]),
-                    "page": page,
-                }
+                out[f"{side}{di}:P{page}"] = {"document": document, "path": str(paths[di]), "page": page}
     return out
 
 
 _TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё._/-]{2,}")
 
 
-def _search(catalog: list[dict], query: str, limit: int = 10) -> list[dict]:
-    terms = {token.casefold() for token in _TOKEN_RE.findall(query)}
-    if not terms:
-        return catalog[:limit]
+def _public_row(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k != "search_text"}
+
+
+def _search(catalog: list[dict], query: str, limit: int = 12) -> list[dict]:
+    terms = {x.casefold() for x in _TOKEN_RE.findall(query)}
     scored = []
     for row in catalog:
-        haystack = " ".join(
-            [
-                str(row.get("document") or ""),
-                str(row.get("page_kind") or ""),
-                str(row.get("discipline") or ""),
-                " ".join(row.get("rooms") or []),
-                " ".join(row.get("equipment") or []),
-                str(row.get("text_hint") or ""),
-            ]
-        ).casefold()
-        score = sum(2 if term in haystack else 0 for term in terms)
-        score += sum(1 for term in terms if any(part.startswith(term) for part in haystack.split()))
+        hay = " ".join([
+            str(row.get("document") or ""), str(row.get("page_kind") or ""), str(row.get("discipline") or ""),
+            " ".join(row.get("rooms") or []), " ".join(row.get("equipment") or []), str(row.get("search_text") or ""),
+        ]).casefold()
+        score = sum(3 for t in terms if t in hay)
         if score:
             scored.append((score, row))
-    scored.sort(key=lambda item: (-item[0], item[1]["ref"]))
-    return [row for _, row in scored[:limit]]
+    scored.sort(key=lambda x: (-x[0], x[1]["ref"]))
+    rows = [r for _, r in scored[:limit]] if terms else catalog[:limit]
+    return [_public_row(r) for r in rows]
 
 
 def _requirements_payload(requirements: Sequence[Requirement]) -> list[dict]:
     out = []
-    for index, req in enumerate(requirements, 1):
-        out.append(
-            {
-                "id": f"R{index}",
-                "document": req.document,
-                "page": req.page,
-                "rooms": list(req.rooms or req.rooms_by_name or []),
-                "summary": req.summary or req.sentence,
-                "source_text": (req.sentence or req.summary or "")[:900],
-            }
-        )
+    for i, req in enumerate(requirements, 1):
+        out.append({
+            "id": f"R{i}", "document": req.document, "page": req.page,
+            "rooms": list(req.rooms or req.rooms_by_name or []), "summary": req.summary or req.sentence,
+            "source_text": (req.sentence or req.summary or "")[:900],
+        })
     return out
 
 
-def _normalize_refs(value: object, ref_map: dict[str, dict], limit: int) -> list[str]:
+def _normalize_refs(value, ref_map, limit) -> list[str]:
     out = []
-    for ref in value if isinstance(value, list) else []:
-        key = str(ref or "").strip().upper()
-        if key in ref_map and key not in out:
-            out.append(key)
+    for raw in value if isinstance(value, list) else []:
+        ref = str(raw or "").strip().upper()
+        if ref in ref_map and ref not in out:
+            out.append(ref)
         if len(out) >= limit:
             break
     return out
 
 
-def _normalize_candidate(value: object, ref_map: dict[str, dict]) -> dict | None:
+def _normalize_candidate(value, ref_map) -> dict | None:
     if not isinstance(value, dict):
         return None
-    pd_refs = [ref for ref in _normalize_refs(value.get("pd_refs"), ref_map, 6) if ref.startswith("PD")]
-    rd_refs = [ref for ref in _normalize_refs(value.get("rd_refs"), ref_map, 6) if ref.startswith("RD")]
-    difference = " ".join(str(value.get("difference") or "").split()).strip()
-    pd_observation = " ".join(str(value.get("pd_observation") or "").split()).strip()
-    rd_observation = " ".join(str(value.get("rd_observation") or "").split()).strip()
-    if not pd_refs or not rd_refs or not difference or not pd_observation or not rd_observation:
+    pd_refs = [r for r in _normalize_refs(value.get("pd_refs"), ref_map, 6) if r.startswith("PD")]
+    rd_refs = [r for r in _normalize_refs(value.get("rd_refs"), ref_map, 6) if r.startswith("RD")]
+    diff = " ".join(str(value.get("difference") or "").split())
+    pdo = " ".join(str(value.get("pd_observation") or "").split())
+    rdo = " ".join(str(value.get("rd_observation") or "").split())
+    if not pd_refs or not rd_refs or not diff or not pdo or not rdo:
         return None
-
-    pd_bbox = normalize_bbox(value.get("pd_bbox"))
-    rd_bbox = normalize_bbox(value.get("rd_bbox"))
     req_ids = []
     for raw in value.get("requirement_ids") or []:
-        text = str(raw or "").strip().upper()
-        if re.fullmatch(r"R\d+", text) and text not in req_ids:
-            req_ids.append(text)
-
+        rid = str(raw or "").strip().upper()
+        if re.fullmatch(r"R\d+", rid) and rid not in req_ids:
+            req_ids.append(rid)
     return {
-        "title": " ".join(str(value.get("title") or "").split()).strip()[:240],
-        "difference": difference[:1600],
-        "difference_kind": normalize_difference_kind(value.get("difference_kind")),
-        "pd_refs": pd_refs,
-        "rd_refs": rd_refs,
-        "pd_observation": pd_observation[:1600],
-        "rd_observation": rd_observation[:1600],
-        "pd_bbox": pd_bbox,
-        "rd_bbox": rd_bbox,
-        "requirement_ids": req_ids,
-        "why_it_matters": " ".join(str(value.get("why_it_matters") or "").split()).strip()[:1200],
+        "title": " ".join(str(value.get("title") or "").split())[:240], "difference": diff[:1600],
+        "difference_kind": normalize_difference_kind(value.get("difference_kind")), "pd_refs": pd_refs, "rd_refs": rd_refs,
+        "pd_observation": pdo[:1600], "rd_observation": rdo[:1600], "pd_bbox": normalize_bbox(value.get("pd_bbox")),
+        "rd_bbox": normalize_bbox(value.get("rd_bbox")), "requirement_ids": req_ids,
+        "why_it_matters": " ".join(str(value.get("why_it_matters") or "").split())[:1200],
     }
 
 
 def _compact_catalog(catalog: list[dict]) -> str:
+    return json.dumps([_public_row(r) for r in catalog], ensure_ascii=False, separators=(",", ":"))
+
+
+def _tool_text(refs: list[str], ref_map: dict[str, dict]) -> str:
     rows = []
-    for row in catalog:
-        rows.append(
-            {
-                "ref": row["ref"],
-                "kind": row["page_kind"],
-                "discipline": row["discipline"],
-                "rooms": row["rooms"][:12],
-                "equipment": row["equipment"][:12],
-                "text_hint": row["text_hint"],
-            }
-        )
-    return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-
-
-def _tool_pages(refs: list[str], ref_map: dict[str, dict]) -> tuple[str, list[str]]:
-    lines = ["TOOL RESULT: opened pages"]
-    images: list[str] = []
     for ref in refs:
         item = ref_map[ref]
-        document: DocumentInput = item["document"]
-        page = int(item["page"])
-        text = _page_text(document, page)[:PAGE_TEXT_CHARS]
-        lines.append(
-            f"\n[{ref}] kind={document.page_kinds.get(page,'unknown')} "
-            f"discipline={document.discipline_code or ''}\n"
-            f"TEXT LAYER:\n<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{text}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>"
-        )
-        images.append(render_page_to_data_url(item["path"], page))
-    return "\n".join(lines), images
+        rows.append(f"[{ref}]\n<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{_page_text(item['document'], int(item['page']))[:PAGE_TEXT_CHARS]}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>")
+    return "TOOL RESULT: text layers\n" + "\n\n".join(rows)
 
 
-def _tool_zoom(regions: list[dict], ref_map: dict[str, dict]) -> tuple[str, list[str], list[dict]]:
-    lines = ["TOOL RESULT: zoomed regions"]
-    images: list[str] = []
-    accepted: list[dict] = []
-    for raw in regions[:MAX_REGIONS_PER_ACTION]:
+def _render(item: dict, bbox=None) -> str:
+    return render_page_to_data_url(item["path"], int(item["page"]), clip_frac=bbox) if bbox is not None else render_page_to_data_url(item["path"], int(item["page"]))
+
+
+def _tool_pages(refs, ref_map):
+    lines, images, rendered, failures = ["TOOL RESULT: opened pages"], [], [], []
+    for ref in refs:
+        item = ref_map[ref]
+        try:
+            images.append(_render(item)); rendered.append(ref)
+            text = _page_text(item["document"], int(item["page"]))[:PAGE_TEXT_CHARS]
+            lines.append(f"[{ref}]\nTEXT:\n<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>{text}</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>")
+        except Exception as exc:
+            failures.append(f"{ref}: {type(exc).__name__}: {exc}")
+            lines.append(f"[{ref}] RENDER FAILURE — uncertainty, not absence")
+    return "\n".join(lines), images, rendered, failures
+
+
+def _tool_zoom(regions, ref_map):
+    lines, images, accepted, failures = ["TOOL RESULT: zoomed regions"], [], [], []
+    for raw in regions[:MAX_REGIONS]:
         if not isinstance(raw, dict):
             continue
-        ref = str(raw.get("ref") or "").strip().upper()
-        if ref not in ref_map:
+        ref = str(raw.get("ref") or "").strip().upper(); box = normalize_bbox(raw.get("bbox"))
+        if ref not in ref_map or box is None:
             continue
-        box = normalize_bbox(raw.get("bbox"))
-        if box is None:
-            continue
-        area = max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+        area = max(0.0, box[2]-box[0]) * max(0.0, box[3]-box[1])
         if area < 0.005 or area > 0.65:
             continue
-        item = ref_map[ref]
-        page = int(item["page"])
-        reason = " ".join(str(raw.get("reason") or "").split()).strip()
-        images.append(render_page_to_data_url(item["path"], page))
-        images.append(render_page_to_data_url(item["path"], page, clip_frac=box))
-        accepted.append({"ref": ref, "bbox": box, "reason": reason})
-        lines.append(f"{ref} bbox={box} reason={reason}")
-    return "\n".join(lines), images, accepted
+        try:
+            item = ref_map[ref]; images.extend([_render(item), _render(item, box)])
+            accepted.append({"ref": ref, "bbox": box, "reason": str(raw.get("reason") or "")[:500]})
+            lines.append(f"{ref} bbox={box}")
+        except Exception as exc:
+            failures.append(f"{ref}: {type(exc).__name__}: {exc}")
+    return "\n".join(lines), images, accepted, failures
 
 
-def _history_user_text(text: str, *, first_turn: bool) -> str:
-    """Keep the session memory useful without replaying every full page forever."""
-    if first_turn or len(text) <= 9000:
-        return text
-    return text[:8500] + "\n[tool payload compacted in conversation history]"
-
-
-def _state_note(inspected_refs: set[str], candidates: list[dict], zoomed: list[dict]) -> str:
-    refs = ",".join(sorted(inspected_refs))
-    return (
-        "\nSESSION NOTE: inspected_refs=["
-        + refs
-        + f"]; candidates_saved={len(candidates)}; zooms_done={len(zoomed)}."
-    )
-
-
-def _candidate_key(candidate: dict) -> tuple:
-    return (
-        tuple(candidate.get("pd_refs") or []),
-        tuple(candidate.get("rd_refs") or []),
-        str(candidate.get("difference") or "").casefold(),
-    )
-
-
-def _dedupe_candidates(candidates: list[dict]) -> list[dict]:
-    out = []
-    seen = set()
-    for candidate in candidates:
-        key = _candidate_key(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(candidate)
-    return out
-
-
-def _verification_images(candidate: dict, ref_map: dict[str, dict]) -> tuple[list[str], list[str]]:
-    images: list[str] = []
-    evidence_refs: list[str] = []
+def _verification_images(candidate, ref_map):
+    images, refs = [], []
     for side_key, bbox_key in (("pd_refs", "pd_bbox"), ("rd_refs", "rd_bbox")):
-        refs = candidate.get(side_key) or []
-        bbox = candidate.get(bbox_key)
-        for ref in refs[:MAX_VERIFY_REFS_PER_SIDE]:
+        side_refs = candidate.get(side_key) or []; bbox = candidate.get(bbox_key)
+        for ref in side_refs[:MAX_VERIFY_REFS]:
             item = ref_map.get(ref)
             if not item:
                 continue
-            page = int(item["page"])
-            images.append(render_page_to_data_url(item["path"], page))
-            evidence_refs.append(ref)
-            if bbox is not None and len(refs) == 1:
-                images.append(render_page_to_data_url(item["path"], page, clip_frac=bbox))
-    return images[:10], evidence_refs
+            images.append(_render(item)); refs.append(ref)
+            if bbox is not None and len(side_refs) == 1:
+                images.append(_render(item, bbox))
+    return images[:12], refs
 
 
-def _verify_candidate(
-    config: LlmConfig,
-    candidate: dict,
-    ref_map: dict[str, dict],
-    requirements_by_id: dict[str, dict],
-) -> dict:
-    images, evidence_refs = _verification_images(candidate, ref_map)
-    related = [
-        requirements_by_id[req_id]
-        for req_id in candidate.get("requirement_ids") or []
-        if req_id in requirements_by_id
-    ]
-    prompt = (
-        "CANDIDATE FROM INVESTIGATOR:\n"
-        + json.dumps(candidate, ensure_ascii=False, default=list)
-        + "\nRELATED PD REQUIREMENTS:\n"
-        + json.dumps(related, ensure_ascii=False)
-        + "\nEVIDENCE REFS ATTACHED: "
-        + ", ".join(evidence_refs)
-    )
+def _verify_candidate(config, candidate, ref_map, req_by_id):
     try:
-        result = call_llm_json(
-            config,
-            VERIFY_SYSTEM,
-            prompt,
-            images=images,
-            operation="vision",
-            source_digest="stateful-verifier:" + "|".join(evidence_refs),
-            prompt_version="stateful-investigator-verifier-v1",
-            use_cache=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "verdict": "needs_more",
-            "state": WRONG_OR_INSUFFICIENT_SCOPE,
-            "reason": f"verifier technical failure: {type(exc).__name__}: {exc}",
-            "error": True,
-        }
-    return result if isinstance(result, dict) else {}
+        images, evidence_refs = _verification_images(candidate, ref_map)
+        related = [req_by_id[r] for r in candidate.get("requirement_ids") or [] if r in req_by_id]
+        prompt = "CANDIDATE:\n" + json.dumps(candidate, ensure_ascii=False) + "\nRELATED REQUIREMENTS:\n" + json.dumps(related, ensure_ascii=False) + "\nEVIDENCE REFS: " + ", ".join(evidence_refs)
+        result = call_llm_json(config, VERIFY_SYSTEM, prompt, images=images, operation="vision",
+            source_digest="stateful-verifier-v2:" + "|".join(evidence_refs), prompt_version="stateful-investigator-verifier-v2", use_cache=False)
+        return result if isinstance(result, dict) else {}
+    except Exception as exc:
+        return {"verdict": "needs_more", "state": WRONG_OR_INSUFFICIENT_SCOPE,
+                "reason": f"verifier technical failure: {type(exc).__name__}: {exc}", "error": True}
 
 
-def _confirmed(candidate: dict, verification: dict) -> bool:
-    if str(verification.get("verdict") or "").casefold() != "confirmed":
-        return False
-    if str(verification.get("state") or "").upper() != OBSERVED_CONTRADICTION:
-        return False
-    if not bool(verification.get("scope_sufficient")):
-        return False
-    if not str(verification.get("pd_observation") or "").strip():
-        return False
-    if not str(verification.get("rd_observation") or "").strip():
-        return False
-    if not str(verification.get("difference") or "").strip():
-        return False
-    kind = normalize_difference_kind(
-        verification.get("difference_kind") or candidate.get("difference_kind")
-    )
-    if kind == "presence_absence" and not bool(verification.get("absence_scope_complete")):
-        return False
-    return True
+def _confirmed(candidate, verification) -> bool:
+    if str(verification.get("verdict") or "").casefold() != "confirmed": return False
+    if str(verification.get("state") or "").upper() != OBSERVED_CONTRADICTION: return False
+    if not bool(verification.get("scope_sufficient")): return False
+    if not all(str(verification.get(k) or "").strip() for k in ("pd_observation", "rd_observation", "difference")): return False
+    kind = normalize_difference_kind(verification.get("difference_kind") or candidate.get("difference_kind"))
+    return kind != "presence_absence" or bool(verification.get("absence_scope_complete"))
 
 
-def run_stateful_investigator(
-    before_docs: Sequence[DocumentInput],
-    after_docs: Sequence[DocumentInput],
-    before_paths: Sequence[str],
-    after_paths: Sequence[str],
-    requirements: Sequence[Requirement],
-    config: LlmConfig,
-) -> InvestigatorResult:
-    catalog = build_page_catalog(before_docs, after_docs)
-    refs = _ref_map(before_docs, after_docs, before_paths, after_paths)
-    req_payload = _requirements_payload(requirements)
-    req_by_id = {row["id"]: row for row in req_payload}
-    memory = lessons_prompt()
+def _candidate_key(candidate) -> tuple:
+    return (tuple(candidate.get("pd_refs") or []), tuple(candidate.get("rd_refs") or []), str(candidate.get("difference") or "").casefold())
 
-    initial = (
-        "DOCUMENT MAP (navigation only, every page remains available):\n"
-        + _compact_catalog(catalog)
-        + "\n\nPD REQUIREMENTS EXTRACTED FROM TEXT:\n"
-        + json.dumps(req_payload, ensure_ascii=False, separators=(",", ":"))
-        + "\n"
-        + memory
-        + "\nНачни расследование. Выбери первый лучший action."
-    )
 
-    history: list[dict] = []
-    candidates: list[dict] = []
-    action_counts: Counter[str] = Counter()
-    inspected_refs: set[str] = set()
-    zoomed: list[dict] = []
-    errors: list[str] = []
-    transcript: list[dict] = []
-    user_text = initial
-    current_images: list[str] = []
-    finish_requested = False
-    self_reviewed = False
-    finished = False
+def _topic_key(candidate) -> tuple:
+    return (tuple(candidate.get("requirement_ids") or []), normalize_difference_kind(candidate.get("difference_kind")), tuple(candidate.get("pd_refs") or []))
 
-    for turn in range(1, MAX_TURNS + 1):
+
+def _finding_from(candidate, verification) -> dict:
+    return {
+        "source": "stateful_investigator", "domain": "semantic", "key": "|".join((candidate.get("pd_refs") or []) + (candidate.get("rd_refs") or [])),
+        "detail": str(verification.get("difference") or candidate["difference"]), "state": OBSERVED_CONTRADICTION,
+        "difference_kind": normalize_difference_kind(verification.get("difference_kind") or candidate.get("difference_kind")),
+        "pd_observation": str(verification.get("pd_observation") or candidate["pd_observation"]),
+        "rd_observation": str(verification.get("rd_observation") or candidate["rd_observation"]),
+        "pd_refs": list(candidate.get("pd_refs") or []), "rd_refs": list(candidate.get("rd_refs") or []),
+        "pd_bbox": candidate.get("pd_bbox"), "rd_bbox": candidate.get("rd_bbox"), "requirement_ids": list(candidate.get("requirement_ids") or []),
+        "verified": True, "verification_reason": str(verification.get("reason") or ""),
+    }
+
+
+def _effective_turn_budget(pages_total: int, requirements_total: int) -> int:
+    scaled = MIN_TURNS + math.ceil(pages_total / 8) + math.ceil(requirements_total / 4)
+    return min(MAX_TURNS_CAP, max(MIN_TURNS, scaled))
+
+
+def _room_token(label: str) -> str:
+    m = re.search(r"\b(\d{1,6})\b", str(label or ""))
+    return m.group(1) if m else str(label or "").strip()
+
+
+def _requirement_target_coverage(req_payload, catalog, visual_refs, search_queries) -> dict:
+    searched = " ".join(search_queries).casefold(); rows, blockers = [], []
+    for req in req_payload:
+        for raw_target in req.get("rooms") or []:
+            target = _room_token(raw_target)
+            rd_refs = [r["ref"] for r in catalog if r.get("side") == "RD" and any(_room_token(x) == target for x in r.get("rooms") or [])]
+            if any(ref in visual_refs for ref in rd_refs): status = "visited"
+            elif rd_refs: status = "available_uninspected"
+            elif target and target.casefold() in searched: status = "unlocated_after_search"
+            else: status = "unsearched_unlocated"
+            row = {"requirement_id": req["id"], "target": target, "rd_refs": rd_refs[:12], "status": status}; rows.append(row)
+            if status in {"available_uninspected", "unsearched_unlocated"}: blockers.append(row)
+    return {"targets_total": len(rows), "targets_visited": sum(r["status"] == "visited" for r in rows),
+            "targets_blocking_finish": len(blockers), "rows": rows, "blockers": blockers}
+
+
+def _history_user_text(text: str, first_turn: bool) -> str:
+    return text if first_turn or len(text) <= 9000 else text[:8500] + "\n[tool payload compacted]"
+
+
+def _state_note(visual_refs, text_refs, search_queries, findings, unresolved, coverage, remaining_turns) -> str:
+    return ("\nSESSION NOTE:" f" visual_refs={sorted(visual_refs)};" f" text_refs={sorted(text_refs)};"
+            f" searches={len(search_queries)};" f" confirmed={len(findings)};" f" unresolved={len(unresolved)};"
+            f" coverage_blockers={coverage.get('targets_blocking_finish',0)};" f" turns_remaining={remaining_turns}.")
+
+
+def run_stateful_investigator(before_docs: Sequence[DocumentInput], after_docs: Sequence[DocumentInput],
+                              before_paths: Sequence[str], after_paths: Sequence[str],
+                              requirements: Sequence[Requirement], config: LlmConfig) -> InvestigatorResult:
+    catalog = build_page_catalog(before_docs, after_docs); refs = _ref_map(before_docs, after_docs, before_paths, after_paths)
+    req_payload = _requirements_payload(requirements); req_by_id = {r["id"]: r for r in req_payload}
+    max_turns = _effective_turn_budget(len(catalog), len(requirements))
+    initial = ("DOCUMENT MAP (navigation only):\n" + _compact_catalog(catalog) + "\nPD REQUIREMENTS:\n"
+               + json.dumps(req_payload, ensure_ascii=False, separators=(",", ":")) + "\n" + lessons_prompt()
+               + "\nStart investigation. Use search/read_text before vision when useful.")
+    history, findings, verification_rows = [], [], []
+    pending_by_topic: dict[tuple, dict] = {}; confirmed_topics, seen_candidate_keys = set(), set()
+    action_counts: Counter[str] = Counter(); visual_refs, text_refs, search_queries, zoomed = set(), set(), [], []
+    tool_failures, errors, transcript = [], [], []; user_text, current_images = initial, []
+    finish_requested = self_reviewed = finished = False; finish_blocked_count = 0
+
+    for turn in range(1, max_turns + 1):
+        coverage = _requirement_target_coverage(req_payload, catalog, visual_refs, search_queries); remaining = max_turns - turn
         try:
-            effective_user_text = user_text + _state_note(inspected_refs, candidates, zoomed)
-            response = call_conversation_json(
-                config,
-                INVESTIGATOR_SYSTEM,
-                history,
-                effective_user_text,
-                images=current_images,
-                timeout=240.0,
-                operation="vision" if current_images else "text_verify",
-            )
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"turn {turn}: {type(exc).__name__}: {exc}")
-            break
-
-        append_turn(history, _history_user_text(effective_user_text, first_turn=(turn == 1)), response)
-        action = str(response.get("action") or "").strip().casefold()
-        action_counts[action or "invalid"] += 1
-        transcript.append(
-            {
-                "turn": turn,
-                "action": action,
-                "reason": str(response.get("reason") or "")[:500],
-                "summary": str(response.get("summary") or "")[:500],
-            }
-        )
-        current_images = []
+            effective = user_text + _state_note(visual_refs, text_refs, search_queries, findings, pending_by_topic, coverage, remaining)
+            if remaining <= 4: effective += "\nTURN BUDGET LOW: prioritize unresolved high-value evidence; budget exhaustion is not compliance."
+            response = call_conversation_json(config, INVESTIGATOR_SYSTEM, history, effective, images=current_images,
+                                              timeout=240.0, operation="vision" if current_images else "text_verify")
+        except Exception as exc:
+            errors.append(f"turn {turn}: {type(exc).__name__}: {exc}"); break
+        append_turn(history, _history_user_text(effective, turn == 1), response)
+        action = str(response.get("action") or "").strip().casefold(); action_counts[action or "invalid"] += 1
+        transcript.append({"turn": turn, "action": action, "reason": str(response.get("reason") or "")[:500]}); current_images = []
 
         if action == "search":
             query = str(response.get("query") or "").strip()
-            matches = _search(catalog, query, limit=12)
-            user_text = (
-                "TOOL RESULT: semantic/lexical search. This only ranks navigation; "
-                "it proves nothing.\nQUERY="
-                + query
-                + "\n"
-                + json.dumps(matches, ensure_ascii=False, separators=(",", ":"))
-                + "\nChoose next action."
-            )
-            continue
-
+            if query: search_queries.append(query)
+            user_text = "TOOL RESULT: search navigation only.\n" + json.dumps(_search(catalog, query, 14), ensure_ascii=False) + "\nChoose next action."; continue
+        if action == "read_text":
+            requested = _normalize_refs(response.get("refs"), refs, MAX_TEXT_PAGES)
+            if not requested: user_text = "TOOL ERROR: no valid refs for read_text."; continue
+            text_refs.update(requested); user_text = _tool_text(requested, refs) + "\nUse only what the text actually states."; continue
         if action == "inspect_pages":
-            requested = _normalize_refs(response.get("refs"), refs, MAX_PAGES_PER_ACTION)
-            if not requested:
-                user_text = "TOOL ERROR: no valid refs. Use refs exactly as in DOCUMENT MAP."
-                continue
-            inspected_refs.update(requested)
-            user_text, current_images = _tool_pages(requested, refs)
-            user_text += "\nUse what you actually observe; choose next action."
-            continue
-
+            requested = _normalize_refs(response.get("refs"), refs, MAX_PAGES)
+            if not requested: user_text = "TOOL ERROR: no valid refs."; continue
+            user_text, current_images, rendered, failures = _tool_pages(requested, refs); visual_refs.update(rendered); text_refs.update(requested); tool_failures.extend(failures)
+            user_text += "\nRender failure is uncertainty, not absence."; continue
         if action == "zoom":
             regions = response.get("regions") if isinstance(response.get("regions"), list) else []
-            user_text, current_images, accepted = _tool_zoom(regions, refs)
-            if not accepted:
-                user_text = (
-                    "TOOL ERROR: no valid local regions. bbox must be normalized and "
-                    "must not be nearly whole-page. Choose a real local region or another page."
-                )
-                continue
-            zoomed.extend(accepted)
-            inspected_refs.update(row["ref"] for row in accepted)
-            user_text += "\nGeneral + local images are attached in order. Choose next action."
-            continue
-
+            user_text, current_images, accepted, failures = _tool_zoom(regions, refs); tool_failures.extend(failures)
+            if not accepted: user_text += "\nNo valid rendered local regions. Choose another region/page."; continue
+            zoomed.extend(accepted); visual_refs.update(r["ref"] for r in accepted); continue
         if action == "propose_finding":
             candidate = _normalize_candidate(response.get("finding"), refs)
-            if candidate is None:
-                user_text = (
-                    "NOTEBOOK REJECTED CANDIDATE: missing direct PD/RD observations, "
-                    "difference, or valid PD/RD refs. Inspect evidence and propose again."
-                )
-                continue
-            candidates.append(candidate)
-            candidates = _dedupe_candidates(candidates)
-            user_text = (
-                "NOTEBOOK: candidate saved for later independent verification. "
-                "Do NOT stop just because one candidate exists. Continue searching for "
-                "other changes and uncovered requirements."
-            )
+            if candidate is None: user_text = "CANDIDATE REJECTED: missing direct observations/difference/valid refs."; continue
+            key = _candidate_key(candidate)
+            if key in seen_candidate_keys: user_text = "Exact candidate already verified. Add evidence or investigate elsewhere."; continue
+            seen_candidate_keys.add(key); verification = _verify_candidate(config, candidate, refs, req_by_id)
+            row = {"candidate": candidate, "verification": verification, "turn": turn}; verification_rows.append(row); topic = _topic_key(candidate)
+            if _confirmed(candidate, verification):
+                pending_by_topic.pop(topic, None)
+                if topic not in confirmed_topics: findings.append(_finding_from(candidate, verification)); confirmed_topics.add(topic)
+                user_text = "VERIFIER: CONFIRMED. Saved. Continue searching for independent changes and uncovered requirements."
+            else:
+                pending_by_topic[topic] = row
+                user_text = ("VERIFIER: " + str(verification.get("verdict") or "needs_more").upper() + "\nREASON: "
+                             + str(verification.get("reason") or "")[:1200] + "\nMISSING: "
+                             + json.dumps(verification.get("missing_evidence") or [], ensure_ascii=False)
+                             + "\nGather missing evidence if material, then propose a revised candidate.")
             continue
-
         if action == "finish":
-            if not self_reviewed:
-                finish_requested = True
-                self_reviewed = True
-                user_text = (
-                    "SELF-REVIEW / RED TEAM BEFORE FINISHING:\n"
-                    "You tried to finish. Audit your own search for false negatives. "
-                    "Check especially: multi-room requirements where only one room was seen; "
-                    "schematic-vs-plan scope; requirements with no inspected RD evidence; "
-                    "legends/specifications/adjacent sheets not opened; unknown configuration "
-                    "or topology changes; pages suggested by search but never inspected. "
-                    "If any high-value uncertainty remains, use search/inspect_pages/zoom. "
-                    "Only return finish again if no reasonable additional evidence should be inspected."
-                )
-                continue
-            finished = True
-            break
+            coverage = _requirement_target_coverage(req_payload, catalog, visual_refs, search_queries); blockers = coverage.get("blockers") or []
+            if not finish_requested:
+                finish_requested = True; user_text = ("SELF-REVIEW BEFORE FINISH: audit false negatives, multi-room targets, schematic-vs-plan, "
+                    "requirements without RD evidence, legends/specifications/adjacent sheets, verifier needs_more, and tool failures.\nCOVERAGE BLOCKERS:\n"
+                    + json.dumps(blockers[:24], ensure_ascii=False)); continue
+            if blockers:
+                finish_blocked_count += 1; user_text = "FINISH BLOCKED (not a compliance claim). Resolve/search these targets:\n" + json.dumps(blockers[:24], ensure_ascii=False); continue
+            self_reviewed = finished = True; break
+        user_text = "INVALID ACTION. Use search, read_text, inspect_pages, zoom, propose_finding, or finish."
 
-        user_text = (
-            "INVALID ACTION. Return exactly one of search, inspect_pages, zoom, "
-            "propose_finding, finish using the documented JSON schema."
-        )
-
-    candidates = _dedupe_candidates(candidates)
-    findings: list[dict] = []
-    verification_rows: list[dict] = []
-    unresolved: list[dict] = []
-
-    for candidate in candidates:
-        verification = _verify_candidate(config, candidate, refs, req_by_id)
-        row = {"candidate": candidate, "verification": verification}
-        verification_rows.append(row)
-        if _confirmed(candidate, verification):
-            finding = {
-                "source": "stateful_investigator",
-                "domain": "semantic",
-                "key": "|".join((candidate.get("pd_refs") or []) + (candidate.get("rd_refs") or [])),
-                "detail": str(verification.get("difference") or candidate["difference"]),
-                "state": OBSERVED_CONTRADICTION,
-                "difference_kind": normalize_difference_kind(
-                    verification.get("difference_kind") or candidate.get("difference_kind")
-                ),
-                "pd_observation": str(verification.get("pd_observation") or candidate["pd_observation"]),
-                "rd_observation": str(verification.get("rd_observation") or candidate["rd_observation"]),
-                "pd_refs": list(candidate.get("pd_refs") or []),
-                "rd_refs": list(candidate.get("rd_refs") or []),
-                "pd_bbox": candidate.get("pd_bbox"),
-                "rd_bbox": candidate.get("rd_bbox"),
-                "requirement_ids": list(candidate.get("requirement_ids") or []),
-                "verified": True,
-                "verification_reason": str(verification.get("reason") or ""),
-            }
-            findings.append(finding)
-        else:
-            unresolved.append(row)
-
+    coverage = _requirement_target_coverage(req_payload, catalog, visual_refs, search_queries); unresolved = list(pending_by_topic.values())
     diagnostics = {
-        "architecture": "stateful_investigator->python_tools->self_review->independent_verifier",
-        "model": config.resolved_model(),
-        "blind_mode": blind_mode(),
-        "learned_lessons_enabled": not blind_mode(),
-        "max_turns": MAX_TURNS,
-        "turns_used": len(transcript),
-        "finished": finished,
-        "finish_requested": finish_requested,
-        "self_reviewed": self_reviewed,
-        "turn_budget_exhausted": not finished and len(transcript) >= MAX_TURNS,
-        "action_counts": dict(action_counts),
-        "pages_total": len(catalog),
-        "pages_inspected": len(inspected_refs),
-        "inspected_refs": sorted(inspected_refs),
-        "zoom_regions_total": len(zoomed),
-        "zoom_regions": zoomed,
-        "requirements_total": len(requirements),
-        "candidates_total": len(candidates),
-        "confirmed_total": len(findings),
-        "unresolved_total": len(unresolved),
-        "verifier_errors": sum(
-            1 for row in verification_rows
-            if isinstance(row.get("verification"), dict)
-            and bool(row["verification"].get("error"))
-        ),
-        "errors": errors,
-        "transcript": transcript,
-        "verification": verification_rows,
+        "architecture": "stateful_investigator->python_tools->inline_independent_verifier->self_review",
+        "model": config.resolved_model(), "blind_mode": blind_mode(), "learned_lessons_enabled": not blind_mode(),
+        "max_turns": max_turns, "max_turns_cap": MAX_TURNS_CAP, "turns_used": len(transcript), "finished": finished,
+        "finish_requested": finish_requested, "self_reviewed": self_reviewed, "finish_blocked_count": finish_blocked_count,
+        "turn_budget_exhausted": not finished and len(transcript) >= max_turns, "action_counts": dict(action_counts), "pages_total": len(catalog),
+        "pages_inspected": len(visual_refs), "visual_refs": sorted(visual_refs), "text_pages_read": len(text_refs), "text_refs": sorted(text_refs),
+        "search_queries_total": len(search_queries), "zoom_regions_total": len(zoomed), "zoom_regions": zoomed, "requirements_total": len(requirements),
+        "requirement_target_coverage": coverage, "candidates_total": len(verification_rows), "confirmed_total": len(findings), "unresolved_total": len(unresolved),
+        "verifier_needs_more": sum(str((r.get("verification") or {}).get("verdict") or "").casefold() == "needs_more" for r in verification_rows),
+        "verifier_rejected": sum(str((r.get("verification") or {}).get("verdict") or "").casefold() == "rejected" for r in verification_rows),
+        "verifier_errors": sum(bool((r.get("verification") or {}).get("error")) for r in verification_rows), "tool_failures": tool_failures,
+        "errors": errors, "transcript": transcript, "verification": verification_rows,
     }
     return InvestigatorResult(findings=findings, candidates=unresolved, diagnostics=diagnostics)
