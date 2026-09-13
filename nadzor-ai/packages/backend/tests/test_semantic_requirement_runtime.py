@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import app.semantic_requirement_runtime as runtime
 from app.compliance import STATUS_CONFIRMED, STATUS_NEEDS_CHECK
 from app.requirement_registry import Requirement
@@ -11,6 +13,10 @@ def _req() -> Requirement:
 
 def _pool():
     return [{"path": "rd.pdf", "page": 1, "text": "лист РД", "name": "rd.pdf"}]
+
+
+def _config():
+    return SimpleNamespace(api_key="fake-key")
 
 
 def _region():
@@ -52,7 +58,7 @@ def test_requirement_compliance_needs_local_evidence(monkeypatch):
         }
 
     monkeypatch.setattr(runtime, "_call", fake_call)
-    result = runtime.check_requirements_semantic([_req()], [("rd.pdf", "rd.pdf")], object())
+    result = runtime.check_requirements_semantic([_req()], [("rd.pdf", "rd.pdf")], _config())
     assert result.items[0].status == STATUS_CONFIRMED
     row = result.diagnostics["results"][0]
     assert row["confirmed_evidence"]["bbox"] == (0.1, 0.1, 0.35, 0.35)
@@ -87,11 +93,11 @@ def test_whole_page_absence_is_not_final_without_local_and_scope(monkeypatch):
         }
 
     monkeypatch.setattr(runtime, "_call", fake_call)
-    result = runtime.check_requirements_semantic([_req()], [("rd.pdf", "rd.pdf")], object())
+    result = runtime.check_requirements_semantic([_req()], [("rd.pdf", "rd.pdf")], _config())
     assert result.items[0].status == STATUS_NEEDS_CHECK
-    assert "отсутств" not in result.items[0].detail.casefold() or "не означает" in result.items[0].detail.casefold()
+    assert "не означает" in result.items[0].detail.casefold()
     row = result.diagnostics["results"][0]
-    assert row["final_state"] in {"OBSERVED_CONTRADICTION", "NOT_OBSERVED_ON_THIS_EVIDENCE"}
+    assert row["final_state"] == "NOT_OBSERVED_ON_THIS_EVIDENCE"
 
 
 def test_wrong_scope_is_not_compliant(monkeypatch):
@@ -103,6 +109,6 @@ def test_wrong_scope_is_not_compliant(monkeypatch):
         "candidate_regions": [],
         "additional_evidence_needed": ["нужен план"],
     })
-    result = runtime.check_requirements_semantic([_req()], [("rd.pdf", "rd.pdf")], object())
+    result = runtime.check_requirements_semantic([_req()], [("rd.pdf", "rd.pdf")], _config())
     assert result.items[0].status == STATUS_NEEDS_CHECK
     assert result.diagnostics["vision_unclear"] == 1
