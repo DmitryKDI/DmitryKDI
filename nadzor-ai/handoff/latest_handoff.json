@@ -1,194 +1,167 @@
 {
-  "created_at": "2026-09-13T12:02:52.459144+00:00",
-  "source_git_sha": "458a30f004056d54cce8bf70f1282e6f4a649409",
+  "created_at": "2026-09-13T13:52:41.347456+00:00",
+  "source_git_sha": "fc5d1db7a8109fa4ffa36f14085dba56d209b55f",
   "iteration": 1,
   "blind": true,
   "ground_truth_visible_to_runtime": false,
   "model": "GigaChat-3-Ultra",
   "review_topic": "runtime_and_requirement_centric_architecture",
   "runtime_health": {
-    "technical_status": "completed",
-    "requests": 214.0,
-    "responses": 214.0,
-    "errors": 0,
+    "technical_status": "completed_with_errors",
+    "requests": 16.0,
+    "responses": 16.0,
+    "errors": 1.0,
     "persistent_cache_hits": 0,
     "result_cache_hits": 0,
-    "elapsed_seconds": 508.4901652999979
+    "elapsed_seconds": 68.42892440001015
   },
   "runtime_review": {
     "freshness": {
       "classification": "fresh",
       "evidence": [
-        "requests=214, responses=214, image_uploads=137, result_cache_hits=0, persistent_cache_hits=0"
-      ],
-      "can_assess_current_prompt_behavior": true
+        "requests=16, responses=16, errors=1, cache_hits all zero (image_cache_hits=0, result_cache_hits=0, persistent_cache_hits=0)",
+        "no prior-cache indicators; text_batches=16 aligns with requests"
+      ]
     },
-    "execution": {
-      "completed_stages": [
-        "requirements_extract",
-        "requirement_semantic_compare",
-        "drawing_semantic_compare"
+    "investigator_execution": {
+      "ran": true,
+      "finished": false,
+      "self_reviewed": false,
+      "turn_budget_exhausted": false,
+      "pages_inspected": 0,
+      "zoom_regions": 0,
+      "action_pattern": [
+        "read_text:8",
+        "search:6"
       ],
-      "technical_gaps": [],
+      "technical_gaps": [
+        "ReadError on turn 15 causing premature termination without self-review or verifier run"
+      ],
       "coverage_gaps": [
-        "Отсутствие bbox координат для ряда локальных проверок и candidate_regions; часть evidence помечена как [local_region] без нормированных границ.",
-        "Нет явных region discovery calls (count=1), при этом в ряде пар regions_total=0 — риск пропуска регионов."
+        "No pages marked inspected and no zoom regions despite actions; likely incomplete evidence gathering before failure"
       ]
     },
-    "requirement_to_drawing": {
-      "assessment": "Частично выполнено: требования сопоставлены с кандидатами по листам/регионам, но Vision не всегда подтверждён из-за жанра листов и масштаба. Для части требований есть APPEARS_COMPLIANT с указанными bboxes, однако присутствуют NOT_OBSERVED_ON_THIS_EVIDENCE и WRONG_OR_INSUFFICIENT_SCOPE.",
-      "vision_proved": false,
-      "local_zoom_proved": false,
-      "missing_observability": [
-        "bbox_norm координаты отсутствуют или неполны во многих requirement->RD проверках; ссылки вида '[local_region]' вместо числовых bounds.",
-        "Не хватает легенд/символов на планах для идентификации типов приборов и защитных мер."
+    "verifier": {
+      "candidates": 0,
+      "confirmed": 0,
+      "unresolved": 0,
+      "technical_gaps": [
+        "Verifier not executed due to investigator error at turn 15"
       ]
     },
-    "drawing_to_drawing": {
-      "assessment": "Сопоставление проведено между разнородными жанрами (схемы vs планы/экспликации). Есть whole-page анализ, инвентаризация общих помещений/анкеров, обнаружение кандидатов-регионов и их проверка, но comparability часто low и ряд различий unverified.",
-      "whole_page_proved": false,
-      "local_checks_proved": false,
-      "no_candidate_trust": "low",
-      "missing_observability": [
-        "Масштаб и ориентация неизвестны на ряде листов; отсутствие плана этажа затрудняет трассировку к помещениям.",
-        "В парах встречаются нулевые регионы-кандидаты при статусе 'region_discovery_done' — observability gap."
-      ]
-    },
-    "absence_vs_not_observed_risk": {
-      "level": "high",
-      "evidence": [
-        "Множественные финальные состояния NOT_OBSERVED_ON_THIS_EVIDENCE и WRONG_OR_INSUFFICIENT_SCOPE при отсутствии детальных видов/спецификаций.",
-        "Наличие UNVERIFIED_CONTRADICTION со статусом requires_additional_evidence=true и отсутствием verified absence."
-      ],
-      "needed_guardrails": [
-        "Запрет вывода об отсутствии только по not observed; требовать альтернативные листы/specs/bbox-подтверждение.",
-        "Минимум два независимых источника/детаила для подтверждения отсутствия элемента.",
-        "Явная маркировка bounding box всех утверждений о присутствии/отсутствии."
-      ]
-    },
-    "legacy_noise": [],
+    "false_negative_risks": [
+      "Premature disconnection prevented full search/verification; potential missed confirmations across remaining requirements/pages"
+    ],
+    "false_positive_risks": [
+      "Low risk of FP given absence of candidates/confirmations; however partial reads could mislead if retried without resetting state"
+    ],
     "logging_changes": [
-      "Всегда логировать rd_bbox_norm/pd_bbox_norm для каждой проверки presence/absence.",
-      "Логировать sheet_type, scale, level, orientation per RD page.",
-      "Фиксировать rooms_shared, anchors_shared явно в результатах pair_vision.",
-      "Добавить поле no_candidate_reason когда candidate_regions_total=0.",
-      "Логировать attempted_sheets[] и attempted_bboxes[] для каждого кандидата различия.",
-      "Для final_state сохранять confirmed_evidence.bbox даже если partial coverage.",
-      "Регистрировать min_local_checks_for_no_change фактическое значение рядом с требуемым порогом."
+      "Persist per-turn action outcomes including target page/zoom region IDs and counts updated after each tool call",
+      "Log explicit requirement-to-action mapping and progress (% coverage) by requirement_id",
+      "Add retryable-read wrapper with backoff and automatic re-open for Errno 10054; log socket-level diagnostics",
+      "Emit structured event when transitioning to verifier stage; guard against missing this step on non-fatal errors",
+      "Record image/text cache keys and hit/miss even if hits are zero for completeness"
     ],
     "priority_runtime_changes": [
-      "Усилить Region Discovery: гарантировать минимум N регионов-кандидатов на пару перед переходом к local checks; иначе эскалировать запрос дополнительных видов.",
-      "Нормализовать жанр-сопоставимость: блокировать прямое сравнение схемы-vs-плана без промежуточного слоя/модели трассы-to-room mapping.",
-      "Обязать наличие BBOX у любых выводов присутствия/отсутствия; отклонять утверждения с '[local_region]'.",
-      "Повысить гранулярность zoom-вызовов вокруг оборудования (узлы, клапаны, приборы) до фиксированного радиуса/coverage_pct.",
-      "Требовать спецификации/легенды как отдельный источник доказательств для equipment type/safety features."
+      "Implement robust read resilience: reconnect/reopen document handle on connection-reset errors; surface as transient_retry instead of hard fail",
+      "Ensure inspector increments pages_inspected and tracks opened pages explicitly; enforce minimum inspection threshold before finish/search dominance",
+      "Trigger independent verifier automatically upon early stop conditions unless fatal unrecoverable error is declared",
+      "Enforce balanced action policy: cap consecutive searches without intervening reads; require periodic cross-page synthesis",
+      "Fail-safe checkpoint every N turns to allow resumable continuation from last good state"
     ]
   },
   "architecture_review": {
-    "state_model": {
-      "statuses": [
-        "OBSERVED_CONTRADICTION",
-        "NOT_OBSERVED_ON_THIS_EVIDENCE",
-        "WRONG_OR_INSUFFICIENT_SCOPE",
-        "APPEARS_COMPLIANT"
+    "stateful_context": {
+      "keep": [
+        "PD/RD requirements с привязкой к версиям",
+        "compact document map (sheet_id, role, status)",
+        "explicit topology/configuration hypotheses и их статус",
+        "открытые вопросы/блокеры по листам",
+        "история действий: что открыто, где зум, какие кандидаты отклонены"
       ],
-      "absence_rule": "Запрещено выводить отсутствие объекта из NOT_OBSERVED. Для вывода ABSENCE требуется WRONG_OR_INSUFFICIENT_SCOPE с явным обоснованием жанра/масштаба и независимое подтверждение по другому листу/жанру или дополнительный зум.",
-      "wrong_scope_rule": "Фиксировать, если: неверный жанр (schematic vs plan), неподходящий масштаб/zoom, неполная выборка листов, неразборчивые метки. Требовать смену evidence-scope до любого негативного finding."
-    },
-    "schematic_vs_plan": {
-      "preconditions": [
-        "Определить genre PD/RD на каждом листе (Schematic/Wiring/SLD/GA/Plan).",
-        "Проверить scale/view-type/floor-zone match; при несовпадении — сменить scope.",
-        "Сопоставить только сопоставимые жанры; иначе статус WRONG_OR_INSUFFICIENT_SCOPE."
+      "summarize": [
+        "сырой диалог до ключевых решений",
+        "повторяющиеся промежуточные наблюдения без новых сущностей",
+        "листовые заметки после закрытия листа в финальный статус"
       ],
-      "comparison_order": [
-        "genre_match -> scale_and_view_match -> inventory_alignment -> direct_contradiction_check -> region_discovery_on_mismatches"
-      ],
-      "forbidden_inferences": [
-        "Из 'не вижу в плане' следует 'отсутствует', без подтверждения другим планом/секцией.",
-        "Из schematic absence делать вывод об отсутствии в РД вообще."
+      "risks": [
+        "раздувание контекста длинными растровыми цитатами",
+        "дрейф требований при смене редакции PD/RD",
+        "потеря связей между cross-sheet требованиями"
       ]
     },
-    "region_discovery": {
-      "regions_per_call": 3,
-      "bbox_area_min": 0.02,
-      "bbox_area_max": 0.4,
-      "max_overlap": 0.35,
-      "fallback_when_unlocalizable": "Расширить coverage whole-page двумя уровнями масштаба + запрос дополнительного листа того же жанра; сохранить status NOT_OBSERVED_ON_THIS_EVIDENCE."
-    },
-    "universal_contract": {
-      "fields": [
-        "pd_claim_text_or_element_id",
-        "pd_evidence_page_region_bbox",
-        "rd_claim_text_or_element_id",
-        "rd_evidence_page_region_bbox",
-        "difference_kind",
-        "evidence_genre_pd",
-        "evidence_genre_rd",
-        "scale_readability_score",
-        "status",
-        "rationale_short",
-        "next_action_hint"
+    "toolset": {
+      "keep": [
+        "search",
+        "open_page",
+        "zoom/pan",
+        "ocr_layer_toggle",
+        "metadata_fetch (scale, units, rev)"
       ],
-      "notes": "TEXT->DRAWING использует тот же контракт; pd_image может отсутствовать — тогда опираемся на текст+номера листов. DRAWING->DRAWING заполняет все bbox-поля обязательно."
-    },
-    "safe_no_change": {
-      "allowed_when": [
-        "Оба inventories непусты и выровнены по ключам.",
-        "High comparability жанров/масштабов.",
-        "Покрытие high-priority regions ≥ порога (например, 0.8) без unreadable labels.",
-        "Нет provider errors/cache-only/budget exhaustion.",
-        "Все расхождения объяснены допустимыми допусками/дополнительными деталями без противоречия INTENT."
+      "add": [
+        "query_topology_graph",
+        "diff_revisions",
+        "trace_net/netlist_probe",
+        "symbol_legend_lookup",
+        "clause_anchor_linking",
+        "scope_sufficiency_check"
       ],
-      "blocked_when": [
-        "provider_error",
-        "cache_only_evaluation",
-        "budget_exhaustion",
-        "partial_evidence_set",
-        "wrong_genre_comparison",
-        "unreadable_labels_at_required_scale",
-        "insufficient_coverage_high_priority_regions",
-        "any_observed_contradiction"
+      "remove": []
+    },
+    "stop_policy": {
+      "rules": [
+        "продолжать пока есть open_clauses или unscoped_areas",
+        "требовать scope_sufficient=true для absence-решений",
+        "жёсткий cap_turns с динамическим буфером на кросс-проверку",
+        "запрет finish при открытых зависимостях между листами"
+      ],
+      "self_review": [
+        "red-team против false negatives: multi-room, смежные листы, легенды, изменения топологии",
+        "coverage_audit по карте листов",
+        "вариантная проверка гипотез конфигурации перед завершением"
       ]
     },
-    "unknown_change_strategy": [
-      "Строить diff инвентаризаций по нейтральным атрибутам (type/class/ID/refdes/tags), без hard gates room/axis/equipment.",
-      "Выявлять неизвестные элементы как delta_inventory_new/removed независимо от локализации.",
-      "При наличии unknowns требовать минимум один local zoom per top-N deltas вместо немедленного вердикта.",
-      "Если локализация неудачна — фиксировать NOT_OBSERVED_ON_THIS_EVIDENCE и запрашивать другой лист/зум."
-    ],
+    "verifier": {
+      "configuration": [
+        "сопоставление координат/сечений из нескольких видов",
+        "валидация атрибутов оборудования по нескольким источникам",
+        "проверка непрерывности цепи через net/trace probe"
+      ],
+      "absence": [
+        "явный отчёт об охваченном scope и его достаточности",
+        "поиск альтернативных представлений (план/сечение/спецификация)",
+        "контроль границ зоны и соседних листов; запрет вывода ABSENCE только по NOT_OBSERVED"
+      ]
+    },
+    "learning_memory": {
+      "store": [
+        "устойчивые паттерны чтения жанра документа",
+        "карты символов/легенд проекта",
+        "типовые ловушки конкретного стандарта/дисциплины"
+      ],
+      "never_store": [
+        "персональные данные",
+        "привязки объект→подрядчик/заказчик",
+        "raw-чертежи и бинарные вложения"
+      ],
+      "blind_policy": [
+        "полное отключение project-specific memory при NADZOR_BLIND_BENCHMARK=1",
+        "только generic heuristics разрешены"
+      ]
+    },
     "simplify_or_remove": [
-      "Удалить legacy room/equipment registries и composition layers из lean runtime.",
-      "Убрать verdict synthesis/orchestrator state-машину поверх findings.",
-      "Исключить routing_diff heuristics между genres.",
-      "Отказаться от mandatory triangulation gate перед каждым finding.",
-      "Не хранить LLM-text cache для выводов между промптами blind benchmark."
+      "legacy routing micro-runtime",
+      "pairwise verdict runner",
+      "requirement микропайплайны вне stateful investigator"
     ],
-    "gigachat_prompt_rules": [
-      "Явно запретить inference from not-observed to absent; обязать предложить next_action=[additional_sheet|zoom|x2_crop|contrast_adjust].",
-      "Требовать заполнение всех полей universal_contract; incomplete contract = автоматический WRONG_OR_INSUFFICIENT_SCOPE.",
-      "Вводить readability_gate(score≥threshold); ниже — просить re-render/higher-DPI/clearer-crop.",
-      "Для TEXT->DRAWING разрешать NO_RD_IMAGE_PD_ONLY со статусом NOT_OBSERVED_ON_THIS_EVIDENCE и указанием требуемого листа.",
-      "Bounding-box sanity checks: area∈[min,max], overlap≤max; нарушение → fallback discovery."
-    ],
-    "blind_benchmark_cache_policy": {
-      "must_be_fresh": [
-        "LLM_result_cache_by_full_prompt_hash",
-        "prompt_version_and_model_tag"
-      ],
-      "safe_to_keep": [
-        "deterministic_pdf_byte_hash",
-        "ocr_text_index_by_page",
-        "raster_tiles_hashes",
-        "file_metadata_mtime_size"
-      ]
-    },
-    "top_5_changes": [
-      "1) Ввести единый JSON-контракт наблюдения и жестко разделить OBSERVED/NOT_OBSERVED/SCOPE/COMPLIANT; блокировать выводы absence без смены scope.",
-      "2) Добавить обязательные preconditions сравнения Schematic↔Plan с автоматической эскалацией к WRONG_OR_INSUFFICIENT_SCOPE при несоответствии жанра/масштаба.",
-      "3) Локализованные проверки через bounded-bbox discovery (N=3 за вызов, площадь 2–40%, перекрытие ≤35%); фуллпейдж-зумминг считать insufficient localization.",
-      "4) Унифицировать движок TEXT->DRAWING и DRAWING->DRAWING через общий semantic contract; допускать отсутствие RD изображения у требований.",
-      "5) Упростить runtime: убрать legacy комнаты/оборудование, orchestrators, verdict synthesis; сделать fresh-by-design LLM-cache policy для слепых бенчмарков."
+    "top_7_changes": [
+      "внедрить query_topology_graph + trace_net как первичные инструменты проверки связности",
+      "формализовать diff_revisions и авто-детект изменений топологии между выпусками",
+      "разделить presence vs absence verifiers со строгими preconditions scope_sufficient",
+      "автоматизировать clause_anchor_linking для трассируемости требования↔доказательство",
+      "включить symbol_legend_lookup и нормализацию единиц/масштаба на уровне инструментов",
+      "ужесточить stop_policy: блокировать finish при незакрытых межлистовых зависимостях",
+      "расширить self-review чек-листом variant-check конфигураций и coverage_audit карты"
     ]
   },
   "evaluator_exit_code": null,
