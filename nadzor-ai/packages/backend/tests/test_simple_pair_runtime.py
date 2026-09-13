@@ -15,25 +15,48 @@ def _inventory(label: str) -> list[dict]:
 
 def _grounded_difference(label: str) -> dict:
     return {
+        "state": "OBSERVED_CONTRADICTION",
         "pd_claim": f"ПД показывает {label} A",
-        "pd_evidence": f"на ПД непосредственно виден {label} A",
+        "pd_evidence_ref": f"на ПД непосредственно виден {label} A",
         "rd_claim": f"РД показывает {label} B",
-        "rd_evidence": f"на РД непосредственно виден {label} B",
+        "rd_evidence_ref": f"на РД непосредственно виден {label} B",
         "difference": f"{label}: A -> B",
+        "difference_kind": "configuration",
+        "evidence_scope": "complete",
+        "requires_additional_evidence": False,
+        "absence_verified": False,
+        "corroboration_refs": [],
         "where": "зона 1",
     }
 
 
 def _regions(count: int = 2) -> list[dict]:
+    bases = [
+        (0.05, 0.10, 0.30, 0.35),
+        (0.55, 0.10, 0.80, 0.35),
+        (0.05, 0.55, 0.30, 0.80),
+    ]
     return [
         {
-            "reason": f"zoom {i}",
-            "pd_bbox_norm": [0.1 * i, 0.1, min(0.1 * i + 0.2, 0.95), 0.4],
-            "rd_bbox_norm": [0.1 * i, 0.1, min(0.1 * i + 0.2, 0.95), 0.4],
-            "priority": "high" if i == 1 else "medium",
+            "reason": f"zoom {i + 1}",
+            "pd_bbox_norm": list(bases[i]),
+            "rd_bbox_norm": list(bases[i]),
+            "priority": "high" if i == 0 else "medium",
         }
-        for i in range(1, count + 1)
+        for i in range(min(count, len(bases)))
     ]
+
+
+def _clean(*, regions=2, comp="high") -> dict:
+    return {
+        "evidence_state": "APPEARS_COMPLIANT",
+        "comparability": comp,
+        "pd_inventory": _inventory("ПД"),
+        "rd_inventory": _inventory("РД"),
+        "findings": [],
+        "candidate_regions": _regions(regions),
+        "uncertainties": [],
+    }
 
 
 def test_every_selected_pair_gets_whole_page_call_without_anchors(monkeypatch):
@@ -43,7 +66,7 @@ def test_every_selected_pair_gets_whole_page_call_without_anchors(monkeypatch):
 
     def fake_call(state, config, region=None, *, discover_regions=False):
         calls.append((state.after_path, region, discover_regions))
-        return {"comparability": "high", "pd_inventory": _inventory("ПД"), "rd_inventory": _inventory("РД"), "findings": [], "candidate_regions": _regions(2), "uncertainties": []}
+        return _clean()
 
     monkeypatch.setattr(runtime, "_call_model", fake_call)
     runtime.run_targeted_pair_vision([_doc("pd")], [_doc("a"), _doc("b")], ["pd.pdf"], ["a.pdf", "b.pdf"], object(), max_pairs=2)
@@ -58,10 +81,10 @@ def test_clean_whole_page_without_regions_triggers_region_discovery(monkeypatch)
     def fake_call(state, config, region=None, *, discover_regions=False):
         calls.append((region, discover_regions))
         if discover_regions:
-            return {"comparability": "high", "candidate_regions": _regions(2), "uncertainties": []}
+            return {"evidence_state": "APPEARS_COMPLIANT", "comparability": "high", "candidate_regions": _regions(2)}
         if region is None:
-            return {"comparability": "high", "pd_inventory": _inventory("ПД"), "rd_inventory": _inventory("РД"), "findings": [], "candidate_regions": [], "uncertainties": []}
-        return {"comparability": "high", "findings": [], "candidate_regions": [], "uncertainties": []}
+            return _clean(regions=0)
+        return {"evidence_state": "APPEARS_COMPLIANT", "comparability": "high", "findings": []}
 
     monkeypatch.setattr(runtime, "_call_model", fake_call)
     _, diagnostics = runtime.run_targeted_pair_vision([_doc("pd")], [_doc("rd")], ["pd.pdf"], ["rd.pdf"], object(), max_pairs=1)
@@ -77,7 +100,7 @@ def test_no_change_is_forbidden_without_required_local_coverage(monkeypatch):
     monkeypatch.setattr(runtime, "candidate_pairs", lambda *args: [ControlPair(0, 1, 0, 1, 0.9, "text", (), ())])
 
     def fake_call(state, config, region=None, *, discover_regions=False):
-        return {"comparability": "high", "pd_inventory": _inventory("ПД") if region is None and not discover_regions else [], "rd_inventory": _inventory("РД") if region is None and not discover_regions else [], "findings": [], "candidate_regions": [], "uncertainties": []}
+        return _clean(regions=0)
 
     monkeypatch.setattr(runtime, "_call_model", fake_call)
     _, diagnostics = runtime.run_targeted_pair_vision([_doc("pd")], [_doc("rd")], ["pd.pdf"], ["rd.pdf"], object(), max_pairs=1)
@@ -86,13 +109,13 @@ def test_no_change_is_forbidden_without_required_local_coverage(monkeypatch):
     assert row["candidate_regions_checked"] == 0
 
 
-def test_bare_change_without_two_sided_evidence_is_not_a_finding(monkeypatch):
+def test_bare_change_without_evidence_contract_is_not_a_finding(monkeypatch):
     monkeypatch.setattr(runtime, "candidate_pairs", lambda *args: [ControlPair(0, 1, 0, 1, 0.9, "text", (), ())])
 
     def fake_call(state, config, region=None, *, discover_regions=False):
-        if discover_regions:
-            return {"comparability": "high", "candidate_regions": _regions(2)}
-        return {"comparability": "high", "pd_inventory": _inventory("ПД"), "rd_inventory": _inventory("РД"), "findings": [{"difference": "что-то изменено"}], "candidate_regions": _regions(2) if region is None else [], "uncertainties": []}
+        if region is None:
+            return {**_clean(), "findings": [{"difference": "что-то изменено"}]}
+        return {"evidence_state": "APPEARS_COMPLIANT", "comparability": "high", "findings": []}
 
     monkeypatch.setattr(runtime, "_call_model", fake_call)
     signals, diagnostics = runtime.run_targeted_pair_vision([_doc("pd")], [_doc("rd")], ["pd.pdf"], ["rd.pdf"], object(), max_pairs=1)
@@ -102,13 +125,24 @@ def test_bare_change_without_two_sided_evidence_is_not_a_finding(monkeypatch):
     assert row["confirmed_findings"] == []
 
 
-def test_medium_whole_page_candidate_requires_zoom_before_confirmation(monkeypatch):
+def test_whole_page_candidate_requires_local_reobservation(monkeypatch):
     monkeypatch.setattr(runtime, "candidate_pairs", lambda *args: [ControlPair(0, 1, 0, 1, 0.2, "text", (), ())])
 
     def fake_call(state, config, region=None, *, discover_regions=False):
         if region is None:
-            return {"comparability": "medium", "pd_inventory": _inventory("ПД"), "rd_inventory": _inventory("РД"), "findings": [_grounded_difference("ветка")], "candidate_regions": _regions(1), "uncertainties": ["мелкий масштаб"]}
-        return {"comparability": "high", "findings": [_grounded_difference("ветка")], "candidate_regions": [], "uncertainties": []}
+            return {
+                "evidence_state": "OBSERVED_CONTRADICTION",
+                "comparability": "medium",
+                "pd_inventory": _inventory("ПД"),
+                "rd_inventory": _inventory("РД"),
+                "findings": [_grounded_difference("ветка")],
+                "candidate_regions": _regions(1),
+            }
+        return {
+            "evidence_state": "OBSERVED_CONTRADICTION",
+            "comparability": "high",
+            "findings": [_grounded_difference("ветка")],
+        }
 
     monkeypatch.setattr(runtime, "_call_model", fake_call)
     signals, diagnostics = runtime.run_targeted_pair_vision([_doc("pd")], [_doc("rd")], ["pd.pdf"], ["rd.pdf"], object(), max_pairs=1)
@@ -116,6 +150,27 @@ def test_medium_whole_page_candidate_requires_zoom_before_confirmation(monkeypat
     row = next(x for x in diagnostics if x.get("control_type") == "page_pair")
     assert row["status"] == "confirmed_difference"
     assert row["candidate_regions_checked"] == 1
+
+
+def test_absence_without_independent_corroboration_stays_candidate(monkeypatch):
+    monkeypatch.setattr(runtime, "candidate_pairs", lambda *args: [ControlPair(0, 1, 0, 1, 0.8, "text", (), ())])
+    finding = {
+        **_grounded_difference("элемент"),
+        "difference_kind": "presence_absence",
+        "absence_verified": True,
+        "corroboration_refs": [],
+    }
+
+    def fake_call(state, config, region=None, *, discover_regions=False):
+        if region is None:
+            return {**_clean(regions=1), "evidence_state": "OBSERVED_CONTRADICTION", "findings": [finding]}
+        return {"evidence_state": "OBSERVED_CONTRADICTION", "comparability": "high", "findings": [finding]}
+
+    monkeypatch.setattr(runtime, "_call_model", fake_call)
+    signals, diagnostics = runtime.run_targeted_pair_vision([_doc("pd")], [_doc("rd")], ["pd.pdf"], ["rd.pdf"], object(), max_pairs=1)
+    assert signals == []
+    row = next(x for x in diagnostics if x.get("control_type") == "page_pair")
+    assert row["status"] == "candidate_difference_unverified"
 
 
 def test_zoom_scheduling_is_round_robin(monkeypatch):
@@ -126,8 +181,8 @@ def test_zoom_scheduling_is_round_robin(monkeypatch):
     def fake_call(state, config, region=None, *, discover_regions=False):
         order.append((state.after_path, region is not None, discover_regions))
         if region is None:
-            return {"comparability": "high", "pd_inventory": _inventory("ПД"), "rd_inventory": _inventory("РД"), "findings": [], "candidate_regions": _regions(2), "uncertainties": []}
-        return {"comparability": "high", "findings": [], "candidate_regions": [], "uncertainties": []}
+            return _clean()
+        return {"evidence_state": "APPEARS_COMPLIANT", "comparability": "high", "findings": []}
 
     monkeypatch.setattr(runtime, "_call_model", fake_call)
     runtime.run_targeted_pair_vision([_doc("pd")], [_doc("a"), _doc("b")], ["pd.pdf"], ["a.pdf", "b.pdf"], object(), max_pairs=2)
@@ -138,10 +193,18 @@ def test_zoom_scheduling_is_round_robin(monkeypatch):
 
 def test_low_comparability_never_becomes_no_difference(monkeypatch):
     monkeypatch.setattr(runtime, "candidate_pairs", lambda *args: [ControlPair(0, 1, 0, 1, 0.8, "text", (), ())])
-    monkeypatch.setattr(runtime, "_call_model", lambda *args, **kwargs: {"comparability": "low", "pd_inventory": [], "rd_inventory": [], "findings": [], "candidate_regions": [], "uncertainties": ["не читается"]})
+    monkeypatch.setattr(runtime, "_call_model", lambda *args, **kwargs: {
+        "evidence_state": "WRONG_OR_INSUFFICIENT_SCOPE",
+        "comparability": "low",
+        "pd_inventory": [],
+        "rd_inventory": [],
+        "findings": [],
+        "candidate_regions": [],
+        "uncertainties": ["не читается"],
+    })
     _, diagnostics = runtime.run_targeted_pair_vision([_doc("pd")], [_doc("rd")], ["pd.pdf"], ["rd.pdf"], object(), max_pairs=1)
     row = next(x for x in diagnostics if x.get("control_type") == "page_pair")
-    assert row["status"] == "unclear"
+    assert row["status"] == "wrong_or_insufficient_scope"
 
 
 def test_coverage_reports_legacy_orchestrators_inactive(monkeypatch):
@@ -152,3 +215,4 @@ def test_coverage_reports_legacy_orchestrators_inactive(monkeypatch):
     assert coverage["legacy_generic_region_runtime_active"] is False
     assert coverage["raster_gate_active"] is False
     assert coverage["whole_page_no_change_allowed"] is False
+    assert coverage["whole_page_finding_final"] is False
