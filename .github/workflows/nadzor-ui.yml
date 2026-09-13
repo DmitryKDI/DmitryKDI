@@ -10,6 +10,8 @@ on:
       - 'nadzor-ai/packages/backend/app/**'
       - 'nadzor-ai/packages/backend/tests/**'
       - 'nadzor-ai/scripts/gigachat_peer_review.py'
+      - 'nadzor-ai/scripts/gigachat_current_review.py'
+      - 'nadzor-ai/scripts/autoloop.py'
       - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/CLAUDE-REFACTOR-PROMPT.md'
       - '.claude/PROJECT-NADZOR.md'
@@ -52,22 +54,24 @@ jobs:
       - name: Compile active runtime modules
         run: |
           python -m py_compile app/control_pair_candidates.py
+          python -m py_compile app/semantic_contract.py
           python -m py_compile app/semantic_pair_runtime.py
+          python -m py_compile app/semantic_requirement_runtime.py
           python -m py_compile app/control_pair_vision.py
           python -m py_compile app/lean_analysis_runtime.py
           python -m py_compile app/triangulated_pipeline.py
-          python -m py_compile app/compliance.py
-          python -m py_compile app/vision_page_compare.py
-          python -m py_compile app/requirement_llm_extract.py
-          python -m py_compile app/requirement_text_verify.py
           python -m py_compile app/facts_store.py
           python -m py_compile app/llm_runtime.py
           python -m py_compile app/run_logger.py
           python -m py_compile app/matching.py
           python -m py_compile ../../scripts/gigachat_peer_review.py
+          python -m py_compile ../../scripts/gigachat_current_review.py
+          python -m py_compile ../../scripts/autoloop.py
       - name: Run active runtime regression tests
         run: >-
           pytest -q
+          tests/test_semantic_contract.py
+          tests/test_semantic_requirement_runtime.py
           tests/test_simple_pair_runtime.py
           tests/test_triangulated_pipeline.py
           tests/test_triangulated_synthesis_budget.py
