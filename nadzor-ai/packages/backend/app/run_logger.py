@@ -1,9 +1,9 @@
 """Automatic JSON diagnostics for background analysis tasks.
 
-Runtime logging is intentionally latest-only.  Historical timestamped snapshots
+Runtime logging is intentionally latest-only. Historical timestamped snapshots
 used to accumulate indefinitely and made local diagnosis noisy and easy to mix
-across runs.  The logger now keeps one top-level file per run type and one
-``latest.json`` per background task type.  Old timestamped snapshots are purged
+across runs. The logger now keeps one top-level file per run type and one
+``latest.json`` per background task type. Old timestamped snapshots are purged
 on import and are not created by new runs.
 
 Background LLM metrics are measured per run, not copied from process-wide
@@ -40,11 +40,7 @@ def _safe_run_type(run_type: str) -> str:
 
 
 def _log_path(run_id: int, timestamp: datetime, run_type: str | None = None) -> Path:
-    """Stable latest-only top-level path.
-
-    ``run_id`` and ``timestamp`` remain in the signature for compatibility with
-    older tests/callers; retention is keyed by run type, not by timestamp.
-    """
+    """Stable latest-only top-level path."""
     del run_id, timestamp
     return RUN_LOGS_DIR / f"{_safe_run_type(run_type or 'run')}_latest.json"
 
@@ -320,9 +316,21 @@ def _snapshot_analysis(run_id: int, metrics: dict | None = None) -> None:
 
 
 def _compact_visual_results(block: object) -> dict[str, Any]:
+    """Keep semantic evidence traces without dumping unrelated result payloads.
+
+    Requirement traces live under ``diagnostics.results`` while pair traces are
+    top-level ``results``. Supporting both shapes keeps the latest run log a
+    useful source for blind peer review and automated evaluation.
+    """
     if not isinstance(block, dict):
         return {}
-    results = []
+    diagnostics = block.get("diagnostics") if isinstance(block.get("diagnostics"), dict) else None
+    raw_results = block.get("results")
+    if not isinstance(raw_results, list) and diagnostics is not None:
+        raw_results = diagnostics.get("results")
+    if not isinstance(raw_results, list):
+        raw_results = []
+
     kept_keys = {
         "rooms", "sentence", "verdict", "reason", "where", "pages_checked",
         "page", "document", "status", "execution_state", "pair_key",
@@ -337,18 +345,31 @@ def _compact_visual_results(block: object) -> dict[str, Any]:
         "whole_page_done", "region_discovery_done", "candidate_regions_total",
         "candidate_regions_checked", "min_local_checks_for_no_change",
         "differences_total", "semantic_architecture", "evidence_complete",
-        "pd_inventory", "rd_inventory", "confirmed_findings", "unverified_candidates",
-        "coverage_notes", "uncertainties", "errors",
+        "evidence_state", "pd_sheet", "rd_sheet", "pd_inventory", "rd_inventory",
+        "candidate_regions", "checked_regions", "confirmed_findings", "unverified_candidates",
+        "coverage_notes", "uncertainties", "additional_evidence_needed", "errors",
+        "requirement_index", "requirement", "pd_document", "pd_page", "pages",
+        "final_state", "confirmed_evidence", "candidate_findings",
     }
-    for item in block.get("results") or []:
+    results = []
+    for item in raw_results[:80]:
         if not isinstance(item, dict):
             continue
         results.append({
-            key: (_short(value) if key in {"sentence", "reason"} else value)
+            key: (_short(value) if key in {"sentence", "reason", "requirement"} else value)
             for key, value in item.items()
             if key in kept_keys
         })
-    out = {key: value for key, value in block.items() if key != "results"}
+
+    out = {
+        key: value
+        for key, value in block.items()
+        if key not in {"results", "items", "diagnostics"}
+    }
+    if diagnostics is not None:
+        out["diagnostics"] = {
+            key: value for key, value in diagnostics.items() if key != "results"
+        }
     out["results"] = results
     return out
 
@@ -379,12 +400,14 @@ def _compact_triangulated_result(result: object) -> dict[str, Any]:
         "valid": result.get("valid"),
         "reason": result.get("reason"),
         "active_architecture": result.get("active_architecture"),
+        "semantic_contract": result.get("semantic_contract") or {},
         "legacy_runtime": result.get("legacy_runtime") or {},
         "skipped_files": result.get("skipped_files") or [],
         "llm": result.get("llm") or {},
         "not_run": result.get("not_run") or [],
         "performance": result.get("performance") or {},
         "semantic_findings": result.get("semantic_findings") or [],
+        "semantic_candidates": result.get("semantic_candidates") or [],
         "rooms": {
             "active": rooms.get("active"),
             "total_pd": rooms.get("total_pd"),
@@ -504,8 +527,6 @@ def install_background_task_logging() -> None:
     _BACKGROUND_PATCHED = True
 
 
-# Clean up immutable snapshots created by previous versions before registering
-# background logging.  New runs never create them again.
 _purge_old_logs(RUN_LOGS_DIR)
 if LEGACY_RUN_LOGS_DIR != RUN_LOGS_DIR:
     _purge_old_logs(LEGACY_RUN_LOGS_DIR)
