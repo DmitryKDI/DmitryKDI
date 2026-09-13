@@ -1,4 +1,4 @@
-"""Regression tests for the lean active PD -> RD analysis facade."""
+"""Regression tests for the lean active PD -> RD universal semantic facade."""
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -29,6 +29,15 @@ def _doc(name: str) -> DocumentInput:
     return DocumentInput(name=name, pages=1, page_kinds={1: "drawing"})
 
 
+def _semantic_result(*, not_run=None):
+    return SimpleNamespace(
+        counts={"требует проверки": 1} if not not_run else {},
+        not_run=list(not_run or []),
+        diagnostics={"architecture": "universal_semantic_contract", "vision_calls": 1},
+        items=[],
+    )
+
+
 def test_invalid_run_when_a_side_has_no_readable_documents(tmp_path):
     result = run_triangulated_analysis(
         [str(tmp_path / "missing.pdf")],
@@ -37,10 +46,10 @@ def test_invalid_run_when_a_side_has_no_readable_documents(tmp_path):
     assert result["valid"] is False
     assert "ПД" in result["reason"] or "РД" in result["reason"]
     assert result["performance"]["duration_seconds"] >= 0
-    assert result["active_architecture"] == "requirement_check + semantic_pair_runtime"
+    assert result["active_architecture"] == "universal_semantic_contract"
 
 
-def test_facade_uses_only_lean_semantic_tracks(monkeypatch):
+def test_facade_uses_only_universal_semantic_tracks(monkeypatch):
     monkeypatch.setattr(
         lean,
         "_load_documents",
@@ -52,19 +61,13 @@ def test_facade_uses_only_lean_semantic_tracks(monkeypatch):
     requirement = Requirement(rooms=[], page=1, sentence="Предусмотрена система X", code=None)
     monkeypatch.setattr(lean, "extract_requirements_llm", lambda *args, **kwargs: [requirement])
 
-    compliance = SimpleNamespace(
-        counts={"требует проверки": 1},
-        not_run=[],
-        diagnostics={"vision_calls": 1},
-        items=[],
-    )
-    compliance_calls = []
+    requirement_calls = []
 
-    def fake_compliance(*args, **kwargs):
-        compliance_calls.append((args, kwargs))
-        return compliance
+    def fake_requirements(*args, **kwargs):
+        requirement_calls.append((args, kwargs))
+        return _semantic_result()
 
-    monkeypatch.setattr(lean, "check_compliance", fake_compliance)
+    monkeypatch.setattr(lean, "check_requirements_semantic", fake_requirements)
     pair_calls = []
 
     def fake_pair(*args, **kwargs):
@@ -77,6 +80,8 @@ def test_facade_uses_only_lean_semantic_tracks(monkeypatch):
                 "status": "confirmed_difference",
                 "pd_inventory": [{"entity": "A"}],
                 "rd_inventory": [{"entity": "B"}],
+                "confirmed_findings": [],
+                "unverified_candidates": [],
             },
             {"control_type": "coverage", "status": "complete"},
         ]
@@ -89,10 +94,11 @@ def test_facade_uses_only_lean_semantic_tracks(monkeypatch):
     )
 
     assert result["valid"] is True
-    assert len(compliance_calls) == 1
+    assert len(requirement_calls) == 1
     assert len(pair_calls) == 1
     assert result["semantic_findings"][0]["source"] == "vision_pair"
     assert result["pair_vision"]["counts"]["confirmed_difference"] == 1
+    assert result["semantic_contract"]["absence_from_not_observed_forbidden"] is True
     assert result["triangulation"]["active"] is False
     assert result["legacy_runtime"] == {
         "room_registry": False,
@@ -100,6 +106,7 @@ def test_facade_uses_only_lean_semantic_tracks(monkeypatch):
         "composition_registry": False,
         "routing_diff": False,
         "general_requirement_filter": False,
+        "legacy_compliance_ladder": False,
         "verdict_synthesis": False,
         "mandatory_triangulation": False,
     }
@@ -114,11 +121,7 @@ def test_room_keys_do_not_gate_or_change_semantic_execution(monkeypatch):
     monkeypatch.setattr(lean, "_load_text_facts", lambda *args, **kwargs: [])
     monkeypatch.setattr(lean, "_room_index", lambda *args, **kwargs: {})
     monkeypatch.setattr(lean, "extract_requirements_llm", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        lean,
-        "check_compliance",
-        lambda *args, **kwargs: SimpleNamespace(counts={}, not_run=[], diagnostics={}, items=[]),
-    )
+    monkeypatch.setattr(lean, "check_requirements_semantic", lambda *args, **kwargs: _semantic_result())
     calls = []
     monkeypatch.setattr(
         lean,
@@ -146,8 +149,8 @@ def test_without_llm_key_legacy_branches_stay_inactive(monkeypatch):
     monkeypatch.setattr(lean, "_room_index", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         lean,
-        "check_compliance",
-        lambda *args, **kwargs: SimpleNamespace(counts={}, not_run=["нет ключа ИИ"], diagnostics={}, items=[]),
+        "check_requirements_semantic",
+        lambda *args, **kwargs: _semantic_result(not_run=["нет ключа ИИ"]),
     )
 
     result = run_triangulated_analysis(["pd.pdf"], ["rd.pdf"])
