@@ -1,4 +1,4 @@
-"""Continue training on focus-v3 cases, then run deep real PD/RD transfer."""
+"""Continue training on focus-v3 cases, then run strict deep real PD/RD transfer."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,7 @@ FOCUS_REPORT = ROOT / "data" / "synthetic_training" / "latest_focus_v3_training_
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Continue focus-v3 memory training and run deep requirement-driven real transfer")
+    parser = argparse.ArgumentParser(description="Continue focus-v3 memory training and run strict deep real transfer")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
     parser.add_argument("--model", default="GigaChat-3-Ultra")
@@ -44,10 +44,9 @@ def main() -> int:
         ])
     command = [
         sys.executable,
-        str(SCRIPTS / "simple_competition_compare.py"),
+        str(SCRIPTS / "deep_transfer_compare.py"),
         "--pd", str(args.pd),
         "--model", args.model,
-        "--deep-retrieval",
         "--output", str(args.output),
     ]
     for rd in args.rd:
@@ -55,7 +54,7 @@ def main() -> int:
     _run(command)
     if not args.skip_training:
         print(f"\nFocus-v3 training report: {FOCUS_REPORT}")
-    print(f"Deep transfer result: {args.output}")
+    print(f"Strict deep transfer result: {args.output}")
     return 0
 
 
