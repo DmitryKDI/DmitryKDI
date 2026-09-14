@@ -17,11 +17,13 @@ _STOP = {
     "документация", "предусмотреть", "предусмотрен", "предусмотрена",
     "предусмотрены", "выполнить", "должен", "должна", "должны", "лист",
     "листа", "схема", "схемы", "оборудование", "данные", "общие",
+    "для", "при", "под", "над", "или", "как", "все", "всех", "также",
+    "между", "через", "указано", "имеется", "имеются", "применяется",
 }
 
-REQUIREMENT_EXTRACT_SYSTEM = """Ты инженер, который превращает ПД в реестр проверяемых требований.
-Извлеки КАЖДОЕ самостоятельно проверяемое инженерное требование, которое можно
-сопоставить с РД. Ничего не придумывай и не используй знания о каком-либо эталоне.
+REQUIREMENT_EXTRACT_SYSTEM = """Ты инженер, который превращает ОДНУ страницу ПД в реестр проверяемых требований.
+Извлеки КАЖДОЕ самостоятельно проверяемое инженерное требование с этой страницы,
+которое можно сопоставить с РД. Ничего не придумывай и не используй знания о каком-либо эталоне.
 
 Правила:
 - сохраняй точные номера помещений, марки систем и оборудования из ПД;
@@ -31,7 +33,10 @@ REQUIREMENT_EXTRACT_SYSTEM = """Ты инженер, который превра
 - для требования на несколько помещений перечисли все помещения;
 - room_types/search_terms нужны только для навигации по РД и не заменяют точные IDs;
 - search_terms могут содержать только термины из ПД и нейтральные общеупотребимые
-  инженерные варианты/сокращения, без предположений о том, что должно быть найдено в РД.
+  инженерные варианты/сокращения, без предположений о том, что должно быть найдено в РД;
+- если страница содержит вентиляцию, вытяжку, приточные установки, венткамеры,
+  воздуховоды или иные инженерные решения — извлеки их так же полно, как отопление;
+- если на странице нет проверяемых требований, верни пустой список.
 
 Верни только JSON:
 {"requirements":[{
@@ -65,12 +70,19 @@ REQUIREMENT_COMPARE_SYSTEM = """Ты эксперт-аудитор ПД↔РД. 
    контекст действительно покрывает нужную сущность/scope и показывает потерю решения.
 5. Не пропускай частичное покрытие требования на несколько помещений: проверяй каждое ID.
 6. Candidate context — навигация, а не ground truth.
+7. status=matched разрешен ТОЛЬКО при явном доказательстве реализации именно требуемого
+   решения в РД. Наличие помещения, название раздела, похожая функция или фразы
+   «подразумевается», «вероятно», «может быть» не являются подтверждением.
+8. Для status=matched обязательно верни хотя бы одну запись evidence с документом,
+   страницей и короткой цитатой из РД, прямо подтверждающей требуемое решение.
+9. Если явной evidence нет — status должен быть not_observed или suspicion.
 
 Верни только JSON:
 {"results":[{
  "requirement_id":"REQ-001",
  "status":"matched|suspicion|not_observed",
  "reason":"",
+ "evidence":[{"document":"","page":null,"quote":""}],
  "suspicion":null
 }]}
 Если status=suspicion, suspicion имеет схему:
@@ -85,11 +97,27 @@ def _norm(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
 
 
-def _tokens(value: object) -> list[str]:
+def _tokens(value: object, *, min_len: int = 4) -> list[str]:
     out: list[str] = []
     for raw in _TOKEN_RE.findall(str(value or "")):
         token = _norm(raw).strip(".,;:()[]{}<>\"'«»")
-        if len(token) >= 3 and token not in _STOP:
+        if len(token) >= min_len and token not in _STOP:
+            out.append(token)
+    return list(dict.fromkeys(out))
+
+
+def _exact_tokens(value: object) -> list[str]:
+    out: list[str] = []
+    for raw in _TOKEN_RE.findall(str(value or "")):
+        token = _norm(raw).strip(".,;:()[]{}<>\"'«»")
+        if not token or token in _STOP:
+            continue
+        # Preserve room numbers and compact equipment/system marks even when short.
+        if token.isdigit() and len(token) >= 2:
+            out.append(token)
+        elif ("-" in token or "/" in token or any(ch.isdigit() for ch in token)) and len(token) >= 3:
+            out.append(token)
+        elif len(token) >= 4:
             out.append(token)
     return list(dict.fromkeys(out))
 
@@ -127,10 +155,10 @@ def normalize_requirements(payload: object, *, limit: int = 28) -> list[dict]:
 
 
 def requirements_prompt(pd_pages: Sequence[dict]) -> str:
-    parts = ["<PROJECT_DESIGN>"]
+    parts = ["<PROJECT_DESIGN_PAGE>"]
     for row in pd_pages:
         parts.append(f"[PD page {row.get('page')}]\n{row.get('text') or ''}")
-    parts.append("</PROJECT_DESIGN>\nИзвлеки полный реестр проверяемых требований ПД.")
+    parts.append("</PROJECT_DESIGN_PAGE>\nИзвлеки полный реестр проверяемых требований только из этой страницы ПД.")
     return "\n\n".join(parts)
 
 
@@ -138,18 +166,18 @@ def _field_terms(requirement: dict) -> dict[str, list[str]]:
     exact_ids: list[str] = []
     for key in ("rooms", "marks"):
         for value in requirement.get(key) or []:
-            exact_ids.extend(_tokens(value))
+            exact_ids.extend(_exact_tokens(value))
 
     strong: list[str] = []
     for key in ("systems", "equipment", "parameters"):
         for value in requirement.get(key) or []:
-            strong.extend(_tokens(value))
+            strong.extend(_tokens(value, min_len=4))
 
     semantic: list[str] = []
     for key in ("room_types", "functions", "search_terms"):
         for value in requirement.get(key) or []:
-            semantic.extend(_tokens(value))
-    semantic.extend(_tokens(requirement.get("requirement")))
+            semantic.extend(_tokens(value, min_len=5))
+    semantic.extend(_tokens(requirement.get("requirement"), min_len=5))
 
     return {
         "exact": list(dict.fromkeys(exact_ids)),
@@ -168,7 +196,6 @@ def _page_score(text: str, requirement: dict) -> tuple[int, dict[str, list[str]]
     exact_score = sum(12 if any(ch.isdigit() for ch in x) else 9 for x in hits["exact"])
     strong_score = sum(5 if ("-" in x or "/" in x or any(ch.isdigit() for ch in x)) else 3 for x in hits["strong"])
     semantic_score = min(12, sum(2 if len(x) >= 8 else 1 for x in hits["semantic"]))
-    # Exact entity identity must dominate generic functional similarity.
     score = exact_score + strong_score + semantic_score
     return score, hits
 
@@ -178,7 +205,7 @@ def requirement_rd_context(
     rd_paths: Sequence[Path],
     extract_pages: Callable[[Path], list[dict]],
     *,
-    per_requirement_pages: int = 5,
+    per_requirement_pages: int = 6,
     per_doc_floor: int = 1,
     page_chars: int = 6500,
 ) -> tuple[str, list[dict]]:
@@ -220,7 +247,6 @@ def requirement_rd_context(
         )
 
         selected: list[dict] = []
-        # Preserve cross-document coverage before filling globally.
         for doc_index in range(1, len(rd_paths) + 1):
             if len(selected) >= per_requirement_pages:
                 break
