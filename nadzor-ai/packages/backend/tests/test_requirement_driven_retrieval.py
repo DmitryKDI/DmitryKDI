@@ -5,7 +5,9 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+from deep_transfer_compare import _valid_explicit_evidence  # noqa: E402
 from requirement_driven_retrieval import (  # noqa: E402
+    REQUIREMENT_COMPARE_SYSTEM,
     normalize_requirements,
     requirement_batches,
     requirement_rd_context,
@@ -57,6 +59,39 @@ def test_exact_room_and_mark_beat_functionally_similar_page():
     assert coverage[0]["candidate_pages"][0]["page"] == 2
     assert "page 2" in context
     assert "page 1" not in context
+
+
+def test_short_noise_words_do_not_rank_pages():
+    requirements = normalize_requirements({
+        "requirements": [{
+            "id": "REQ-001",
+            "requirement": "Трубопроводы прокладывать под потолком при наличии учащихся.",
+            "search_terms": ["под", "при", "учащиеся"],
+        }]
+    })
+    fake_path = Path("rd.pdf")
+
+    def fake_extract(path: Path):
+        return [
+            {"page": 1, "text": "Под столом при входе размещена посторонняя запись."},
+            {"page": 2, "text": "В зоне учащихся трубопроводы отопления проложены скрыто."},
+        ]
+
+    _context, coverage = requirement_rd_context(requirements, [fake_path], fake_extract, per_requirement_pages=2)
+    pages = coverage[0]["candidate_pages"]
+    assert pages[0]["page"] == 2
+    assert "под" not in pages[0]["strong_hits"]
+    assert "при" not in pages[0]["strong_hits"]
+
+
+def test_matched_requires_explicit_rd_evidence():
+    system = REQUIREMENT_COMPARE_SYSTEM.casefold()
+    assert "matched разрешен только при явном доказательстве" in system
+    assert "подразумевается" in system
+    assert _valid_explicit_evidence({"evidence": []}) is False
+    assert _valid_explicit_evidence({
+        "evidence": [{"document": "rd.pdf", "page": 2, "quote": "EX-Z9 показана на плане"}]
+    }) is True
 
 
 def test_requirement_batches_preserve_all_requirements():
