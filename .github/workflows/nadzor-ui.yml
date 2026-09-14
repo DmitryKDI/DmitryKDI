@@ -18,6 +18,7 @@ on:
       - 'nadzor-ai/scripts/generate_focus_v3_corpus.py'
       - 'nadzor-ai/scripts/entity_guided_retrieval.py'
       - 'nadzor-ai/scripts/requirement_driven_retrieval.py'
+      - 'nadzor-ai/scripts/deep_transfer_compare.py'
       - 'nadzor-ai/scripts/simple_competition_compare.py'
       - 'nadzor-ai/scripts/train_synthetic_curriculum.py'
       - 'nadzor-ai/scripts/train_then_compare.py'
@@ -87,6 +88,7 @@ jobs:
           python -m py_compile ../../scripts/generate_focus_v3_corpus.py
           python -m py_compile ../../scripts/entity_guided_retrieval.py
           python -m py_compile ../../scripts/requirement_driven_retrieval.py
+          python -m py_compile ../../scripts/deep_transfer_compare.py
           python -m py_compile ../../scripts/simple_competition_compare.py
           python -m py_compile ../../scripts/train_synthetic_curriculum.py
           python -m py_compile ../../scripts/train_then_compare.py
