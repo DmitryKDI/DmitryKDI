@@ -1,0 +1,35 @@
+name: nadzor-ai
+
+# Г.85 — старый бэкенд (`packages/api`, порт 8000) удалён, вместе с ним ушли
+# Postgres (реальный движок использует SQLite `data/nadzor.db`), миграции
+# alembic (`db/`, они импортировали `api.models`) и профиль `local-llm` с vLLM
+# (он обслуживал политику суверенности `packages/llm_core`). Осталось ровно
+# то, что реально работает: движок сравнения документов и интерфейс к нему.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      PYTHONPATH: /app/packages/backend:/app
+      # Ключ провайдера не зашивается в образ — передаётся окружением при
+      # запуске. GIGACHAT_CA_BUNDLE=false нужен на машине без НУЦ Минцифры
+      # в доверенном наборе ОС (Г.77/78).
+      GIGACHAT_CREDENTIALS: ${GIGACHAT_CREDENTIALS:-}
+      GIGACHAT_CA_BUNDLE: ${GIGACHAT_CA_BUNDLE:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # База и загруженные документы переживают пересборку образа.
+      - ./data:/app/data
+    ports:
+      - "8010:8010"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "5173:5173"

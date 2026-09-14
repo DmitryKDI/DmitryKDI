@@ -4,3 +4,12 @@ out/
 .DS_Store
 .env
 *.log
+
+# Питоновские кэши и окружения — на случай работы из корня репозитория.
+# Полный список для проекта — в nadzor-ai/.gitignore.
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/

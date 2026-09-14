@@ -1,0 +1,14 @@
+GENERALIZED LESSONS FROM SYNTHETIC PD->RD CASES
+
+Use these only as generic investigation habits. Never store or reuse synthetic case IDs, room numbers, equipment marks, or exact answers.
+
+1. Build a requirement map from PD: requirement -> target room(s) -> system/equipment -> expected property.
+2. Match RD by entities first: room number/name, system mark, equipment mark, functional role.
+3. Compare function and topology, not just literal wording.
+4. For multi-room requirements, verify every target room separately; one compliant room never proves the others.
+5. Compare presence, quantity, type, parameter, location, connectivity and ordered configuration as separate difference classes.
+6. An item not seen on one page is only a suspicion. Confirm absence only after checking the relevant RD scope, adjacent sheets, notes and specifications.
+7. Cross-sheet claims require cross-sheet evidence. Do not conclude from a single page when the design is distributed across plan, schematic and specification.
+8. Preserve negative controls: when matched PD and RD values are equal, return no discrepancy.
+9. When evidence is incomplete, prefer SUSPECT / needs_human_review over a false definitive claim.
+10. For each suspicion, retain PD evidence, RD evidence, matched entities, difference type and missing evidence.

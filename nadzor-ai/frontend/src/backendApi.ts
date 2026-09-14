@@ -1,0 +1,544 @@
+/**
+ * Обращения к packages/backend — отдельному лёгкому бэкенду сравнения
+ * документов (без RBAC/аудита, см. packages/backend/README.md). Отдельный
+ * клиент от api.ts: другой сервер, другой контракт, без токена авторизации —
+ * инструмент однопользовательский, запускается локально на своём порту.
+ */
+export class BackendApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/backend${path}`, init)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({ detail: 'Бэкенд недоступен или вернул ошибку.' }))
+    throw new BackendApiError(response.status, detail.detail || 'Бэкенд недоступен или вернул ошибку.')
+  }
+  return response.json() as Promise<T>
+}
+
+export interface BackendDocument {
+  id: number
+  name: string
+  side: 'before' | 'after'
+  pages: number
+  discipline_code: string | null
+  classification_source: string | null
+  status: 'parsing' | 'ok' | 'error'
+  uploaded_at: string
+  /** Размер оригинала в байтах и число частей, на которые он разрезан для
+   *  обработки. Нумерация листов при этом остаётся исходной. */
+  size: number
+  parts_count: number
+}
+
+export interface BackendStorage {
+  files: number
+  bytes: number
+  cache_files: number
+  cache_bytes: number
+  documents: number
+  retention_days: number
+}
+
+export interface BackendStorageFile {
+  digest: string
+  size: number
+  pages: number
+  created_at: string
+  used_at: string
+  /** Документы, которые на него ссылаются. Пусто — файл ничей и уйдёт по сроку. */
+  documents: string[]
+  cached: boolean
+  /** Из скольких частей состоит том. 0 — не дробился. */
+  parts: number
+  /** Размер вместе с частями: место, которое том занимает на самом деле. */
+  total_size: number
+  in_use: boolean
+}
+
+export interface BackendStorageCleanup {
+  /** Почему получилось именно столько: «удалено 0» без причины — сломанная кнопка. */
+  detail: string
+  removed_files: number
+  freed_bytes: number
+  cache_removed: number
+  cache_freed_bytes: number
+  kept_referenced: number
+}
+
+export interface BackendAnalysisRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  pairs_total: number
+  pairs_done: number
+  /** Кто считал прогон — данные о работе ИИ, а не только итог. */
+  provider: string
+  model: string
+  pairs_llm_ok: number
+  pairs_llm_error: number
+  error: string | null
+}
+
+export interface BackendPagePair {
+  id: number
+  before_document_id: number
+  before_document_name: string
+  before_page: number
+  after_document_id: number
+  after_document_name: string
+  after_page: number
+  matched_by: 'text' | 'position'
+  page_kind: 'drawing' | 'text'
+  discipline_mismatch: boolean
+  llm_status: 'ok' | 'error'
+  llm_error: string | null
+}
+
+export interface BackendFinding {
+  id: number
+  run_id: number
+  pair_id: number | null
+  kind: 'text' | 'vision'
+  label: string
+  change_text: string
+  /** Ключи theme.severity. Пустая строка — модель не вернула степень внятно. */
+  severity: '' | 'critical' | 'major' | 'minor'
+  /** Что проверить или измерить на объекте. Пусто — проверять нечего. */
+  field_check: string
+  reviewed_status: 'new' | 'confirmed' | 'rejected'
+  created_at: string
+  before_document_id: number | null
+  before_page: number | null
+  after_document_id: number | null
+  after_page: number | null
+}
+
+export function pageImageUrl(documentId: number, page: number): string {
+  return `/backend/page-image/${documentId}/${page}`
+}
+
+/**
+ * Реальный движок Приложения Г (`packages/backend/app/triangulated_pipeline.py`):
+ * реестры помещений/оборудования, комплектность, требования из прозы —
+ * сведённые в триангуляцию источников и очередь эскалации. Другой анализ,
+ * чем `createAnalysisRun` выше (тот — прямое сравнение листов зрением,
+ * `_run_analysis`): здесь находки идут не из одного вызова ИИ на пару
+ * листов, а из независимых детерминированных сверок, подтверждённых
+ * ТОЛЬКО когда минимум два источника указали на один и тот же номер
+ * помещения/позиции (см. `triangulation.py`, Г.30 п.4).
+ */
+export interface TriangulationConfirmation {
+  domain: string
+  key: string
+  status: 'confirmed' | 'candidate'
+  sources: string[]
+  details: string[]
+}
+
+export interface EscalationTicket {
+  domain: string
+  key: string
+  sources_present: string[]
+  sources_missing: string[]
+  context: string[]
+  question: string
+}
+
+export interface RoomFinding {
+  room_key: string
+  room_name_pd: string
+  room_name_rd: string | null
+  finding_type: 'missing_in_rd' | 'name_changed' | 'area_changed'
+  detail: string
+  severity: string
+}
+
+export interface EquipFinding {
+  equip_key: string
+  equip_name_pd: string
+  equip_name_rd: string | null
+  finding_type: 'missing_in_rd' | 'missing_in_pd' | 'qty_changed'
+  detail: string
+  severity: string
+}
+
+export interface CompositionFinding {
+  designation: string
+  finding_type: string
+  detail: string
+  reference_count: number
+}
+
+export interface TriangulatedResult {
+  valid: boolean
+  reason?: string
+  documents?: { before: string[]; after: string[] }
+  skipped_files: string[]
+  llm?: { used: boolean; provider: string | null }
+  /** Что реально НЕ проверялось в этом прогоне и почему (нет ключа ИИ и
+   *  т.п.) — видимое состояние, а не молчаливый пропуск (Г.10). */
+  not_run?: string[]
+  rooms?: { total_pd: number; total_rd: number; matched: number; unmatched: number; findings: RoomFinding[] }
+  equipment?: { total_pd: number; total_rd: number; matched: number; unmatched: number; findings: EquipFinding[] }
+  composition?: { supplied_count: number; findings: CompositionFinding[] }
+  requirements?: {
+    coded: { total: number; confirmed: number; missing: number; source: 'llm' | 'regex' }
+    general: { total: number; with_token: number; token_confirmed: number; token_missing: number; no_token: number }
+  }
+  routing?: { room_keys: string[]; auto_selected: boolean } | null
+  triangulation?: { signals_count: number; confirmed: TriangulationConfirmation[]; candidates: TriangulationConfirmation[] }
+  escalation_tickets?: EscalationTicket[]
+  verdicts?: { domain: string; key: string; verdict: string; reasoning: string; sources: string[] }[]
+}
+
+export interface BackendTriangulatedRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  provider: string
+  error: string | null
+  result: TriangulatedResult | null
+}
+
+/**
+ * Прогон СТАДИИ 1 — разбора проектной документации (Г.86/Г.94).
+ * Инспектор загружает документы и нажимает одну кнопку: ни промпта, ни
+ * модели, ни ключа он не передаёт — всё это держит сервер.
+ */
+/** ВЫЖИМКА разбора тома: что нашлось и чего не нашлось (Г.114). */
+/** Ответ на просьбу остановить прогон: остановка не мгновенная. */
+export interface BackendRunCancel {
+  id: number
+  status: string
+  detail: string
+}
+
+export interface BackendDocumentDigest {
+  name: string
+  pages: number
+  drawings: number
+  text_pages: number
+  pages_without_text: number
+  pages_without_text_list: number[]
+  excluded: number
+  excluded_reasons: string[]
+  rooms_total: number
+  rooms: string[]
+  equipment_total: number
+  equipment: string[]
+  sheets_total: number
+  sheets: string[]
+  systems: string[]
+  text_chars: number
+}
+
+/** Один лист разобранного тома. Текста листа здесь нет намеренно. */
+export interface BackendDocumentPage {
+  page: number
+  kind: string
+  sheet_no: string
+  sheet_name: string
+  shifr: string
+  rooms: string[]
+  equipment: number
+  chars: number
+  excluded: string
+}
+
+export interface BackendCoveragePage {
+  page: number
+  status: 'processed' | 'unprocessed' | 'excluded'
+  text_status: 'available' | 'unavailable' | 'not_processed'
+  reason: string
+}
+
+export interface BackendDocumentCoverage {
+  document_id: number
+  present: boolean
+  name: string
+  side: string | null
+  discipline_code: string | null
+  status: 'processed' | 'partial' | 'unprocessed' | 'error' | 'missing'
+  page_count: number | null
+  pages: BackendCoveragePage[]
+  reasons: string[]
+}
+
+export interface BackendCoverageReport {
+  scope: 'document_ingestion'
+  documents: BackendDocumentCoverage[]
+  documents_requested: number
+  documents_present: number
+  documents_processed: number
+  documents_partial: number
+  documents_unprocessed: number
+  documents_error: number
+  documents_missing: number
+  documents_unknown_page_count: number
+  pages_known: number
+  pages_processed: number
+  pages_unprocessed: number
+  pages_excluded: number
+  pages_without_text: number
+  ingestion_complete: boolean
+  text_extraction_complete: boolean
+  package_completeness: 'not_assessed'
+  comparison_status: 'not_assessed'
+  limitations: string[]
+}
+
+/** Требование, извлечённое из проектной документации. */
+export interface BackendRequirement {
+  page: number
+  sentence: string
+  summary: string
+  code: string | null
+  document: string
+  section: string | null
+  rooms: string[]
+  norm: string
+}
+
+export interface BackendPdRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  provider: string
+  extractor: string
+  error: string | null
+  /** Готовая сводка для инспектора: раздел, документ, страница, суть. */
+  summary: string
+  requirements_total: number
+  /** Ссылка на запись в хранилище разборов — по ней идёт сверка с РД. */
+  store_run_id: number | null
+  side: 'before' | 'after'
+  /** Состав тома: листов чертежей, таблиц по типам. Считается всегда (Г.95). */
+  composition: string
+  /** Ход работы: этап словами и пройдено/всего в пачках. Оценку остатка
+   *  считает интерфейс по скорости этого прогона — сервер её не выдумывает. */
+  stage: string
+  units_total: number
+  units_done: number
+  started_at: string | null
+}
+
+/** Прогон сверки «выполнено ли в РД то, что требует ПД» (Г.96). */
+export interface BackendComplianceRun {
+  id: number
+  created_at: string
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  pd_run_id: number
+  provider: string
+  error: string | null
+  /** Готовый отчёт. Ни один статус не является вердиктом о нарушении. */
+  report: string
+  counts: Record<string, number>
+  requirements_total: number
+  /** Ход работы: этап словами и пройдено/всего в пачках. Оценку остатка
+   *  считает интерфейс по скорости этого прогона — сервер её не выдумывает. */
+  stage: string
+  units_total: number
+  units_done: number
+  started_at: string | null
+}
+
+/**
+ * Реплика в разборе результата сверки (Г.100).
+ *
+ * `kind` пуст у обычного вопроса и содержит род ошибки у замечания. Это не
+ * оформительское различие: примером в промпте может стать только замечание,
+ * и только после отдельного решения человека (`approved`).
+ */
+export interface ReviewMessage {
+  id: number
+  created_at: string
+  role: 'inspector' | 'assistant'
+  text: string
+  kind: string
+  target: string
+  approved: boolean
+  /** Почему ответа модели нет. Пусто, если ответ есть (Г.10). */
+  no_answer_reason: string
+}
+
+/** Роды ошибки, на которые указывает инспектор. Список закрытый: свободная
+ *  формулировка не даёт группировать замечания, а группировка и превращает
+ *  их в датасет, а не в переписку. */
+export const CORRECTION_KINDS = [
+  'ложное срабатывание',
+  'пропущено',
+  'неверная деталь',
+] as const
+
+/** Предполётная проверка связи (Г.91): узнать о проблеме ДО разбора. */
+export interface LlmCheck {
+  /** Чем проверяется TLS: системный набор, файл из certs/ или «отключена». */
+  tls?: string
+  reachable: boolean
+  provider: string
+  message: string
+}
+
+export interface BackendSettings {
+  provider: 'anthropic' | 'gigachat'
+  base_url: string
+  model: string
+  /** Сам ключ наружу не отдаётся — только факт, задан ли он (Г.112). */
+  api_key_set?: boolean
+  /** Отправляется только администратором; интерфейс инспектора не шлёт. */
+  api_key?: string
+  retention_days?: number
+  max_upload_kb?: number
+  max_pages?: number
+  part_kb?: number
+  /** Ограничение независимых обращений к модели. Поле появляется только на
+   *  сервере, который умеет им управлять. */
+  llm_concurrency?: number
+}
+
+/** Измерения сервера за текущий запуск или выбранный прогон. Цифры приходят
+ *  только с сервера: браузер не восстанавливает их по догадке. */
+export interface LlmMetrics {
+  requests: number
+  retries: number
+  rate_limit_429: number
+  avg_latency_ms: number | null
+  text_batch_chars: number | null
+  image_uploads: number
+  image_reuses: number
+  run_elapsed_ms: number | null
+  cache_hits: number
+  cache_misses: number
+  errors: number
+}
+
+export const backendApi = {
+  uploadDocument(side: 'before' | 'after', file: File): Promise<BackendDocument> {
+    const form = new FormData()
+    form.append('file', file)
+    return request<BackendDocument>(`/documents?side=${side}`, { method: 'POST', body: form })
+  },
+  listDocuments: () => request<BackendDocument[]>('/documents'),
+  getDocumentCoverage: (documentIds: number[]) =>
+    request<BackendCoverageReport>('/documents/coverage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_ids: documentIds }),
+    }),
+  deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, { method: 'DELETE' }),
+  /** Ручной выбор раздела; null возвращает автоопределение (Г.97). */
+  updateDocumentSection: (id: number, disciplineCode: string | null) =>
+    request<BackendDocument>(`/documents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ discipline_code: disciplineCode }),
+    }),
+
+  createAnalysisRun: (beforeIds: number[], afterIds: number[]) =>
+    request<BackendAnalysisRun>('/analysis-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ before_document_ids: beforeIds, after_document_ids: afterIds }),
+    }),
+  getAnalysisRun: (id: number) => request<BackendAnalysisRun>(`/analysis-runs/${id}`),
+  listPagePairs: (runId: number) => request<BackendPagePair[]>(`/analysis-runs/${runId}/pairs`),
+
+  listFindings: (runId: number) => request<BackendFinding[]>(`/findings?run_id=${runId}`),
+  updateFinding: (id: number, reviewedStatus: BackendFinding['reviewed_status']) =>
+    request<BackendFinding>(`/findings/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewed_status: reviewedStatus }),
+    }),
+
+  createTriangulatedRun: (beforeIds: number[], afterIds: number[], roomKeys: string[] = []) =>
+    request<BackendTriangulatedRun>('/triangulated-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ before_document_ids: beforeIds, after_document_ids: afterIds, room_keys: roomKeys }),
+    }),
+  getTriangulatedRun: (id: number) => request<BackendTriangulatedRun>(`/triangulated-runs/${id}`),
+
+  /** Кнопка «Разобрать документацию»: на входе только список документов. */
+  createPdRun: (documentIds: number[], side: 'before' | 'after' = 'before') =>
+    request<BackendPdRun>('/pd-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_ids: documentIds, side }),
+    }),
+  getPdRun: (id: number) => request<BackendPdRun>(`/pd-runs/${id}`),
+  listPdRuns: () => request<BackendPdRun[]>('/pd-runs'),
+  cancelPdRun: (id: number) =>
+    request<BackendRunCancel>(`/pd-runs/${id}/cancel`, { method: 'POST' }),
+  cancelComplianceRun: (id: number) =>
+    request<BackendRunCancel>(`/compliance-runs/${id}/cancel`, { method: 'POST' }),
+  cancelAnalysisRun: (id: number) =>
+    request<BackendRunCancel>(`/analysis-runs/${id}/cancel`, { method: 'POST' }),
+  cancelTriangulatedRun: (id: number) =>
+    request<BackendRunCancel>(`/triangulated-runs/${id}/cancel`, { method: 'POST' }),
+  /** Взять том из хранилища в проверку — без повторной загрузки (Г.114). */
+  /** Удалить ничей оригинал, не дожидаясь срока хранения (Г.115). */
+  deleteStorageFile: (digest: string) =>
+    request<{ ok: boolean; freed_bytes: number }>(
+      `/storage/files/${encodeURIComponent(digest)}`, { method: 'DELETE' }),
+  documentFromStorage: (digest: string, side: 'before' | 'after') =>
+    request<BackendDocument>(
+      `/documents/from-storage?digest=${encodeURIComponent(digest)}&side=${side}`,
+      { method: 'POST' }),
+  getPdRunRequirements: (id: number) =>
+    request<BackendRequirement[]>(`/pd-runs/${id}/requirements`),
+  getDocumentDigest: (id: number) =>
+    request<BackendDocumentDigest>(`/documents/${id}/digest`),
+  getDocumentPages: (id: number) =>
+    request<BackendDocumentPage[]>(`/documents/${id}/pages`),
+  checkLlm: () => request<LlmCheck>('/llm-check'),
+  getLlmMetrics: () => request<LlmMetrics>('/llm-metrics'),
+
+  /** Кнопка «Сверить РД с требованиями ПД» — по сохранённому разбору ПД. */
+  createComplianceRun: (pdRunId: number, rdDocumentIds: number[]) =>
+    request<BackendComplianceRun>('/compliance-runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pd_run_id: pdRunId, rd_document_ids: rdDocumentIds }),
+    }),
+  getComplianceRun: (id: number) => request<BackendComplianceRun>(`/compliance-runs/${id}`),
+
+  getReviewMessages: (runId: number) =>
+    request<ReviewMessage[]>(`/compliance-runs/${runId}/messages`),
+  /** Возвращает пару «реплика инспектора, ответ модели»: реплика сохраняется
+   *  ДО обращения к модели, поэтому приходит и тогда, когда ответа нет. */
+  addReviewMessage: (runId: number, text: string, kind = '', target = '') =>
+    request<ReviewMessage[]>(`/compliance-runs/${runId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, kind, target }),
+    }),
+  approveReviewMessage: (id: number, approved: boolean) =>
+    request<ReviewMessage>(`/review-messages/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    }),
+
+  /** Какая версия кода работает — чтобы «старое или новое» решалось взглядом. */
+  getVersion: () => request<{ commit: string; date: string; subject: string; branch: string }>('/version'),
+
+  getStorage: () => request<BackendStorage>('/storage'),
+  getStorageFiles: () => request<BackendStorageFile[]>('/storage/files'),
+  cleanupStorage: (dropCache = false) =>
+    request<BackendStorageCleanup>(`/storage/cleanup?drop_cache=${dropCache}`, { method: 'POST' }),
+
+  getSettings: () => request<BackendSettings>('/settings'),
+  updateSettings: (settings: BackendSettings) =>
+    request<BackendSettings>('/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    }),
+}

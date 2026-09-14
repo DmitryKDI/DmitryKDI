@@ -1,0 +1,124 @@
+name: Nadzor UI and runtime
+
+on:
+  push:
+    branches:
+      - 'chatgpt/**'
+      - 'claude/**'
+    paths:
+      - 'nadzor-ai/frontend/**'
+      - 'nadzor-ai/packages/backend/app/**'
+      - 'nadzor-ai/packages/backend/tests/**'
+      - 'nadzor-ai/scripts/gigachat_peer_review.py'
+      - 'nadzor-ai/scripts/gigachat_current_review.py'
+      - 'nadzor-ai/scripts/teach_investigator.py'
+      - 'nadzor-ai/scripts/autoloop.py'
+      - 'nadzor-ai/scripts/generate_synthetic_corpus.py'
+      - 'nadzor-ai/scripts/generate_focus_corpus.py'
+      - 'nadzor-ai/scripts/generate_focus_v3_corpus.py'
+      - 'nadzor-ai/scripts/entity_guided_retrieval.py'
+      - 'nadzor-ai/scripts/requirement_driven_retrieval.py'
+      - 'nadzor-ai/scripts/deep_transfer_compare.py'
+      - 'nadzor-ai/scripts/simple_competition_compare.py'
+      - 'nadzor-ai/scripts/train_synthetic_curriculum.py'
+      - 'nadzor-ai/scripts/train_then_compare.py'
+      - 'nadzor-ai/scripts/continue_training_then_compare.py'
+      - 'nadzor-ai/scripts/continue_training_then_compare_v3.py'
+      - 'nadzor-ai/data/synthetic_training/**'
+      - 'nadzor-ai/data/known_violations.json'
+      - 'nadzor-ai/CONTEXT.md'
+      - 'nadzor-ai/CURRENT-TASK.md'
+      - 'nadzor-ai/GIGACODE.md'
+      - 'nadzor-ai/AUTOMATION-WISHES.md'
+      - '.claude/PROJECT-NADZOR.md'
+      - '.github/workflows/nadzor-ui.yml'
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai/frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nadzor-ai/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  backend-llm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai/packages/backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: nadzor-ai/packages/backend/requirements.txt
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Compile active runtime modules
+        run: |
+          python -m py_compile app/conversation_llm.py
+          python -m py_compile app/inspector_memory.py
+          python -m py_compile app/stateful_investigator.py
+          python -m py_compile app/lean_analysis_runtime.py
+          python -m py_compile app/triangulated_pipeline.py
+          python -m py_compile app/semantic_contract.py
+          python -m py_compile app/facts_store.py
+          python -m py_compile app/llm.py
+          python -m py_compile app/llm_runtime.py
+          python -m py_compile app/run_logger.py
+          python -m py_compile ../../scripts/gigachat_peer_review.py
+          python -m py_compile ../../scripts/gigachat_current_review.py
+          python -m py_compile ../../scripts/teach_investigator.py
+          python -m py_compile ../../scripts/autoloop.py
+          python -m py_compile ../../scripts/generate_synthetic_corpus.py
+          python -m py_compile ../../scripts/generate_focus_corpus.py
+          python -m py_compile ../../scripts/generate_focus_v3_corpus.py
+          python -m py_compile ../../scripts/entity_guided_retrieval.py
+          python -m py_compile ../../scripts/requirement_driven_retrieval.py
+          python -m py_compile ../../scripts/deep_transfer_compare.py
+          python -m py_compile ../../scripts/simple_competition_compare.py
+          python -m py_compile ../../scripts/train_synthetic_curriculum.py
+          python -m py_compile ../../scripts/train_then_compare.py
+          python -m py_compile ../../scripts/continue_training_then_compare.py
+          python -m py_compile ../../scripts/continue_training_then_compare_v3.py
+      - name: Run active runtime regression tests
+        run: >-
+          pytest -q
+          tests/test_conversation_resilience.py
+          tests/test_stateful_investigator.py
+          tests/test_inspector_memory.py
+          tests/test_synthetic_training_corpus.py
+          tests/test_synthetic_focus_corpus.py
+          tests/test_focus_v3_curriculum.py
+          tests/test_synthetic_training_scoring.py
+          tests/test_entity_guided_retrieval.py
+          tests/test_requirement_driven_retrieval.py
+          tests/test_semantic_contract.py
+          tests/test_triangulated_pipeline.py
+          tests/test_triangulated_synthesis_budget.py
+          tests/test_compliance.py
+          tests/test_compliance_sheet_fallback.py
+          tests/test_requirement_check_unified.py
+          tests/test_requirement_text_verify.py
+          tests/test_run_logger.py
+          tests/test_run_logger_snapshots.py
+          tests/test_llm_runtime.py
+          tests/test_llm_runtime_queue_metrics.py
+          tests/test_facts_store_concurrency.py
+          tests/test_matching.py
+          tests/test_matching_confidence.py
+          tests/test_vision_grounding.py
+          tests/test_blind_runtime.py

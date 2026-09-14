@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/backendapi.ts","./src/documentcoverage.ts","./src/main.tsx","./src/store.ts","./src/theme.ts","./src/usedocuments.ts","./src/components/ui.tsx","./src/layout/shell.tsx","./src/pages/attentionmap.tsx","./src/pages/newanalysis.tsx","./src/pages/parseddocs.tsx"],"version":"5.9.3"}

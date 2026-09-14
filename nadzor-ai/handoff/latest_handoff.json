@@ -1,0 +1,185 @@
+{
+  "created_at": "2026-09-13T14:11:42.869362+00:00",
+  "source_git_sha": "3fbe54c1cb29610186e13c98c4df44567476a92f",
+  "iteration": 1,
+  "blind": true,
+  "ground_truth_visible_to_runtime": false,
+  "model": "GigaChat-3-Ultra",
+  "review_topic": "runtime_and_requirement_centric_architecture",
+  "runtime_health": {
+    "technical_status": "completed_with_errors",
+    "requests": 38.0,
+    "responses": 38.0,
+    "errors": 4.0,
+    "persistent_cache_hits": 0,
+    "result_cache_hits": 0,
+    "elapsed_seconds": 213.51998639997328
+  },
+  "runtime_review": {
+    "freshness": {
+      "classification": "fresh",
+      "evidence": [
+        "image_cache_hits: 0",
+        "result_cache_hits: 0",
+        "persistent_cache_hits: 0",
+        "requests: 38, responses: 38"
+      ]
+    },
+    "investigator_execution": {
+      "ran": true,
+      "finished": false,
+      "self_reviewed": false,
+      "turn_budget_exhausted": true,
+      "pages_inspected": 4,
+      "zoom_regions": 0,
+      "action_pattern": [
+        "read_text(8)",
+        "inspect_pages(7)",
+        "search(12)",
+        "finish(1)"
+      ],
+      "technical_gaps": [
+        "4 ошибки в ходе выполнения (errors: 4), детали не приведены",
+        "Отсутствие зума при наличии визуальных/табличных данных — риск пропуска деталей",
+        "Не зафиксированы вызовы независимого верификатора и self-review; итоговое решение отсутствует"
+      ],
+      "coverage_gaps": [
+        "Осмотрено только 4 из 11 страниц (≈36%); multi-room coverage не подтверждён",
+        "Поиск доминирует над чтением (12 search vs 8 read_text) без явного подтверждения нахождения целевых листов/секций"
+      ]
+    },
+    "verifier": {
+      "candidates": 0,
+      "confirmed": 0,
+      "unresolved": 0,
+      "technical_gaps": [
+        "Нет вызовов или результатов verifier'а; невозможно оценить confirmed/unresolved"
+      ]
+    },
+    "false_negative_risks": [
+      "Ранний finish после исчерпания бюджета на неполном покрытии (4/11 страниц)",
+      "Нулевое количество zoom regions повышает FN для мелких подписей, штампов, сносок",
+      "Высокая доля поиска без сопоставления с требованиями может привести к пропуску нужных разделов"
+    ],
+    "false_positive_risks": [
+      "Finish=1 при unfinished investigator создаёт иллюзию завершённости решения",
+      "При отсутствии кандидатов/верификации любое «найдено» остаётся непроверенным риском FP"
+    ],
+    "logging_changes": [
+      "Логировать per-turn trace: выбранное действие, цель запроса, целевой лист/раздел, результат, matched requirement IDs",
+      "Фиксировать причины ошибок LLM/tools с кодами и контекстом вызова",
+      "Явно логировать start/end self-review и verifier invocations с входами/выходами и статусами по каждому требованию",
+      "Добавить метрики покрытия: pages inspected/pages total со списком номеров, reasons for skip",
+      "Включить обязательный capture/zoom summary координат регионов интереса даже если текст читается OCR’ом"
+    ],
+    "priority_runtime_changes": [
+      "Увеличить max_turns или ввести динамический бюджет до достижения ≥90% page coverage либо exhaustive section map",
+      "Изменить policy действий: требовать минимум N inspect_pages перед первым finish; запретить finish без candidates+verification",
+      "Сделать обязательной стадию document-map building с привязкой требований к листам/разделам до массового search",
+      "Ввести принудительный visual verification path: auto-zoom вокруг найденных совпадений и ключевых таблиц/чертежей",
+      "Сократить бесполезные поиски: кэширование карты документов, раннее сужение scope по требованиям, retry-on-error c backoff"
+    ]
+  },
+  "architecture_review": {
+    "stateful_context": {
+      "keep": [
+        "PD/RD requirements и их статус (satisfied/open/refuted)",
+        "Объект/проект, версия чертежей, ревизии",
+        "Найденные сущности с координатами: листы, зоны, ссылки на viewports",
+        "Принятые предположения о топологии/configuration с обоснованием",
+        "Открытые вопросы/hypotheses и план следующих действий"
+      ],
+      "summarize": [
+        "Промежуточные навигационные шаги без фактов (какие страницы пролистали и почему)",
+        "Повторяющиеся неудачные гипотезы после N попыток",
+        "Длинные списки совпадений — агрегировать до статистики + ключевые примеры"
+      ],
+      "risks": [
+        "Схлопывание неоднозначностей в преждевременный вывод",
+        "Потеря привязки к листам/zoom при суммаризации координат",
+        "Контаминация контекста устаревшими выводами из прошлых ревью"
+      ]
+    },
+    "toolset": {
+      "keep": [
+        "search (текст по пакету), open-page, zoom/pan, read-legend/symbols",
+        "read-tables/blocks/xrefs, resolve-references/callouts",
+        "diff-sheets/revisions, measure-distance/scale-check"
+      ],
+      "add": [
+        "path-trace/navigation-graph для кабельных/трубных трасс",
+        "configuration-resolver (сборка системы из фрагментов листов/секций)",
+        "absence-scoper (определение охвата поиска отсутствия)",
+        "sheet-sequence/order validator (E/I/P логика следования листов)"
+      ],
+      "remove": [
+        "автономные микропайплайны verdict/routing как отдельные runtimes",
+        "жёсткие «важность»-фильтры страниц внутри инструментов"
+      ]
+    },
+    "stop_policy": {
+      "rules": [
+        "Останов только если coverage_gate выполнен AND no_open_hypotheses И self_review чист",
+        "coverage_gate = scope_sufficient_for_presence OR absence_scope_complete",
+        "max_turns динамический от сложности объекта; минимум базового покрытия обязателен"
+      ],
+      "self_review": [
+        "Проверить multi-room/multi-discipline требования",
+        "Легенды/условные обозначения открыты и прочитаны",
+        "Смежные листы и интерфейсы проверены при изменении конфигурации",
+        "Все NOT_OBSERVED помечены корректно; ABSENCE не заявлен без полного охвата"
+      ]
+    },
+    "verifier": {
+      "configuration": [
+        "Сборка независимых доказательств со ссылками на callouts/tags/coordinates",
+        "Кросс-проверка между дисциплинами и границами систем",
+        "Валидация масштаба/единиц и однозначности идентификаторов"
+      ],
+      "absence": [
+        "scope_sufficient доказан охватом легенд, матриц связей и смежных листов",
+        "absence_scope_complete подтверждён целевым поиском во всех релевантных зонах",
+        "NOT_OBSERVED остаётся статусом до выполнения обоих условий"
+      ]
+    },
+    "learning_memory": {
+      "store": [
+        "generic reading patterns: где живут legends, типовые ловушки символов",
+        "устойчивые маппинги tag→system локально для данного проекта",
+        "паттерны распределения требований по разделам PD/RD"
+      ],
+      "never_store": [
+        "объектоспецифичные выводы teacher feedback как универсальные правила",
+        "raw user prompts/content вне текущего кейса",
+        "любые данные, позволяющие деанонимизировать объект или заказчика"
+      ],
+      "blind_policy": [
+        "NADZOR_BLIND_BENCHMARK=1 отключает все project-specific memory",
+        "разрешить только встроенные model priors и явно загруженные документы"
+      ]
+    },
+    "simplify_or_remove": [
+      "legacy room/equipment micro-runtimes",
+      "pairwise requirement routers",
+      "hard-coded verdict gates перед verifier"
+    ],
+    "top_7_changes": [
+      "Добавить path-trace tool и configuration-resolver для связной сборки систем",
+      "Формализовать stop_policy через coverage_gate и чек-лист self-review",
+      "Усилить absenting: отдельный absence_scoper и строгий dual-condition верификатор",
+      "Суммаризация истории с сохранением координат сущностей и статуса требований",
+      "Дифференцировать experienced vs demo память; гарантировать слепой режим benchmark",
+      "Расширить чтение инженерной графики: legend/symbol DB, xref resolver, scale guard",
+      "Удалить legacy routing/verdict runtimes из активного пути решения"
+    ]
+  },
+  "evaluator_exit_code": null,
+  "user_requirements": [
+    "never modify main from autoloop",
+    "fresh LLM inference for blind evaluation",
+    "ground truth only in external evaluator",
+    "GigaChat review after every run",
+    "local raw logs must not be published",
+    "publish only sanitized handoff and notify the user"
+  ]
+}

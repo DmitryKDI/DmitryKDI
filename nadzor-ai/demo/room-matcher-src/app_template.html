@@ -1,0 +1,386 @@
+<title>Разбор помещений</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f2f3f8;
+    --surface: #ffffff;
+    --surface-muted: #eceef5;
+    --line: #dde0ea;
+    --ink: #1a1c29;
+    --ink-muted: #565b6e;
+    --ink-faint: #8a8fa3;
+    --accent: #5b5fe3;
+    --accent-ink: #ffffff;
+    --accent-soft: #eef0fd;
+    --accent-soft-line: #ccd0f7;
+    --good: #1e8e5a;
+    --good-soft: #e5f5ec;
+    --warn: #b76e00;
+    --warn-soft: #fbf0dd;
+    --critical: #c0362c;
+    --critical-soft: #fbe9e7;
+    --shadow: 0 1px 2px rgba(26,28,41,.04), 0 8px 24px -12px rgba(26,28,41,.12);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14151f;
+      --surface: #1c1e2c;
+      --surface-muted: #242637;
+      --line: #34374a;
+      --ink: #edeef5;
+      --ink-muted: #b0b4c6;
+      --ink-faint: #767a8f;
+      --accent: #9195f2;
+      --accent-ink: #14151f;
+      --accent-soft: #262a4a;
+      --accent-soft-line: #3c4070;
+      --good: #4cc38a;
+      --good-soft: #163526;
+      --warn: #e0a339;
+      --warn-soft: #3a2c10;
+      --critical: #e2685c;
+      --critical-soft: #3a1f1c;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14151f;
+    --surface: #1c1e2c;
+    --surface-muted: #242637;
+    --line: #34374a;
+    --ink: #edeef5;
+    --ink-muted: #b0b4c6;
+    --ink-faint: #767a8f;
+    --accent: #9195f2;
+    --accent-ink: #14151f;
+    --accent-soft: #262a4a;
+    --accent-soft-line: #3c4070;
+    --good: #4cc38a;
+    --good-soft: #163526;
+    --warn: #e0a339;
+    --warn-soft: #3a2c10;
+    --critical: #e2685c;
+    --critical-soft: #3a1f1c;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 14.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", monospace; font-variant-numeric: tabular-nums; }
+
+  .page {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 28px 20px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  header.top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header.top .brand { display: flex; flex-direction: column; gap: 2px; }
+  header.top h1 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  header.top p.sub { margin: 0; color: var(--ink-muted); font-size: 13px; }
+  .badge-mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-soft-line);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  .upload-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 640px) { .upload-grid { grid-template-columns: 1fr; } }
+
+  .dropzone {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .dropzone .zone-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dropzone .zone-title { font-weight: 600; font-size: 14px; }
+  .dropzone .zone-hint { color: var(--ink-faint); font-size: 12px; }
+  .drop-area {
+    border: 1.5px dashed var(--line);
+    border-radius: 8px;
+    padding: 20px 14px;
+    text-align: center;
+    color: var(--ink-muted);
+    font-size: 13px;
+    background: var(--surface-muted);
+    transition: border-color .15s, background .15s;
+    cursor: pointer;
+  }
+  .drop-area.drag { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .drop-area input { display: none; }
+  .file-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px 4px 10px;
+    border-radius: 999px;
+    background: var(--surface-muted);
+    border: 1px solid var(--line);
+    font-size: 12px;
+    max-width: 100%;
+  }
+  .file-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+  .file-chip .status { color: var(--ink-faint); font-size: 11px; }
+  .file-chip .status.ok { color: var(--good); }
+  .file-chip .status.err { color: var(--critical); }
+  .file-chip button {
+    border: none; background: none; cursor: pointer; color: var(--ink-faint);
+    font-size: 14px; line-height: 1; padding: 0 2px;
+  }
+  .file-chip button:hover { color: var(--critical); }
+  .file-chip .spinner {
+    width: 10px; height: 10px; border-radius: 50%;
+    border: 1.5px solid var(--accent-soft-line); border-top-color: var(--accent);
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+  .actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  button.btn {
+    font: inherit;
+    font-weight: 600;
+    font-size: 13.5px;
+    border-radius: 8px;
+    padding: 10px 18px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s;
+  }
+  button.btn:disabled { opacity: .45; cursor: not-allowed; }
+  button.btn-primary { background: var(--accent); color: var(--accent-ink); }
+  button.btn-primary:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 85%, black); }
+  button.btn-ghost { background: var(--surface); color: var(--ink); border-color: var(--line); }
+  button.btn-ghost:not(:disabled):hover { background: var(--surface-muted); }
+  .status-line { color: var(--ink-muted); font-size: 12.5px; }
+
+  .stats-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  @media (max-width: 640px) { .stats-strip { grid-template-columns: repeat(2, 1fr); } }
+  .stat {
+    background: var(--surface);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stat .n { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .stat .label { font-size: 11.5px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .04em; }
+
+  .section-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  }
+  .section-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .section-head .note { font-size: 12px; color: var(--ink-faint); }
+
+  .room-list { display: flex; flex-direction: column; gap: 8px; }
+  .room-row {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .room-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .room-summary:hover { background: var(--surface-muted); }
+  .room-no {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 15px;
+    min-width: 52px;
+  }
+  .room-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); font-size: 13px; }
+  .evidence-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .evidence-chip.rich { background: var(--good-soft); color: var(--good); }
+  .evidence-chip.thin { background: var(--warn-soft); color: var(--warn); }
+  .chev { color: var(--ink-faint); transition: transform .15s; flex-shrink: 0; }
+  .room-row.open .chev { transform: rotate(90deg); }
+  .room-detail { display: none; border-top: 1px solid var(--line); padding: 14px; }
+  .room-row.open .room-detail { display: block; }
+  .evidence-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 640px) { .evidence-cols { grid-template-columns: 1fr; } }
+  .evidence-col h3 {
+    margin: 0 0 8px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--ink-faint); font-weight: 600;
+  }
+  .evidence-item {
+    background: var(--surface-muted);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .evidence-item .meta { font-size: 11px; color: var(--ink-faint); margin-bottom: 4px; display: flex; justify-content: space-between; gap: 8px; }
+  .evidence-item .meta .page-link { color: var(--accent); cursor: pointer; text-decoration: none; font-weight: 500; }
+  .evidence-item .meta .page-link:hover { text-decoration: underline; }
+  .evidence-item .txt { color: var(--ink); }
+  .evidence-item.roomfact .txt { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-muted); }
+  .empty-side { color: var(--ink-faint); font-size: 12.5px; font-style: italic; padding: 8px 0; }
+
+  .empty-state {
+    text-align: center;
+    color: var(--ink-faint);
+    padding: 40px 20px;
+    font-size: 13.5px;
+  }
+
+  .disclaimer {
+    display: flex;
+    gap: 10px;
+    padding: 12px 14px;
+    background: var(--warn-soft);
+    border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+    border-radius: var(--radius);
+    color: var(--ink);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .disclaimer b { color: var(--warn); }
+
+  dialog#pageViewer {
+    border: none; border-radius: 12px; padding: 0; max-width: min(90vw, 900px); max-height: 90vh;
+    background: var(--surface); color: var(--ink); box-shadow: var(--shadow);
+  }
+  dialog#pageViewer::backdrop { background: rgba(10,10,16,.55); }
+  #pageViewer .viewer-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #pageViewer .viewer-head button { border: none; background: none; color: var(--ink-faint); font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; }
+  #pageViewer .viewer-body { padding: 12px; overflow: auto; max-height: calc(90vh - 44px); display: flex; justify-content: center; }
+  #pageViewer canvas { max-width: 100%; height: auto; border: 1px solid var(--line); }
+
+  a, button, input, [tabindex] { outline-offset: 2px; }
+  a:focus-visible, button:focus-visible, input:focus-visible, .room-summary:focus-visible, .drop-area:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+</style>
+
+<div class="page">
+  <header class="top">
+    <div class="brand">
+      <h1>Разбор помещений</h1>
+      <p class="sub">НАДЗОР.ИИ · сопоставление проектной и исполнительной документации по номеру помещения</p>
+    </div>
+    <span class="badge-mode">⚙ работает в браузере, без сервера</span>
+  </header>
+
+  <div class="disclaimer">
+    <span>ⓘ</span>
+    <span><b>Что показывает эта страница.</b> Разбор PDF и сопоставление по номеру помещения выполняются полностью в вашем браузере — файлы никуда не отправляются. Страница показывает совпавшие номера помещений и относящийся к ним текст с обеих сторон — это уровень «куда смотреть», а не автоматический вывод «нарушение / не нарушение»: для смыслового сравнения нужна языковая модель с доступом к ключу, которой здесь нет.</span>
+  </div>
+
+  <section class="card upload-grid">
+    <div class="dropzone" data-side="before">
+      <div class="zone-head">
+        <span class="zone-title">Проектная документация (ПД)</span>
+        <span class="zone-hint">требование</span>
+      </div>
+      <label class="drop-area" tabindex="0">
+        <input type="file" multiple accept=".pdf" data-side="before">
+        Перетащите PDF сюда или нажмите, чтобы выбрать
+      </label>
+      <div class="file-chip-list" data-list="before"></div>
+    </div>
+    <div class="dropzone" data-side="after">
+      <div class="zone-head">
+        <span class="zone-title">Рабочая / исполнительная документация</span>
+        <span class="zone-hint">факт</span>
+      </div>
+      <label class="drop-area" tabindex="0">
+        <input type="file" multiple accept=".pdf" data-side="after">
+        Перетащите PDF сюда или нажмите, чтобы выбрать
+      </label>
+      <div class="file-chip-list" data-list="after"></div>
+    </div>
+  </section>
+
+  <div class="actions-row">
+    <button class="btn btn-primary" id="runBtn" disabled>Сопоставить помещения</button>
+    <span class="status-line" id="statusLine"></span>
+  </div>
+
+  <div id="resultsArea"></div>
+</div>
+
+<dialog id="pageViewer">
+  <div class="viewer-head">
+    <span id="viewerTitle"></span>
+    <button id="viewerClose" aria-label="Закрыть">✕</button>
+  </div>
+  <div class="viewer-body"><canvas id="viewerCanvas"></canvas></div>
+</dialog>
+
+<script id="pdfjs-lib-b64" type="text/plain">__PDFJS_LIB_B64__</script>
+<script id="pdfjs-worker-b64" type="text/plain">__PDFJS_WORKER_B64__</script>
+
+<script type="module">
+__APP_JS__
+</script>
