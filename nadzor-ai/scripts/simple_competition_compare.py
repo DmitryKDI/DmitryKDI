@@ -10,8 +10,8 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import fitz
 
@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.inspector_memory import lessons_prompt  # noqa: E402
 from app.llm import LlmConfig, call_llm_json, credentials_from_file  # noqa: E402
+from app.llm_runtime import measure_run  # noqa: E402
 from entity_guided_retrieval import priority_rd_context  # noqa: E402
 from requirement_driven_retrieval import (  # noqa: E402
     REQUIREMENT_COMPARE_SYSTEM,
@@ -418,12 +419,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     os.environ["NADZOR_BLIND_BENCHMARK"] = "1" if args.blind else "0"
-    result = detect_suspicions(
-        args.pd,
-        args.rd,
-        _config(args.model),
-        deep_retrieval=bool(args.deep_retrieval),
-    )
+    with measure_run("simple_competition_compare") as metrics:
+        result = detect_suspicions(
+            args.pd,
+            args.rd,
+            _config(args.model),
+            deep_retrieval=bool(args.deep_retrieval),
+        )
+    result["llm_metrics"] = metrics.snapshot()
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

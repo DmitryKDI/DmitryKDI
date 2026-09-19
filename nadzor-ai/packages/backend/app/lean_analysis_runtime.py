@@ -16,8 +16,6 @@ from pathlib import Path
 from time import perf_counter
 from typing import Optional
 
-import pymupdf
-
 from .facts_store import facts_for
 from .llm import LlmConfig
 from .matching import DocumentInput
@@ -30,6 +28,8 @@ from .stateful_investigator import InvestigatorResult, run_stateful_investigator
 class DocumentLoadResult:
     docs: list[DocumentInput] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    paths: list[str] = field(default_factory=list)
+    incomplete: list[str] = field(default_factory=list)
 
 
 def _elapsed(started: float) -> float:
@@ -39,6 +39,8 @@ def _elapsed(started: float) -> float:
 def _load_documents(paths: list[str], names: Optional[list[str]] = None) -> DocumentLoadResult:
     out: list[DocumentInput] = []
     skipped: list[str] = []
+    loaded_paths: list[str] = []
+    incomplete: list[str] = []
     for index, raw_path in enumerate(paths):
         source = Path(raw_path)
         display_name = names[index] if names and index < len(names) else source.name
@@ -60,37 +62,42 @@ def _load_documents(paths: list[str], names: Optional[list[str]] = None) -> Docu
             equipment_facts=facts.equipment_facts,
             balance_facts=facts.balance_facts,
         ))
-    return DocumentLoadResult(out, skipped)
+        loaded_paths.append(str(source))
+        if getattr(facts, "ocr_status", "not_required") not in ("not_required", "done"):
+            incomplete.append(f"{display_name}: распознавание текста не завершено")
+    return DocumentLoadResult(out, skipped, loaded_paths, incomplete)
 
 
 def _load_text_facts(paths: list[str], names: Optional[list[str]] = None) -> list[dict]:
+    return _document_text_facts(_load_documents(paths, names).docs)
+
+
+def _document_text_facts(documents: list[DocumentInput]) -> list[dict]:
+    """Используем тот же разбор, что карта листов: в нём сохранён результат OCR."""
     out: list[dict] = []
-    fact_id = 0
-    for index, raw_path in enumerate(paths):
-        source = Path(raw_path)
-        if not source.is_file():
-            continue
-        display_name = names[index] if names and index < len(names) else source.name
-        try:
-            doc = pymupdf.open(str(source))
-        except Exception:  # noqa: BLE001
-            continue
-        try:
-            for page_index in range(doc.page_count):
-                text = doc[page_index].get_text("text").strip()
-                if not text:
-                    continue
-                fact_id += 1
-                out.append({
-                    "fact_id": fact_id,
-                    "page": page_index + 1,
-                    "text": text,
-                    "document": display_name,
-                    "section": "",
-                })
-        finally:
-            doc.close()
+    for document in documents:
+        for fact in document.text_facts:
+            if not str(fact.get("text") or "").strip():
+                continue
+            out.append({
+                **fact,
+                "fact_id": len(out) + 1,
+                "document": document.name,
+                "section": fact.get("section") or document.discipline_code or "",
+            })
     return out
+
+
+def _investigation_complete(investigator: InvestigatorResult | None) -> bool:
+    if investigator is None:
+        return False
+    diagnostics = investigator.diagnostics
+    return bool(
+        diagnostics.get("finished") and diagnostics.get("self_reviewed")
+        and not diagnostics.get("turn_budget_exhausted")
+        and not diagnostics.get("errors") and not diagnostics.get("tool_failures")
+        and not diagnostics.get("verifier_errors")
+    )
 
 
 def _requirement_row(index: int, req: Requirement, finding_ids: set[str]) -> dict:
@@ -144,7 +151,7 @@ def _pair_compat_payload(investigator: InvestigatorResult | None) -> dict:
     if unresolved:
         counts["candidate_difference_unverified"] = unresolved
     coverage = {
-        "status": "complete" if investigator.diagnostics.get("finished") else "incomplete",
+        "status": "complete" if _investigation_complete(investigator) else "incomplete",
         "semantic_architecture": investigator.diagnostics.get("architecture"),
         "pages_total": investigator.diagnostics.get("pages_total"),
         "pages_inspected": investigator.diagnostics.get("pages_inspected"),
@@ -226,10 +233,10 @@ def run_lean_analysis(
         and bool(llm_config.api_key)
         and llm_config.provider not in ("", "local")
     )
-    call_failures: list[str] = []
+    call_failures: list[str] = before.incomplete + after.incomplete
 
     stage = perf_counter()
-    pd_text_facts = _load_text_facts(before_paths, before_names)
+    pd_text_facts = _document_text_facts(before.docs)
     timings["load_pd_text"] = _elapsed(stage)
 
     stage = perf_counter()
@@ -255,8 +262,8 @@ def run_lean_analysis(
             investigator = run_stateful_investigator(
                 before.docs,
                 after.docs,
-                before_paths,
-                after_paths,
+                before.paths,
+                after.paths,
                 requirements,
                 llm_config,  # type: ignore[arg-type]
             )
@@ -270,11 +277,19 @@ def run_lean_analysis(
         requirement_payload["not_run"] = ["stateful investigator — no AI key"]
 
     pair_payload = _pair_compat_payload(investigator)
+    valid = not skipped and not call_failures and _investigation_complete(investigator)
+    if not valid and pair_payload["coverage"]:
+        pair_payload["coverage"]["status"] = "incomplete"
     semantic_findings = list(investigator.findings if investigator else [])
     semantic_candidates = list(investigator.candidates if investigator else [])
 
     return {
-        "valid": True,
+        "valid": valid,
+        "reason": "" if valid else (
+            "Прогон выполнен частично: есть пропущенные документы, "
+            "ошибки распознавания или незавершённые проверки. "
+            "Отсутствие находок не доказывает соответствие."
+        ),
         "documents": {
             "before": [doc.name for doc in before.docs],
             "after": [doc.name for doc in after.docs],

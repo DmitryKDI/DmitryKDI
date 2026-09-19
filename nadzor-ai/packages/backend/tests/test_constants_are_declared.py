@@ -71,10 +71,11 @@ DECLARED: dict[str, str] = {
     "yandex_ocr.YANDEX_OCR_MAX_PIXELS": GEOMETRY,
     "yandex_ocr.YANDEX_OCR_MAX_BYTES": GEOMETRY,
     "review_dialog.HISTORY_LIMIT": BUDGET,
-    "triangulated_pipeline.MAX_AUTO_ROUTING_ROOMS": BUDGET,
     "vision.VISION_MAX_DIM": BUDGET,
     "stamp_vision.RENDER_SCALE": BUDGET,
     "visual_prefilter._GRID": BUDGET,
+    "high_recall_orchestrator.FOCUSED_ROOMS_PER_CALL": BUDGET,
+    "semantic_contract.REGIONS_PER_CALL": BUDGET,
     "routing_graph._GRID_CELL": BUDGET,
     "routing_graph._MAX_PHRASE_WORDS": BUDGET,
     "section_profile.HINT_MIN_DOCUMENTS": BUDGET,
@@ -86,6 +87,10 @@ DECLARED: dict[str, str] = {
     "llm_runtime.DEFAULT_TEXT_VERIFY_TOKENS": BUDGET,
     "llm_runtime.DEFAULT_VISION_TOKENS": BUDGET,
     "llm_runtime.DEFAULT_WAIT_BUDGET": BUDGET,
+    # Число строк задано официальной Матрицей 1.1, порог IoU — официальным
+    # правилом приёмки геометрии доказательства, а не наблюдением на объекте.
+    "parameter_catalog.PARAMETER_COUNT": GEOMETRY,
+    "official_evaluator.MIN_BBOX_IOU": GEOMETRY,
 
     # --- свойства языка и формы документа ---
     "requirement_registry._ROOM_KEYWORD_MIN_WORD_LEN": LANGUAGE,
@@ -107,6 +112,12 @@ DECLARED: dict[str, str] = {
     "routing_graph.DEFAULT_JOIN_RADIUS": GEOMETRY,
     "routing_graph.DEFAULT_ROOM_MARGIN": GEOMETRY,
     "visual_prefilter._HOT_ZONE_PADDING": GEOMETRY,
+    "visual_prefilter._SAMPLES": GEOMETRY,
+    "visual_prefilter._ALIGNMENT_MARGIN": GEOMETRY,
+    "visual_prefilter._COMPARE_MARGIN": GEOMETRY,
+    "semantic_contract.BBOX_AREA_MIN": GEOMETRY,
+    "semantic_contract.BBOX_AREA_MAX": GEOMETRY,
+    "semantic_contract.BBOX_MAX_OVERLAP": GEOMETRY,
 
     # --- ПОДОГНАНО под наблюдение: честный n и почему не выводится ---
     "classification.MIN_CODE_SCORE": f"{FITTED}, n=1",
@@ -116,6 +127,10 @@ DECLARED: dict[str, str] = {
     "material._MIN_PRICE_TOKENS": f"{FITTED}, n=1",
     "matching.MIN_PAGE_MATCH_SIMILARITY": f"{FITTED}, n=1",
     "matching.SUBSYSTEM_MISMATCH_PENALTY": f"{FITTED}, n=1",
+    "matching.CONFIDENT_PAGE_MATCH_SIMILARITY": f"{FITTED}, n=1",
+    "matching.SUBSYSTEM_MATCH_BONUS": f"{FITTED}, n=1",
+    "matching.ROOM_ANCHOR_FLOOR": f"{FITTED}, n=1",
+    "matching.EQUIPMENT_ANCHOR_FLOOR": f"{FITTED}, n=1",
     "diffing.MIN_SIMILARITY": f"{FITTED}, n=1",
     "diffing.MAX_SIMILARITY": f"{FITTED}, n=1",
     "norms_registry.MIN_DESIGNATIONS": f"{FITTED}, n=1",
@@ -124,9 +139,12 @@ DECLARED: dict[str, str] = {
     "router.TEXT_DIFF_THRESHOLD": f"{FITTED}, n=1",
     "routing_graph.DEFAULT_MIN_CHAIN_NODES": f"{FITTED}, n=1",
     "section_profile.MIN_TERM_REPEATS": f"{FITTED}, n=1",
-    "visual_prefilter._POINT_THRESHOLD": f"{FITTED}, n=1",
     "visual_prefilter.DIFF_RATIO_THRESHOLD": f"{FITTED}, n=1",
+    "visual_prefilter._CELL_DARKNESS_THRESHOLD": f"{FITTED}, n=1",
+    "visual_prefilter._LOCAL_MIN_CHANGED_CELLS": f"{FITTED}, n=1",
+    "visual_prefilter._LOCAL_MAX_AREA": f"{FITTED}, n=1",
     "visual_prefilter._HOT_ZONE_MAX_FRACTION": f"{FITTED}, n=1",
+    "semantic_contract.SAFE_COVERAGE_MIN": f"{FITTED}, n=1",
 }
 
 _CONST_RE = re.compile(r"^([A-Z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*[-+]?\d")

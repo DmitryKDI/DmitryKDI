@@ -1,0 +1,166 @@
+/**
+ * Контракт официальной проверки. Он намеренно отделён от старого клиента:
+ * здесь три стадии комплекта и результат по параметрам матрицы, а не только
+ * пара «до/после».
+ */
+export class OfficialApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/backend${path}`, init)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: 'Сервер недоступен.' }))
+    throw new OfficialApiError(response.status, body.detail || 'Сервер вернул ошибку.')
+  }
+  return response.json() as Promise<T>
+}
+
+export type OfficialStage = 'PD' | 'RD' | 'ID'
+export type ApprovalStatus = 'DRAFT' | 'APPROVED' | 'FOR_CONSTRUCTION' | 'SUPERSEDED' | 'CANCELLED'
+export type FindingStatus = 'CANDIDATE' | 'NEGATIVE_VERIFIED' | 'CONFIRMED_VIOLATION' | 'SUSPICION'
+export type TechnicalStatus = 'completed' | 'not_run' | 'error'
+
+export interface OfficialParameter {
+  code: string
+  name: string
+  section: string
+  unit: string | null
+  priority: 'HIGH' | 'MEDIUM'
+  source_pd: string
+  source_rd: string
+  source_id: string
+  trigger: string
+}
+
+export interface OfficialDocumentMetadata {
+  object_id: string
+  stage: OfficialStage
+  document_code: string
+  revision: string
+  approval_status: ApprovalStatus
+  approval_date: string | null
+  predecessor_id: number | null
+  signature_status: string | null
+  sheet_page_range: string | null
+}
+
+export interface OfficialDocument {
+  id: number
+  name: string
+  pages: number
+  status: string
+  digest: string
+  metadata: OfficialDocumentMetadata
+}
+
+export interface OfficialEvidence {
+  document_id: number
+  file_id: string | null
+  sha256: string | null
+  stage: OfficialStage
+  page: number
+  bbox: [number, number, number, number] | null
+  quote: string | null
+}
+
+export interface ReviewHistoryItem {
+  status: FindingStatus
+  author: string
+  reason: string
+  created_at?: string
+  version?: number
+}
+
+export interface OfficialCheck {
+  finding_id: string
+  parameter_code: string
+  parameter_name: string
+  priority: 'HIGH' | 'MEDIUM'
+  completeness_status: string
+  finding_status: FindingStatus | null
+  expected_value: string | null
+  actual_value: string | null
+  explanation: string
+  evidence: OfficialEvidence[]
+  technical_status: TechnicalStatus
+  review_history: ReviewHistoryItem[]
+}
+
+export interface OfficialRunResult {
+  matrix_version: string
+  object_id: string
+  checks: OfficialCheck[]
+  coverage: { total: number; completed: number; not_run: number }
+  graphic_analysis: {
+    status: 'completed' | 'incomplete' | 'not_run' | 'error'
+    reason: string
+    candidates: OfficialCheck[]
+    performance: { duration_seconds?: number }
+  }
+}
+
+export interface OfficialRun {
+  id: number
+  status: 'queued' | 'running' | 'completed' | 'cancelled' | 'error'
+  stage: string
+  completed: number
+  total: number
+  result: OfficialRunResult | null
+  error: string | null
+  version?: number
+}
+
+export interface DecisionInput {
+  finding_id: string
+  status: Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE'>
+  author: string
+  reason: string
+  expected_version: number
+}
+
+export const officialApi = {
+  parameters: () => request<{ matrix_version: string; parameters: OfficialParameter[] }>('/official/parameters'),
+  documents: () => request<OfficialDocument[]>('/official/documents'),
+  upload: (side: 'before' | 'after', file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<{ id: number }>(`/documents?side=${side}`, { method: 'POST', body: form })
+  },
+  saveMetadata: (id: number, metadata: OfficialDocumentMetadata) => request<OfficialDocument>(
+    `/official/documents/${id}/metadata`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) },
+  ),
+  createRun: (object_id: string, document_ids: number[], include_medium: boolean) => request<OfficialRun>(
+    '/official/runs',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ object_id, document_ids, include_medium }),
+    },
+  ),
+  run: (id: number) => request<OfficialRun>(`/official/runs/${id}`),
+  runs: () => request<OfficialRun[]>('/official/runs'),
+  cancelRun: (id: number) => request<OfficialRun>(`/official/runs/${id}/cancel`, { method: 'POST' }),
+  decide: (id: number, input: DecisionInput) => request<OfficialRun>(
+    `/official/runs/${id}/decisions`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+  ),
+  exportUrl: (id: number, format: 'json' | 'csv') => `/backend/official/runs/${id}/export?format=${format}`,
+  pageImageUrl: (documentId: number, page: number) => `/backend/page-image/${documentId}/${page}`,
+}
+
+export function findingLabel(status: FindingStatus | null, technical: TechnicalStatus): string {
+  if (technical === 'not_run') return 'не выполнялось'
+  if (technical === 'error') return 'техническая ошибка'
+  if (status === 'CONFIRMED_VIOLATION') return 'подтверждено инспектором'
+  if (status === 'NEGATIVE_VERIFIED') return 'не подтверждено инспектором'
+  if (status === 'CANDIDATE') return 'кандидат для проверки'
+  if (status === 'SUSPICION') return 'требует уточнения'
+  return 'нет машинной оценки'
+}

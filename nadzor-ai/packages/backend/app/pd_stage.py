@@ -16,8 +16,6 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-import pymupdf
-
 from .classification import classify_document
 from .facts_store import facts_for
 from .llm import LlmConfig
@@ -73,11 +71,6 @@ def load_text_facts(sources: list[tuple]) -> list[dict]:
         if not p.is_file():
             print(f"пропущен (не найден): {display_name}", file=sys.stderr)
             continue
-        try:
-            doc = pymupdf.open(str(p))
-        except Exception as exc:  # noqa: BLE001 — один битый файл не роняет прогон
-            print(f"пропущен ({exc}): {display_name}", file=sys.stderr)
-            continue
         if manual_section:
             section = manual_section
         else:
@@ -87,13 +80,19 @@ def load_text_facts(sources: list[tuple]) -> list[dict]:
                 print(f"раздел не определён ({exc}): {display_name}", file=sys.stderr)
                 section = None
         try:
-            for i in range(doc.page_count):
-                text = doc[i].get_text("text").strip()
-                if text:
-                    out.append({"page": i + 1, "text": text,
-                                "document": display_name, "section": section})
-        finally:
-            doc.close()
+            # Это тот же сохранённый разбор, который используется картой листов:
+            # страницы без PDF-текста уже содержат проверенный результат OCR.
+            # Повторное чтение PyMuPDF раньше выбрасывало OCR и делало скан
+            # «пустым» именно на шаге извлечения требований.
+            facts = facts_for(p, display_name)
+        except Exception as exc:  # noqa: BLE001 — один битый файл не роняет прогон
+            print(f"пропущен ({exc}): {display_name}", file=sys.stderr)
+            continue
+        for fact in facts.text_facts:
+            text = str(fact.get("text") or "").strip()
+            if text:
+                out.append({"page": int(fact["page"]), "text": text,
+                            "document": display_name, "section": section})
     return out
 
 

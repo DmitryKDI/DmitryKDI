@@ -103,8 +103,8 @@ def _best_alignment(before, after) -> dict:
                         "mean_delta": score,
                         "samples": count,
                     }
-    max_samples = (_GRID - 2 * _ALIGNMENT_MARGIN) ** 2
-    best["overlap_ratio"] = best["samples"] / float(max_samples)
+    max_points = (_GRID - 2 * _ALIGNMENT_MARGIN) ** 2
+    best["overlap_ratio"] = best["samples"] / float(max_points)
     best["mean_delta"] = round(float(best["mean_delta"]), 4)
     best["scale"] = round(float(best["scale"]), 3)
     best["overlap_ratio"] = round(float(best["overlap_ratio"]), 4)

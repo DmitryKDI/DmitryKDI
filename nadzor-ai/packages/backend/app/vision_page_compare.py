@@ -20,7 +20,7 @@ import pymupdf
 from .anchors import normalize_room_key, normalize_room_references
 from .llm import LlmConfig, call_llm_json
 from .llm_runtime import parallel_map
-from .vision import UNTRUSTED_INPUT_RULE, render_page_to_data_url
+from .vision import UNTRUSTED_INPUT_RULE, known_violations_block, render_page_to_data_url
 
 _REQUIREMENT_CHECK_TEMPLATE = f"""\
 Ты помогаешь инспектору государственного строительного надзора проверить,
@@ -62,9 +62,11 @@ _REQUIREMENT_CHECK_TEMPLATE = f"""\
 ответить уверенно не получилось, — это способ попросить увеличение, а не
 признание неудачи. Если увеличение не нужно, верни пустой список.
 
+{{known}}
+
 Отвечай только JSON:
-{{"verdict":"confirmed|absent|unclear",
- "comparability":"high|medium|low",
+{{"verdict": "confirmed"|"absent"|"unclear",
+ "comparability": "high"|"medium"|"low",
  "reason":"что именно видно на листе",
  "where":"номер помещения, оси или другая координатная привязка",
  "candidate_regions":[{{"reason":"что там рассмотреть",
@@ -86,8 +88,9 @@ _ROOM_KEY_RE = re.compile(r"^\d{1,4}(?:\.\d+)?[а-яё]?$", re.IGNORECASE)
 
 
 def requirement_check_system_prompt(discipline: str | None = None) -> str:
-    del discipline
-    return _REQUIREMENT_CHECK_TEMPLATE
+    return _REQUIREMENT_CHECK_TEMPLATE.replace(
+        "{known}", known_violations_block("drawing", discipline)
+    )
 
 
 _COMPARABILITY = ("high", "medium", "low")
@@ -201,21 +204,24 @@ def check_requirement_on_page(
         f"{source_note}{crop_note}"
     )
     try:
-        image = render_page_to_data_url(rd_pdf_path, rd_page_no, clip_frac=clip_frac)
+        image = (
+            render_page_to_data_url(rd_pdf_path, rd_page_no, clip_frac=clip_frac)
+            if clip_frac is not None
+            else render_page_to_data_url(rd_pdf_path, rd_page_no)
+        )
         images = [*(pd_images or []), image]
         image_digest = hashlib.sha256("".join(images).encode("utf-8")).hexdigest()
         source_digest = hashlib.sha256(
             f"{image_digest}:{requirement_text}:{rooms_str}:{clip_frac}".encode("utf-8")
         ).hexdigest()
+        cache_args = ({
+            "operation": "vision",
+            "source_digest": source_digest,
+            "prompt_version": "requirement-page-v5-unified",
+        } if config is not None else {})
         result = call_llm_json(
-            config,
-            requirement_check_system_prompt(discipline),
-            user_text,
-            images=images,
-            timeout=timeout,
-            operation="vision",
-            source_digest=source_digest,
-            prompt_version="requirement-page-v5-unified",
+            config, requirement_check_system_prompt(discipline), user_text,
+            images=images, timeout=timeout, **cache_args,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -294,7 +300,32 @@ def select_candidate_pages(
 
 
 def _candidate_pages(rooms: list[str], room_index: dict[str, list[dict]], max_pages: int) -> list[dict]:
-    return select_candidate_pages(rooms, room_index, max_pages)
+    """Совместимый обход: сначала по одному листу каждой зоны, затем глубже."""
+    keys = normalize_room_references(rooms)
+    index = _canonical_room_index(room_index)
+    groups = [index.get(key, []) for key in keys]
+    candidates: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    depth = 0
+    while any(depth < len(group) for group in groups):
+        for group in groups:
+            if depth >= len(group):
+                continue
+            entry = group[depth]
+            identity = (str(entry["path"]), int(entry["page"]))
+            if identity not in seen:
+                seen.add(identity)
+                candidates.append(entry)
+        depth += 1
+    first_by_file: list[dict] = []
+    represented: set[str] = set()
+    for entry in candidates:
+        path = str(entry["path"])
+        if path not in represented:
+            represented.add(path)
+            first_by_file.append(entry)
+    remaining = [entry for entry in candidates if entry not in first_by_file]
+    return (first_by_file + remaining)[:max_pages]
 
 
 def rd_page_pool(sources: list[tuple]) -> list[dict]:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 
 from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String,
-                        Text)
+                        Text, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -38,6 +38,51 @@ class Document(Base):
     # Пусто — том целый. Нумерация листов наружу всегда исходная, части —
     # внутреннее устройство хранения (`document_split`).
     parts: Mapped[list] = mapped_column(JSON, default=list)
+    # Исторические before/after не позволяют восстановить, где РД, а где ИД.
+    # Поэтому стадию старым документам не приписываем без решения инспектора.
+    source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    metadata_version: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DocumentMetadataEvent(Base):
+    __tablename__ = "document_metadata_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    document: Mapped[Document] = relationship()
+
+
+class OfficialRun(Base):
+    """Снимок входов и машинного ответа; решения эксперта хранятся отдельно."""
+    __tablename__ = "official_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="running")
+    stage: Mapped[str] = mapped_column(String, default="Проверка редакций")
+    completed: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    input_snapshot: Mapped[list] = mapped_column(JSON, default=list)
+    include_medium: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class InspectorDecision(Base):
+    __tablename__ = "inspector_decisions"
+    __table_args__ = (UniqueConstraint("run_id", "version"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("official_runs.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    finding_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    author: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    run: Mapped[OfficialRun] = relationship()
 
 
 class AnalysisRun(Base):

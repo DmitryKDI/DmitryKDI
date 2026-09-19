@@ -1,0 +1,306 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Chip, Empty, SectionCard, Skeleton } from '../components/ui'
+import {
+  findingLabel,
+  officialApi,
+  type ApprovalStatus,
+  type FindingStatus,
+  type OfficialCheck,
+  type OfficialDocument,
+  type OfficialDocumentMetadata,
+  type OfficialEvidence,
+  type OfficialParameter,
+  type OfficialRun,
+  type OfficialStage,
+} from '../officialApi'
+
+const STAGES: Array<{ key: OfficialStage; title: string; subtitle: string; side: 'before' | 'after' }> = [
+  { key: 'PD', title: 'Проектная документация', subtitle: 'Эталон проектных решений', side: 'before' },
+  { key: 'RD', title: 'Рабочая документация', subtitle: 'Детализация проектных решений', side: 'after' },
+  { key: 'ID', title: 'Исполнительная документация', subtitle: 'Подтверждение фактического исполнения', side: 'after' },
+]
+
+const APPROVALS: Array<{ value: ApprovalStatus; label: string }> = [
+  { value: 'DRAFT', label: 'Черновик' },
+  { value: 'APPROVED', label: 'Утверждён' },
+  { value: 'FOR_CONSTRUCTION', label: 'Для производства работ' },
+  { value: 'SUPERSEDED', label: 'Заменён' },
+  { value: 'CANCELLED', label: 'Отменён' },
+]
+
+type MetadataDraft = Omit<OfficialDocumentMetadata, 'stage' | 'predecessor_id'> & { predecessor_id: string }
+
+function blankMetadata(): MetadataDraft {
+  return {
+    object_id: '', document_code: '', revision: '', approval_status: 'DRAFT', approval_date: null,
+    predecessor_id: '', signature_status: null, sheet_page_range: null,
+  }
+}
+
+function metadataForStage(stage: OfficialStage, draft: MetadataDraft): OfficialDocumentMetadata {
+  return {
+    ...draft,
+    stage,
+    predecessor_id: draft.predecessor_id.trim() ? Number(draft.predecessor_id) : null,
+    approval_date: draft.approval_date || null,
+    signature_status: draft.signature_status || null,
+    sheet_page_range: draft.sheet_page_range || null,
+  }
+}
+
+function stageLabel(stage: OfficialStage): string {
+  return STAGES.find((item) => item.key === stage)?.title ?? stage
+}
+
+function statusTone(status: string): 'neutral' | 'accent' | 'warn' {
+  if (status === 'completed' || status === 'ok') return 'accent'
+  if (status === 'error' || status === 'cancelled' || status === 'not_run') return 'warn'
+  return 'neutral'
+}
+
+function FileStage({
+  stage, documents, onUploaded, onMetadataSaved, busy,
+}: {
+  stage: (typeof STAGES)[number]
+  documents: OfficialDocument[]
+  onUploaded: (file: File, metadata: OfficialDocumentMetadata) => Promise<void>
+  onMetadataSaved: (id: number, metadata: OfficialDocumentMetadata) => Promise<void>
+  busy: boolean
+}) {
+  const input = useRef<HTMLInputElement>(null)
+  const [draft, setDraft] = useState<MetadataDraft>(blankMetadata)
+  const [saving, setSaving] = useState<number | null>(null)
+  const [openEditor, setOpenEditor] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const apply = (key: keyof MetadataDraft, value: string) => setDraft((current) => ({ ...current, [key]: value }))
+  const valid = Boolean(draft.object_id.trim() && draft.document_code.trim() && draft.revision.trim())
+
+  const upload = async (files: FileList | null) => {
+    if (!files?.length || !valid) {
+      if (!valid) setError('Укажите объект, шифр и редакцию до загрузки файла.')
+      return
+    }
+    setError(null)
+    try {
+      for (const file of Array.from(files)) await onUploaded(file, metadataForStage(stage.key, draft))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось загрузить файл.')
+    }
+  }
+
+  const saveExisting = async (document: OfficialDocument) => {
+    setSaving(document.id)
+    try {
+      await onMetadataSaved(document.id, metadataForStage(stage.key, draft))
+      setOpenEditor(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось сохранить метаданные.')
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <SectionCard title={stage.title} subtitle={stage.subtitle}>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="text-xs text-ink-muted">Объект *
+          <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.object_id}
+            onChange={(event) => apply('object_id', event.target.value)} placeholder="Идентификатор объекта" />
+        </label>
+        <label className="text-xs text-ink-muted">Шифр документа *
+          <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.document_code}
+            onChange={(event) => apply('document_code', event.target.value)} placeholder="Шифр" />
+        </label>
+        <label className="text-xs text-ink-muted">Редакция *
+          <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.revision}
+            onChange={(event) => apply('revision', event.target.value)} placeholder="Например, 2" />
+        </label>
+        <label className="text-xs text-ink-muted">Статус утверждения
+          <select className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.approval_status}
+            onChange={(event) => apply('approval_status', event.target.value)}>
+            {APPROVALS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="text-xs text-ink-muted">Дата утверждения
+          <input type="date" className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.approval_date ?? ''}
+            onChange={(event) => apply('approval_date', event.target.value)} />
+        </label>
+        <label className="text-xs text-ink-muted">Подпись / ЭП
+          <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.signature_status ?? ''}
+            onChange={(event) => apply('signature_status', event.target.value)} placeholder="Не задано" />
+        </label>
+      </div>
+      <label className="mt-2 block text-xs text-ink-muted">Листы или диапазон листов
+        <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.sheet_page_range ?? ''}
+          onChange={(event) => apply('sheet_page_range', event.target.value)} placeholder="Не задано" />
+      </label>
+      <div className="mt-3 rounded-xl border border-dashed border-surface-line bg-surface-muted/50 p-4 text-center">
+        <p className="text-sm font-medium text-ink">Перетащите PDF или выберите файл</p>
+        <button className="btn-ghost mt-2" type="button" disabled={busy} onClick={() => input.current?.click()}>
+          {busy ? 'Загружаю…' : 'Выбрать PDF'}
+        </button>
+        <input ref={input} hidden multiple type="file" accept=".pdf" onChange={(event) => {
+          void upload(event.target.files)
+          event.target.value = ''
+        }} />
+      </div>
+      {error && <p className="mt-2 text-xs text-critical">{error}</p>}
+      <div className="mt-3 space-y-2">
+        {documents.length === 0 && <p className="text-xs text-ink-faint">Файлы этой стадии пока не загружены.</p>}
+        {documents.map((document) => (
+          <div key={document.id} className="rounded-lg border border-surface-line bg-surface px-3 py-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0"><p className="truncate text-sm font-medium text-ink">{document.name}</p>
+                <p className="mt-1 text-xs text-ink-faint">{document.pages} л. · {document.metadata.document_code || 'шифр не задан'} · ред. {document.metadata.revision || 'не задана'}</p>
+              </div>
+              <Chip tone={statusTone(document.status)}>{document.status}</Chip>
+            </div>
+            <button className="mt-2 text-xs text-accent hover:underline" type="button" onClick={() => {
+              setDraft({ ...document.metadata, predecessor_id: document.metadata.predecessor_id?.toString() ?? '' })
+              setOpenEditor(openEditor === document.id ? null : document.id)
+            }}>Изменить метаданные</button>
+            {openEditor === document.id && <div className="mt-2 flex items-center gap-2 text-xs">
+              <span>Изменения применяются к этому документу.</span>
+              <button type="button" className="btn-primary px-2 py-1 text-xs" disabled={saving === document.id || !valid}
+                onClick={() => void saveExisting(document)}>{saving === document.id ? 'Сохраняю…' : 'Сохранить'}</button>
+            </div>}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  )
+}
+
+function EvidencePreview({ evidence, onClose }: { evidence: OfficialEvidence; onClose: () => void }) {
+  const [imageError, setImageError] = useState(false)
+  const bbox = evidence.bbox
+  const overlay = bbox ? {
+    left: `${bbox[0] * 100}%`, top: `${bbox[1] * 100}%`,
+    width: `${(bbox[2] - bbox[0]) * 100}%`, height: `${(bbox[3] - bbox[1]) * 100}%`,
+  } : undefined
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4" role="dialog" aria-modal="true" aria-label="Доказательство">
+      <div className="max-h-full w-full max-w-5xl overflow-auto rounded-xl bg-surface p-4 shadow-card">
+        <div className="mb-3 flex items-start justify-between gap-3"><div><h3 className="font-semibold text-ink">Источник доказательства</h3>
+          <p className="text-xs text-ink-muted">{stageLabel(evidence.stage)} · лист {evidence.page} · {evidence.sha256 ? `SHA-256 ${evidence.sha256}` : 'отпечаток не указан'}</p></div>
+          <button className="btn-ghost px-2 py-1 text-xs" onClick={onClose}>Закрыть</button></div>
+        {evidence.quote && <blockquote className="mb-3 rounded-lg border-l-4 border-accent bg-surface-muted p-3 text-sm text-ink">{evidence.quote}</blockquote>}
+        {imageError ? <Empty title="Лист не удалось открыть" hint="Источник сохранён в результате, но изображение страницы сейчас недоступно." /> : <div className="relative mx-auto w-fit max-w-full">
+          <img className="max-h-[70vh] max-w-full" src={officialApi.pageImageUrl(evidence.document_id, evidence.page)} alt={`Лист ${evidence.page}`}
+            onError={() => setImageError(true)} />
+          {overlay && <span aria-label="Граница доказательства" className="pointer-events-none absolute border-2 border-critical bg-critical/10" style={overlay} />}
+        </div>}
+        {!bbox && <p className="mt-3 text-xs text-ink-faint">Координаты фрагмента не получены: источник показан целиком.</p>}
+      </div>
+    </div>
+  )
+}
+
+function CheckRow({ check, run, onDecision, onEvidence }: {
+  check: OfficialCheck; run: OfficialRun
+  onDecision: (check: OfficialCheck, status: Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE'>, author: string, reason: string) => Promise<void>
+  onEvidence: (evidence: OfficialEvidence) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [author, setAuthor] = useState('')
+  const [reason, setReason] = useState('')
+  const [status, setStatus] = useState<Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE'>>(check.finding_status === 'NEGATIVE_VERIFIED' ? 'NEGATIVE_VERIFIED' : check.finding_status === 'CONFIRMED_VIOLATION' ? 'CONFIRMED_VIOLATION' : 'CANDIDATE')
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
+    if (!author.trim() || !reason.trim()) return
+    setSaving(true)
+    try { await onDecision(check, status, author, reason); setReason('') } finally { setSaving(false) }
+  }
+  return <>
+    <tr className="border-t border-surface-line text-sm">
+      <td className="px-3 py-2 align-top font-medium text-ink">{check.parameter_code}</td>
+      <td className="px-3 py-2 align-top"><div className="font-medium text-ink">{check.parameter_name}</div><div className="mt-1 text-xs text-ink-faint">{check.completeness_status}</div></td>
+      <td className="px-3 py-2 align-top"><Chip tone={check.priority === 'HIGH' ? 'warn' : 'neutral'}>{check.priority}</Chip></td>
+      <td className="px-3 py-2 align-top"><Chip tone={statusTone(check.technical_status)}>{findingLabel(check.finding_status, check.technical_status)}</Chip></td>
+      <td className="px-3 py-2 align-top"><button className="text-xs text-accent hover:underline" onClick={() => setExpanded(!expanded)}>{expanded ? 'Свернуть' : 'Подробнее'}</button></td>
+    </tr>
+    {expanded && <tr className="border-t border-surface-line bg-surface-muted/40"><td colSpan={5} className="px-3 py-3">
+      <p className="text-sm text-ink">{check.explanation || 'Пояснение не сформировано.'}</p>
+      <div className="mt-2 grid gap-2 text-xs md:grid-cols-2"><div><span className="text-ink-faint">Ожидалось: </span>{check.expected_value || 'не извлечено'}</div><div><span className="text-ink-faint">Получено: </span>{check.actual_value || 'не извлечено'}</div></div>
+      <div className="mt-3 flex flex-wrap gap-2">{check.evidence.length === 0 ? <span className="text-xs text-ink-faint">Доказательства не получены: результат требует уточнения.</span> : check.evidence.map((item, index) => <button className="btn-ghost px-2 py-1 text-xs" key={`${item.document_id}-${item.page}-${index}`} onClick={() => onEvidence(item)}>Источник {index + 1}: {stageLabel(item.stage)}, л. {item.page}</button>)}</div>
+      {check.technical_status === 'completed' && <div className="mt-4 rounded-lg border border-surface-line bg-surface p-3"><p className="text-xs font-medium text-ink">Решение инспектора</p><p className="mt-1 text-xs text-ink-faint">Машинный результат и история решений сохраняются отдельно.</p>
+        <div className="mt-2 grid gap-2 md:grid-cols-3"><select className="rounded-lg border border-surface-line px-2 py-1.5 text-xs" value={status} onChange={(event) => setStatus(event.target.value as typeof status)}><option value="CANDIDATE">Оставить кандидатом</option><option value="CONFIRMED_VIOLATION">Подтвердить инспектором</option><option value="NEGATIVE_VERIFIED">Не подтвердить инспектором</option></select><input className="rounded-lg border border-surface-line px-2 py-1.5 text-xs" value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="Инспектор *" /><input className="rounded-lg border border-surface-line px-2 py-1.5 text-xs" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Основание *" /></div>
+        <button className="btn-primary mt-2 px-3 py-1.5 text-xs" disabled={saving || !author.trim() || !reason.trim()} onClick={() => void save()}>{saving ? 'Сохраняю…' : 'Сохранить решение'}</button>
+        {check.review_history.length > 0 && <details className="mt-3 text-xs"><summary className="cursor-pointer text-ink-muted">История решений ({check.review_history.length})</summary><ul className="mt-2 space-y-1 text-ink-faint">{check.review_history.map((item, index) => <li key={`${item.author}-${index}`}>{item.created_at || 'время не указано'} · {item.author}: {findingLabel(item.status, 'completed')} — {item.reason}</li>)}</ul></details>}
+      </div>}
+    </td></tr>}
+  </>
+}
+
+export default function OfficialAnalysis() {
+  const [documents, setDocuments] = useState<OfficialDocument[]>([])
+  const [parameters, setParameters] = useState<OfficialParameter[]>([])
+  const [matrixVersion, setMatrixVersion] = useState('—')
+  const [run, setRun] = useState<OfficialRun | null>(null)
+  const [selected, setSelected] = useState<number[]>([])
+  const [includeMedium, setIncludeMedium] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [evidence, setEvidence] = useState<OfficialEvidence | null>(null)
+  const selectionInitialized = useRef(false)
+
+  const reload = async () => {
+    const [documentData, parameterData, runs] = await Promise.all([officialApi.documents(), officialApi.parameters(), officialApi.runs()])
+    setDocuments(documentData); setParameters(parameterData.parameters); setMatrixVersion(parameterData.matrix_version)
+    const active = runs.find((item) => item.status === 'running' || item.status === 'queued') ?? runs[0] ?? null
+    setRun((current) => current && current.status === 'running' ? current : active)
+    setSelected((current) => {
+      if (!selectionInitialized.current) {
+        selectionInitialized.current = true
+        return documentData.map((item) => item.id)
+      }
+      return current.filter((id) => documentData.some((item) => item.id === id))
+    })
+  }
+  useEffect(() => { void reload().catch((cause) => setMessage(cause instanceof Error ? cause.message : 'Не удалось получить данные.')).finally(() => setLoading(false)) }, [])
+  useEffect(() => {
+    if (!run || !['running', 'queued'].includes(run.status)) return
+    const timer = window.setTimeout(() => { void officialApi.run(run.id).then(setRun).catch((cause) => setMessage(cause instanceof Error ? cause.message : 'Не удалось обновить ход проверки.')) }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [run])
+
+  const byStage = (stage: OfficialStage) => documents.filter((item) => item.metadata.stage === stage)
+  const allSelected = useMemo(() => documents.filter((item) => selected.includes(item.id)), [documents, selected])
+  const selectedObject = allSelected[0]?.metadata.object_id ?? ''
+  const stagesDefined = allSelected.every((item) => STAGES.some((stage) => stage.key === item.metadata.stage))
+  const eligible = allSelected.length > 0 && Boolean(selectedObject) && stagesDefined
+    && allSelected.every((item) => item.metadata.object_id === selectedObject)
+  const checks = run?.result?.checks ?? []
+  const graphicAnalysis = run?.result?.graphic_analysis ?? {
+    status: 'not_run' as const,
+    reason: 'Графическая проверка отсутствует в сохранённом прогоне.',
+    candidates: [],
+    performance: {},
+  }
+  const graphicChecks = graphicAnalysis.candidates
+  const progress = run && run.total > 0 ? Math.min(100, Math.round((run.completed / run.total) * 100)) : 0
+
+  const upload = async (file: File, metadata: OfficialDocumentMetadata) => {
+    setBusy(true)
+    try { const created = await officialApi.upload(metadata.stage === 'PD' ? 'before' : 'after', file); await officialApi.saveMetadata(created.id, metadata); await reload(); setMessage(`Файл «${file.name}» загружен и описан.`) } finally { setBusy(false) }
+  }
+  const saveMetadata = async (id: number, metadata: OfficialDocumentMetadata) => { setBusy(true); try { await officialApi.saveMetadata(id, metadata); await reload(); setMessage('Метаданные сохранены.') } finally { setBusy(false) } }
+  const launch = async () => { setBusy(true); try { const created = await officialApi.createRun(selectedObject, selected, includeMedium); setRun(created); setMessage('Официальная проверка запущена. Машинные кандидаты требуют подтверждения инспектором.') } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Не удалось запустить проверку.') } finally { setBusy(false) } }
+  const cancel = async () => { if (!run) return; setBusy(true); try { setRun(await officialApi.cancelRun(run.id)); setMessage('Остановка запрошена: обработка завершится на безопасной точке.') } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Не удалось остановить проверку.') } finally { setBusy(false) } }
+  const decide = async (check: OfficialCheck, status: Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE'>, author: string, reason: string) => { if (!run) return; try { const updated = await officialApi.decide(run.id, { finding_id: check.finding_id, status, author, reason, expected_version: run.version ?? 0 }); setRun(updated); setMessage('Решение инспектора сохранено отдельной версией.') } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Не удалось сохранить решение.') } }
+
+  if (loading) return <Skeleton rows={10} />
+  return <div className="mx-auto max-w-[1700px] space-y-5">
+    <section className="rounded-2xl border border-surface-line bg-surface p-5 shadow-sm"><div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><h2 className="text-xl font-semibold text-ink">Официальная проверка комплекта</h2><p className="mt-1 max-w-3xl text-sm text-ink-muted">ПД — источник проектных решений; РД и ИД сопоставляются с ним по матрице {matrixVersion}. Машинный кандидат не является выводом о нарушении.</p></div><button className="btn-primary" disabled={!eligible || busy || run?.status === 'running'} onClick={() => void launch()}>{busy ? 'Выполняю…' : 'Запустить проверку'}</button></div>
+      {!eligible && <p className="mt-3 text-xs text-ink-faint">Для запуска выберите хотя бы один документ одного объекта. У каждого выбранного документа должна быть задана стадия.</p>}{message && <p className="mt-3 rounded-lg bg-surface-muted px-3 py-2 text-sm text-ink-muted">{message}</p>}</section>
+    <div className="grid gap-4 xl:grid-cols-3">{STAGES.map((stage) => <FileStage key={stage.key} stage={stage} documents={byStage(stage.key)} onUploaded={upload} onMetadataSaved={saveMetadata} busy={busy} />)}</div>
+    <SectionCard title="Комплект для проверки" subtitle="Отметьте версии одного объекта. Допускаются ПД–РД, ПД–ИД, РД–ИД и один источник: отсутствующие стороны будут отмечены как неполнота или необходимость уточнения."><div className="flex flex-wrap items-center gap-3"><label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={includeMedium} onChange={(event) => setIncludeMedium(event.target.checked)} /> Включить параметры MEDIUM</label><span className="text-xs text-ink-faint">Выбрано: {selected.length} документов</span></div><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Выбор</th><th className="px-3 py-2">Стадия</th><th className="px-3 py-2">Документ</th><th className="px-3 py-2">Редакция</th><th className="px-3 py-2">Статус</th></tr></thead><tbody>{documents.map((document) => <tr className="border-t border-surface-line" key={document.id}><td className="px-3 py-2"><input type="checkbox" checked={selected.includes(document.id)} onChange={() => setSelected((current) => current.includes(document.id) ? current.filter((id) => id !== document.id) : [...current, document.id])} /></td><td className="px-3 py-2"><Chip>{document.metadata.stage}</Chip></td><td className="px-3 py-2">{document.name}</td><td className="px-3 py-2">{document.metadata.revision || 'не задана'}</td><td className="px-3 py-2">{document.metadata.approval_status}</td></tr>)}</tbody></table></div></SectionCard>
+    <SectionCard title="Ход официальной проверки" subtitle="Пустой результат, невыполненная проверка, ошибка и остановка показываются раздельно." right={run && ['running', 'queued'].includes(run.status) ? <button className="btn-ghost text-critical" disabled={busy} onClick={() => void cancel()}>Остановить</button> : undefined}>{run ? <div><div className="flex justify-between text-sm"><span>{run.stage || 'Проверка параметров'}</span><span>{run.completed} из {run.total}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-line"><div className="h-full bg-accent" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-ink-faint">Статус: {run.status}{run.error ? ` · ${run.error}` : ''}</p></div> : <Empty title="Проверка ещё не запускалась" hint="После выбора документов одного объекта станет доступен запуск." />}</SectionCard>
+    <SectionCard title="Матрица параметров" subtitle={`Матрица ${matrixVersion}: ${parameters.length} параметров. Результат по каждому параметру появится после прогона.`}><div className="max-h-80 overflow-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="sticky top-0 bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Код</th><th className="px-3 py-2">Параметр</th><th className="px-3 py-2">Раздел</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Триггер</th></tr></thead><tbody>{parameters.map((parameter) => <tr className="border-t border-surface-line" key={parameter.code}><td className="px-3 py-2 font-medium">{parameter.code}</td><td className="px-3 py-2">{parameter.name}</td><td className="px-3 py-2">{parameter.section}</td><td className="px-3 py-2"><Chip tone={parameter.priority === 'HIGH' ? 'warn' : 'neutral'}>{parameter.priority}</Chip></td><td className="px-3 py-2 text-xs text-ink-muted">{parameter.trigger}</td></tr>)}</tbody></table></div></SectionCard>
+    {run?.result && <SectionCard title="Текстовая сверка по матрице" subtitle={`Покрытие: выполнено ${run.result.coverage.completed} из ${run.result.coverage.total}; не выполнено ${run.result.coverage.not_run}.`} right={<div className="flex gap-2"><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'json')}>JSON</a><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'csv')}>CSV</a></div>}>{checks.length === 0 ? <Empty title="Завершённых параметров пока нет" hint={run.result.coverage.not_run > 0 ? 'Часть проверки не выполнялась или требует уточнения. Это не означает отсутствие расхождений.' : 'Сервер не вернул параметров для выбранного комплекта; проверьте статус прогона и метаданные.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Код</th><th className="px-3 py-2">Параметр</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{checks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}
+    {run?.result && <SectionCard title="Графическая сверка листов" subtitle={`Статус: ${graphicAnalysis.status}. ${graphicAnalysis.reason || 'Кандидаты формируются отдельно от текстовой матрицы и требуют решения инспектора.'}`}>{graphicChecks.length === 0 ? <Empty title="Графические кандидаты не сформированы" hint={graphicAnalysis.status === 'completed' ? 'Просмотр завершён без наблюдаемых кандидатов. Это не является выводом об отсутствии нарушения.' : 'Графическая проверка не завершена; отсутствие кандидатов нельзя считать чистым результатом.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Вид</th><th className="px-3 py-2">Кандидат</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{graphicChecks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}
+    {evidence && <EvidencePreview evidence={evidence} onClose={() => setEvidence(null)} />}
+  </div>
+}

@@ -570,6 +570,16 @@ def run_triangulated(
 
         signals: list[Signal] = []
         signals += signals_from_room_cross_check(room_result.findings)
+        # В самостоятельном адаптере переименование остаётся диагностикой:
+        # OCR может исказить подпись. В комплексном прогоне оно всё же должно
+        # попасть в очередь инспектора и суметь получить подтверждение от
+        # независимого требования или изображения, иначе сигнал исчезает до
+        # этапа синтеза, где как раз проверяется согласованность источников.
+        signals += [
+            Signal("room_registry", "room", str(finding.room_key), finding.detail)
+            for finding in room_result.findings
+            if finding.finding_type == "name_changed" and str(finding.room_key).strip()
+        ]
         signals += signals_from_equip_cross_check(equip_result.findings)
         signals += signals_from_requirement_cross_check(req_result.findings)
         signals += [Signal(source="composition_registry", domain="document",

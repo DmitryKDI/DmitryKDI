@@ -121,9 +121,9 @@ def build_page_catalog(before_docs: Sequence[DocumentInput], after_docs: Sequenc
 def _ref_map(before_docs, after_docs, before_paths, after_paths) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for side, docs, paths in (("PD", before_docs, before_paths), ("RD", after_docs, after_paths)):
+        if len(docs) != len(paths):
+            raise ValueError(f"{side}: для каждого документа нужен соответствующий источник")
         for di, document in enumerate(docs):
-            if di >= len(paths):
-                continue
             for page in range(1, int(document.pages) + 1):
                 out[f"{side}{di}:P{page}"] = {"document": document, "path": str(paths[di]), "page": page}
     return out

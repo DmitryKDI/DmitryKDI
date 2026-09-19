@@ -76,7 +76,7 @@ def test_extract_parses_requirement_with_different_room_marker_and_verb():
     этого зависеть."""
     facts = [tf(5, "В кабинетах 12 и 14 система вентиляции должна быть выполнена с шумоглушением.")]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         assert "Страница 5" in user_text
         return {"requirements": [
             {"rooms": ["12", "14"], "code": None,
@@ -102,7 +102,7 @@ def test_extract_parses_requirement_stated_as_table_row_not_list():
     """Требование в виде табличной строки без единого маркера списка."""
     facts = [tf(9, "Зона А | подпор воздуха 20 Па | ПД5")]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         return {"requirements": [
             {"rooms": ["Зона А"], "code": "ПД5",
              "requirement": "подпор воздуха 20 Па",
@@ -128,12 +128,13 @@ def test_extract_keeps_requirement_without_rooms():
     отброс терял почти весь результат на разделах, где требования по своей
     природе относятся к объекту целиком (ООС, ПОС, ПБ). Фильтрует тот, кому
     нужны именно привязанные к помещению, — на своей стороне."""
-    facts = [tf(1, "текст")]
+    facts = [tf(1, "общее указание без помещения")]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         return {"requirements": [{
             "rooms": [], "code": None,
-            "requirement": "общее указание без помещения", "sentence": "...",
+            "requirement": "общее указание без помещения",
+            "sentence": "общее указание без помещения", "page": 1,
         }]}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
@@ -146,10 +147,10 @@ def test_extract_keeps_requirement_without_rooms():
     print("OK: требование к объекту целиком сохраняется, а не отбрасывается")
 
 
-def test_extract_uses_chunk_first_page_when_model_omits_page():
+def test_extract_rejects_requirement_when_model_omits_page():
     facts = [tf(3, "текст")]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         return {"requirements": [
             {"rooms": ["1"], "code": None, "requirement": "x", "sentence": "y"},
         ]}
@@ -160,14 +161,14 @@ def test_extract_uses_chunk_first_page_when_model_omits_page():
     finally:
         requirement_llm_extract.call_llm_json = original
 
-    assert reqs[0].page == 3
-    print("OK: без номера страницы в ответе модели берётся первая страница пачки, не падение")
+    assert reqs == []
+    print("OK: без номера страницы в ответе модели источник не выдумывается")
 
 
 def test_extract_empty_result_when_model_finds_nothing():
     facts = [tf(1, "текст без требований")]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         return {"requirements": []}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
@@ -187,13 +188,13 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
 
     calls = []
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         calls.append(user_text)
         if len(calls) == 1:
             raise ConnectionError("сеть недоступна")
         return {"requirements": [{
             "rooms": ["2"], "code": None,
-            "requirement": "x", "sentence": "y", "page": 2,
+            "requirement": "x", "sentence": "b", "page": 2,
         }]}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
@@ -215,7 +216,7 @@ def test_on_chunk_error_callback_fires_with_page_and_exception():
     требований». Колбэк даёт вызывающему коду шанс показать это явно."""
     facts = [tf(5, "a" * 4000), tf(9, "b" * 4000)]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         raise ConnectionError("сеть недоступна")
 
     errors = []
@@ -241,9 +242,12 @@ def test_requirement_without_room_is_kept_not_dropped():
     за то, что оно относится к объекту целиком, значит терять почти весь
     результат на разделах ООС/ПОС/ПБ, где требования по своей природе не
     привязаны к помещению."""
-    facts = [{"page": 3, "text": "текст", "document": "ООС8.1.pdf", "section": "ООС"}]
+    facts = [{"page": 3, "text": (
+        "Вывоз отходов по договору со спецорганизацией. "
+        "Предусмотрены шумозащитные экраны. В пом. 12 предусмотреть вытяжку."
+    ), "document": "ООС8.1.pdf", "section": "ООС"}]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         return {"requirements": [
             {"rooms": [], "sentence": "Вывоз отходов по договору со спецорганизацией.", "page": 3},
             {"rooms": [], "sentence": "Предусмотрены шумозащитные экраны.", "page": 3},
@@ -265,9 +269,10 @@ def test_requirement_carries_document_and_section():
     """Г.86 — «требования должны быть уже привязаны к разделам... инспектор
     просто видит, на какой странице требование». Без имени файла номер
     страницы бессмыслен на комплекте: нумерация в каждом томе своя."""
-    facts = [{"page": 7, "text": "текст", "document": "Том ООС8.1.pdf", "section": "ООС"}]
+    facts = [{"page": 7, "text": "Шумозащита предусмотрена.",
+              "document": "Том ООС8.1.pdf", "section": "ООС"}]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         return {"requirements": [{"rooms": [], "sentence": "Шумозащита предусмотрена.", "page": 7}]}
 
     original = _patch(requirement_llm_extract, "call_llm_json", fake_call_llm_json)
@@ -352,7 +357,7 @@ if __name__ == "__main__":
     test_extract_parses_requirement_with_different_room_marker_and_verb()
     test_extract_parses_requirement_stated_as_table_row_not_list()
     test_extract_keeps_requirement_without_rooms()
-    test_extract_uses_chunk_first_page_when_model_omits_page()
+    test_extract_rejects_requirement_when_model_omits_page()
     test_extract_empty_result_when_model_finds_nothing()
     test_extract_one_chunk_failure_does_not_lose_other_chunks()
     test_on_chunk_error_callback_fires_with_page_and_exception()
@@ -409,7 +414,7 @@ def test_parallel_partial_failure_mix_success_and_fail():
         {"page": 3, "text": "c" * 100, "document": "т3.pdf", "section": "КР"},
     ]
 
-    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0):
+    def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         # Извлекаем номер страницы из user_text (контейнер документа)
         page_match = None
         for page in [1, 2, 3]:
@@ -421,7 +426,7 @@ def test_parallel_partial_failure_mix_success_and_fail():
         return {"requirements": [{
             "rooms": [], "code": None,
             "requirement": f"требование со страницы {page_match}",
-            "sentence": f"предложение со страницы {page_match}", "page": page_match,
+            "sentence": facts[page_match - 1]["text"], "page": page_match,
         }]}
 
     errors = []

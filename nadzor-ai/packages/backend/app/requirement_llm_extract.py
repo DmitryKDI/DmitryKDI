@@ -76,7 +76,7 @@ _REQUIREMENT_EXTRACTION_TEMPLATE = f"""\
 {{known}}
 
 ПОЛЕ "requirement" — короткая выжимка для инспектора, НЕ БОЛЕЕ 100 СИМВОЛОВ.
-Дословная цитата или близкий к дословному фрагмент должны попасть в `sentence`.
+Дословная цитата исходной страницы должна попасть в `sentence` без пересказа.
 Параметры пиши числом с единицей измерения. Убирай канцелярские вводные вроде
 «предусмотрено», «выполняется», «принято», когда они не несут смысла.
 
@@ -89,7 +89,7 @@ _REQUIREMENT_EXTRACTION_TEMPLATE = f"""\
   {{{{"rooms": ["номера помещений, если требование именно к ним; иначе пустой список"],
    "code": "короткое обозначение рядом с требованием (марка, позиция), или null",
    "requirement": "выжимка до 100 символов",
-   "sentence": "дословная цитата или близкий к дословному фрагмент исходного текста",
+   "sentence": "дословная цитата исходного текста",
    "page": <int, номер страницы из метки>}}}}
  ],
  "norms": [
@@ -168,7 +168,18 @@ def _fact_for_page(chunk: list[dict], page: int) -> dict:
     for fact in chunk:
         if fact.get("page") == page:
             return fact
-    return chunk[0] if chunk else {}
+    return {}
+
+
+def _quoted_source(chunk: list[dict], page: object, sentence: object) -> dict:
+    """Нормализуем только пробелы: число, отрицание и буква должны совпадать."""
+    if type(page) is not int or not isinstance(sentence, str) or not sentence.strip():
+        return {}
+    quote = " ".join(sentence.split())
+    for fact in chunk:
+        if fact.get("page") == page and quote in " ".join(str(fact.get("text") or "").split()):
+            return fact
+    return {}
 
 
 def _render_chunk(chunk: list[dict]) -> str:
@@ -216,7 +227,7 @@ def extract_requirements_llm(
                 timeout=timeout,
                 operation="extraction",
                 source_digest=hashlib.sha256(user_text.encode("utf-8")).hexdigest(),
-                prompt_version="requirements-v3",
+                prompt_version="requirements-v4-source-verified",
             )
         except Exception as exc:  # noqa: BLE001
             return chunk, None, exc
@@ -251,19 +262,26 @@ def extract_requirements_llm(
 
         for item in result.get("requirements", []):
             if not isinstance(item, dict):
+                if on_chunk_error:
+                    on_chunk_error(chunk[0]["page"], ValueError("некорректная запись требования"))
                 continue
             rooms = item.get("rooms") or []
             if not isinstance(rooms, list):
                 rooms = []
             page = item.get("page")
-            if not isinstance(page, int):
-                page = chunk[0]["page"]
-            source = _fact_for_page(chunk, page)
+            sentence = item.get("sentence")
+            source = _quoted_source(chunk, page, sentence)
+            if not source:
+                if on_chunk_error:
+                    on_chunk_error(chunk[0]["page"], ValueError(
+                        "цитата требования не подтверждена текстом указанной страницы"
+                    ))
+                continue
             out.append(
                 Requirement(
                     rooms=[str(r) for r in rooms],
                     page=page,
-                    sentence=str(item.get("sentence") or item.get("requirement") or ""),
+                    sentence=sentence,
                     summary=str(item.get("requirement") or ""),
                     code=str(item["code"]) if item.get("code") else None,
                     document=str(source.get("document") or ""),

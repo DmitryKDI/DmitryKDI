@@ -64,6 +64,7 @@ from .vision import (
     render_page_to_png_bytes,
 )
 from .vision_page_compare import check_requirement_on_page
+from .official_api import router as official_router
 
 # Каталог кэша оригиналов — производное от хранилища (`file_store`): его
 # можно удалить целиком, файлы восстановятся из базы по требованию.
@@ -73,6 +74,7 @@ app = FastAPI(title="НАДЗОР.ИИ — backend")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+app.include_router(official_router)
 
 
 @app.get("/health")
@@ -1082,7 +1084,7 @@ def _run_compliance(run_id: int) -> None:
             db.commit()
             return
 
-        if pd_run.status not in ("done", "error"):
+        if pd_run.status != "done":
             run.status = "error"
             run.error = ("Разбор исходных требований не завершён успешно; "
                          "сверка по неполному результату не запускалась.")

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Shell from './layout/Shell'
 import Dashboard from './pages/Dashboard'
 import Workspace from './pages/Workspace'
+import OfficialAnalysis from './pages/OfficialAnalysis'
 import ControlPoints from './pages/ControlPoints'
 import Evidence from './pages/Evidence'
 import Reports from './pages/Reports'
@@ -16,7 +17,8 @@ export default function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/documents" element={<Workspace />} />
+        <Route path="/documents" element={<OfficialAnalysis />} />
+        <Route path="/legacy/documents" element={<Workspace />} />
         <Route path="/analysis/new" element={<Navigate to="/documents" replace />} />
         <Route path="/attention" element={<ControlPoints />} />
         <Route path="/evidence" element={<Evidence />} />
