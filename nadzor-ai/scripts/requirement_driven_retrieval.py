@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Sequence
 
 _TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/+-]{1,}")
 _STOP = {
@@ -34,8 +34,7 @@ REQUIREMENT_EXTRACT_SYSTEM = """Ты инженер, который превра
 - room_types/search_terms нужны только для навигации по РД и не заменяют точные IDs;
 - search_terms могут содержать только термины из ПД и нейтральные общеупотребимые
   инженерные варианты/сокращения, без предположений о том, что должно быть найдено в РД;
-- если страница содержит вентиляцию, вытяжку, приточные установки, венткамеры,
-  воздуховоды или иные инженерные решения — извлеки их так же полно, как отопление;
+- любое инженерное решение извлекай с одинаковой полнотой независимо от раздела;
 - если на странице нет проверяемых требований, верни пустой список.
 
 Верни только JSON:
@@ -112,12 +111,13 @@ def _exact_tokens(value: object) -> list[str]:
         token = _norm(raw).strip(".,;:()[]{}<>\"'«»")
         if not token or token in _STOP:
             continue
-        # Preserve room numbers and compact equipment/system marks even when short.
-        if token.isdigit() and len(token) >= 2:
-            out.append(token)
-        elif ("-" in token or "/" in token or any(ch.isdigit() for ch in token)) and len(token) >= 3:
-            out.append(token)
-        elif len(token) >= 4:
+        # Короткие номера и марки остаются точными идентификаторами сущностей.
+        compact_mark = (
+            (token.isdigit() and len(token) >= 2)
+            or (("-" in token or "/" in token or any(ch.isdigit() for ch in token))
+                and len(token) >= 3)
+        )
+        if compact_mark or len(token) >= 4:
             out.append(token)
     return list(dict.fromkeys(out))
 

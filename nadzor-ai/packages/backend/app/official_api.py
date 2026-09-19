@@ -21,7 +21,9 @@ from .parameter_catalog import CATALOG_VERSION, list_parameters
 router = APIRouter(prefix="/official", tags=["official"])
 STAGES = {"PD", "RD", "ID"}
 APPROVAL_STATUSES = {"DRAFT", "APPROVED", "FOR_CONSTRUCTION", "SUPERSEDED", "CANCELLED"}
-DECISION_STATUSES = {"CANDIDATE", "CONFIRMED_VIOLATION", "NEGATIVE_VERIFIED"}
+DECISION_STATUSES = {
+    "CANDIDATE", "CONFIRMED_VIOLATION", "NEGATIVE_VERIFIED", "CLARIFICATION_REQUIRED",
+}
 
 
 class MetadataInput(BaseModel):
@@ -123,7 +125,7 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
             })
             check["finding_status"] = decision.status
     return {
-        "id": run.id, "status": run.status, "stage": run.stage,
+        "id": run.id, "object_id": run.object_id, "status": run.status, "stage": run.stage,
         "completed": run.completed, "total": run.total, "result": result,
         "error": run.error, "version": max((row.version for row in decisions), default=0),
     }
@@ -157,6 +159,18 @@ def save_metadata(document_id: int, body: MetadataInput, db: Session = Depends(g
         predecessor_meta = predecessor.source_metadata or {}
         if predecessor_meta.get("object_id") != body.object_id:
             raise HTTPException(422, "редакции относятся к разным объектам")
+        if predecessor_meta.get("stage") != body.stage:
+            raise HTTPException(422, "редакции относятся к разным стадиям")
+        if predecessor_meta.get("document_code") != body.document_code:
+            raise HTTPException(422, "редакции имеют разные шифры документа")
+        seen = {document_id}
+        current = predecessor
+        while current is not None:
+            if current.id in seen:
+                raise HTTPException(422, "цепочка редакций содержит цикл")
+            seen.add(current.id)
+            parent_id = (current.source_metadata or {}).get("predecessor_id")
+            current = db.get(models.Document, parent_id) if parent_id is not None else None
     metadata = body.model_dump(mode="json")
     document.source_metadata = metadata
     document.metadata_version += 1

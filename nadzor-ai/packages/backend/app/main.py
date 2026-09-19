@@ -362,7 +362,22 @@ def delete_document(document_id: int, db: Session = Depends(get_session)):
     doc = db.get(models.Document, document_id)
     if doc is None:
         raise HTTPException(404, "not found")
+    if any(
+        (row.source_metadata or {}).get("predecessor_id") == document_id
+        for row in db.query(models.Document).all()
+    ):
+        raise HTTPException(409, "документ является предыдущей редакцией")
+    if any(
+        any(item.get("id") == document_id for item in (run.input_snapshot or []))
+        for run in db.query(models.OfficialRun).all()
+    ):
+        raise HTTPException(409, "документ входит в сохранённый официальный протокол")
     mine = {doc.digest} | {str(p.get("digest")) for p in (doc.parts or []) if isinstance(p, dict)}
+    # История карточки принадлежит документу. Без явного удаления внешний ключ
+    # блокирует кнопку удаления после первого же сохранения метаданных.
+    db.query(models.DocumentMetadataEvent).filter_by(document_id=doc.id).delete(
+        synchronize_session=False,
+    )
     db.delete(doc)
     db.commit()
     # Оригинал удаляется, только если на него не осталось ссылок: одно и то

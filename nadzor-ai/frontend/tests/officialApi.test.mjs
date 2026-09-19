@@ -13,6 +13,10 @@ test('candidate stays a candidate until inspector confirms it', () => {
   assert.equal(findingLabel('CONFIRMED_VIOLATION', 'completed'), 'подтверждено инспектором')
 })
 
+test('inspector clarification is a separate visible decision', () => {
+  assert.equal(findingLabel('CLARIFICATION_REQUIRED', 'completed'), 'запрошено уточнение')
+})
+
 test('evidence image URL uses the existing backend rendering route', () => {
   assert.equal(officialApi.pageImageUrl(17, 4), '/backend/page-image/17/4')
 })

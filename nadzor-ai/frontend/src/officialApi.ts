@@ -23,7 +23,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export type OfficialStage = 'PD' | 'RD' | 'ID'
 export type ApprovalStatus = 'DRAFT' | 'APPROVED' | 'FOR_CONSTRUCTION' | 'SUPERSEDED' | 'CANCELLED'
-export type FindingStatus = 'CANDIDATE' | 'NEGATIVE_VERIFIED' | 'CONFIRMED_VIOLATION' | 'SUSPICION'
+export type FindingStatus = 'CANDIDATE' | 'NEGATIVE_VERIFIED' | 'CONFIRMED_VIOLATION' | 'SUSPICION' | 'CLARIFICATION_REQUIRED'
 export type TechnicalStatus = 'completed' | 'not_run' | 'error'
 
 export interface OfficialParameter {
@@ -64,6 +64,7 @@ export interface OfficialEvidence {
   file_id: string | null
   sha256: string | null
   stage: OfficialStage
+  role?: 'expected' | 'actual'
   page: number
   bbox: [number, number, number, number] | null
   quote: string | null
@@ -90,6 +91,7 @@ export interface OfficialCheck {
   evidence: OfficialEvidence[]
   technical_status: TechnicalStatus
   review_history: ReviewHistoryItem[]
+  confidence?: number | null
 }
 
 export interface OfficialRunResult {
@@ -97,6 +99,10 @@ export interface OfficialRunResult {
   object_id: string
   checks: OfficialCheck[]
   coverage: { total: number; completed: number; not_run: number }
+  document_selection?: {
+    selected: Partial<Record<OfficialStage, number[]>>
+    problems: Partial<Record<OfficialStage, string>>
+  }
   graphic_analysis: {
     status: 'completed' | 'incomplete' | 'not_run' | 'error'
     reason: string
@@ -107,6 +113,7 @@ export interface OfficialRunResult {
 
 export interface OfficialRun {
   id: number
+  object_id: string
   status: 'queued' | 'running' | 'completed' | 'cancelled' | 'error'
   stage: string
   completed: number
@@ -118,15 +125,30 @@ export interface OfficialRun {
 
 export interface DecisionInput {
   finding_id: string
-  status: Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE'>
+  status: Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE' | 'CLARIFICATION_REQUIRED'>
   author: string
   reason: string
   expected_version: number
 }
 
+export interface ProviderSettings {
+  provider: string
+  model: string
+  api_key_set: boolean
+}
+
+export interface ProviderCheck {
+  reachable: boolean
+  provider: string
+  message: string
+  tls?: string
+}
+
 export const officialApi = {
   parameters: () => request<{ matrix_version: string; parameters: OfficialParameter[] }>('/official/parameters'),
   documents: () => request<OfficialDocument[]>('/official/documents'),
+  settings: () => request<ProviderSettings>('/settings'),
+  checkProvider: () => request<ProviderCheck>('/llm-check'),
   upload: (side: 'before' | 'after', file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -136,6 +158,9 @@ export const officialApi = {
     `/official/documents/${id}/metadata`,
     { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) },
   ),
+  deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, {
+    method: 'DELETE',
+  }),
   createRun: (object_id: string, document_ids: number[], include_medium: boolean) => request<OfficialRun>(
     '/official/runs',
     {
@@ -162,5 +187,6 @@ export function findingLabel(status: FindingStatus | null, technical: TechnicalS
   if (status === 'NEGATIVE_VERIFIED') return 'не подтверждено инспектором'
   if (status === 'CANDIDATE') return 'кандидат для проверки'
   if (status === 'SUSPICION') return 'требует уточнения'
+  if (status === 'CLARIFICATION_REQUIRED') return 'запрошено уточнение'
   return 'нет машинной оценки'
 }

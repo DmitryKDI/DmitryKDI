@@ -33,6 +33,37 @@ def test_current_revision_requires_an_unambiguous_replacement_chain():
     print("OK: актуальная редакция определяется только однозначной цепочкой замены")
 
 
+def test_current_revision_can_use_a_unique_latest_approval_date():
+    earlier = document(1, "PD", approval_date="2026-01-10")
+    latest = document(2, "PD", approval_date="2026-02-10")
+    current, problem = official_pipeline._active_document([earlier, latest])
+    assert current is latest
+    assert problem is None
+    print("OK: дата утверждения однозначно выбирает последнюю параллельную редакцию")
+
+
+def test_document_selection_preserves_every_active_volume_of_a_stage():
+    documents = [
+        document(1, "PD", document_code="PD-A"),
+        document(2, "PD", document_code="PD-B"),
+        document(3, "RD", document_code="RD-A"),
+    ]
+    selected, problems = official_pipeline.select_current_documents(documents)
+    assert [item.id for item in selected["PD"]] == [1, 2]
+    assert [item.id for item in selected["RD"]] == [3]
+    assert problems == {"ID": "документ стадии не загружен"}
+    print("OK: комплект сохраняет все тома, а редакции выбираются отдельно по шифру")
+
+
+def test_page_ranking_keeps_a_fallback_when_terms_do_not_match():
+    selected = official_pipeline._relevant_facts(
+        [{"name": "несовпадающий термин"}],
+        {1: [{"page": 1, "text": "alpha"}, {"page": 2, "text": "beta"}]},
+    )
+    assert [item["page"] for item in selected[1]] == [1, 2]
+    print("OK: ранжирование не отбрасывает страницы только из-за OCR или иной лексики")
+
+
 def test_missing_key_is_reported_for_every_parameter_and_not_as_clean_result():
     result = official_pipeline.run_official_analysis(
         [document(1, "PD"), document(2, "RD")],
@@ -43,7 +74,21 @@ def test_missing_key_is_reported_for_every_parameter_and_not_as_clean_result():
                for item in result["checks"])
     assert all(item["finding_status"] is None and item["technical_status"] == "not_run"
                for item in result["checks"])
+    assert result["document_selection"]["selected"] == {"PD": [1], "RD": [2]}
+    assert result["document_selection"]["problems"]["ID"] == "документ стадии не загружен"
     print("OK: отсутствие ключа явно оставляет все параметры невыполненными")
+
+
+def test_official_flow_rejects_a_non_domestic_model_provider():
+    result = official_pipeline.run_official_analysis(
+        [document(1, "PD"), document(2, "RD")],
+        LlmConfig(provider="anthropic", api_key="synthetic", base_url="", model=""),
+    )
+    assert result["coverage"]["completed"] == 0
+    assert all(item["completeness_status"] == "CLARIFICATION_REQUIRED"
+               for item in result["checks"])
+    assert all("GigaChat" in item["explanation"] for item in result["checks"])
+    print("OK: официальный сценарий не уходит к неотечественному провайдеру")
 
 
 def test_candidate_needs_verified_quotes_and_boxes_from_both_sides(tmp_path, monkeypatch):
@@ -96,6 +141,7 @@ def test_candidate_needs_verified_quotes_and_boxes_from_both_sides(tmp_path, mon
     assert len(check["evidence"]) == 2
     assert all(item["bbox"] and all(0 <= value <= 1 for value in item["bbox"])
                for item in check["evidence"])
+    assert [item["role"] for item in check["evidence"]] == ["expected", "actual"]
     print("OK: кандидат содержит проверенные цитаты и координаты обеих сторон")
 
 

@@ -39,23 +39,49 @@ def _active_document(stage_documents: list) -> tuple[object | None, str | None]:
         doc.id == terminals[0].id or doc.id in predecessors for doc in eligible
     ):
         return terminals[0], None
+    dated = []
+    for document in terminals:
+        raw_date = _metadata(document).get("approval_date")
+        if raw_date:
+            dated.append((str(raw_date), document))
+    if dated:
+        latest = max(item[0] for item in dated)
+        latest_documents = [document for date, document in dated if date == latest]
+        if len(latest_documents) == 1:
+            return latest_documents[0], None
     return None, "несколько редакций без однозначной цепочки замены"
 
 
-def select_current_documents(documents: Sequence) -> tuple[dict[str, object], dict[str, str]]:
-    """Выбирает редакции только по явному статусу и цепочке predecessor."""
-    selected: dict[str, object] = {}
+def select_current_documents(documents: Sequence) -> tuple[dict[str, list], dict[str, str]]:
+    """Выбирает актуальную редакцию каждого шифра, не схлопывая комплект в один том."""
+    selected: dict[str, list] = {}
     problems: dict[str, str] = {}
     for stage in ("PD", "RD", "ID"):
         candidates = [doc for doc in documents if _metadata(doc).get("stage") == stage]
         if not candidates:
             problems[stage] = "документ стадии не загружен"
             continue
-        current, problem = _active_document(candidates)
-        if current is None:
-            problems[stage] = problem or "актуальная редакция не определена"
-        else:
-            selected[stage] = current
+        groups: dict[str, list] = {}
+        for document in candidates:
+            code = str(_metadata(document).get("document_code") or "").strip()
+            groups.setdefault(code, []).append(document)
+        active = []
+        stage_problems = []
+        for code, revisions in groups.items():
+            current, problem = _active_document(revisions)
+            if current is None:
+                stage_problems.append(f"{code or 'шифр не задан'}: {problem}")
+            else:
+                active.append(current)
+        if stage_problems:
+            problems[stage] = "; ".join(stage_problems)
+        if active:
+            selected[stage] = sorted(
+                active,
+                key=lambda document: (
+                    str(_metadata(document).get("document_code") or ""), document.id
+                ),
+            )
     return selected, problems
 
 
@@ -81,7 +107,7 @@ def _source_text(stage: str, document, facts: list[dict]) -> str:
     )
 
 
-def _relevant_facts(parameters: list[dict], facts_by_stage: dict[str, list[dict]]) -> dict:
+def _relevant_facts(parameters: list[dict], facts_by_document: dict[int, list[dict]]) -> dict:
     """Ранжирует страницы по словам самой матрицы, не по объектному примеру."""
     query = " ".join(
         str(item.get(field) or "")
@@ -94,14 +120,16 @@ def _relevant_facts(parameters: list[dict], facts_by_stage: dict[str, list[dict]
     except ValueError:
         limit = 8
     selected = {}
-    for stage, facts in facts_by_stage.items():
+    for document_id, facts in facts_by_document.items():
         ranked = []
         for fact in facts:
             text = fact["text"].casefold()
             score = sum(term in text for term in terms)
-            if score:
-                ranked.append((score, -fact["page"], fact))
-        selected[stage] = [item[2] for item in sorted(ranked, reverse=True)[:limit]]
+            # Нулевое совпадение не означает нерелевантность: OCR мог исказить
+            # заголовок, а значение остаться читаемым. Поэтому здесь ранжирование,
+            # а не отсев страниц.
+            ranked.append((score, -fact["page"], fact))
+        selected[document_id] = [item[2] for item in sorted(ranked, reverse=True)[:limit]]
     return selected
 
 
@@ -109,20 +137,23 @@ def _compact_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def _verified_evidence(row: dict, selected: dict[str, object], fact_map: dict) -> list[dict]:
+def _verified_evidence(row: dict, selected: dict[str, list], fact_map: dict) -> list[dict]:
     evidence = []
     for source in row.get("evidence") or []:
         if not isinstance(source, dict):
             continue
         stage = str(source.get("stage") or "")
-        document = selected.get(stage)
-        if document is None or source.get("document_id") != document.id:
+        document = next(
+            (item for item in selected.get(stage, []) if item.id == source.get("document_id")),
+            None,
+        )
+        if document is None:
             continue
         page = source.get("page")
         quote = str(source.get("quote") or "").strip()
         if isinstance(page, bool) or not isinstance(page, int) or page < 1 or not quote:
             continue
-        page_text = fact_map.get((stage, page), "")
+        page_text = fact_map.get((document.id, page), "")
         if _compact_text(quote) not in _compact_text(page_text):
             continue
         try:
@@ -144,6 +175,7 @@ def _verified_evidence(row: dict, selected: dict[str, object], fact_map: dict) -
         evidence.append({
             "document_id": document.id, "file_id": f"D{document.id}",
             "sha256": document.digest, "stage": stage, "page": page,
+            "role": "expected" if stage == "PD" else "actual",
             "bbox": bbox, "quote": quote,
         })
     return evidence
@@ -155,9 +187,10 @@ def _empty_check(parameter: dict, completeness: str, explanation: str,
         "finding_id": f'{parameter["code"]}:matrix',
         "parameter_code": parameter["code"], "parameter_name": parameter["name"],
         "priority": parameter["priority"], "completeness_status": completeness,
+        "rule": parameter.get("trigger"), "finding_type": "matrix_difference",
         "finding_status": None, "expected_value": None, "actual_value": None,
         "explanation": explanation, "evidence": [], "technical_status": technical,
-        "review_history": [],
+        "review_history": [], "confidence": None,
     }
 
 
@@ -173,7 +206,7 @@ def _ref_evidence(
         if match is None:
             continue
         side, index_text, page_text = match.groups()
-        key = "PD" if side == "PD" else f"RD{index_text}"
+        key = f"{side}{index_text}"
         document = documents.get(key)
         if document is None:
             continue
@@ -182,6 +215,7 @@ def _ref_evidence(
             "file_id": f"D{document.id}",
             "sha256": document.digest,
             "stage": _metadata(document).get("stage"),
+            "role": "expected" if side == "PD" else "actual",
             "page": int(page_text),
             "bbox": bbox if len(refs) == 1 else None,
             "quote": quote or None,
@@ -205,10 +239,20 @@ def _graphic_check(row: dict, index: int, documents: dict[str, object]) -> dict:
     evidence = pd_evidence + rd_evidence
     complete = bool(pd_evidence and rd_evidence and all(item.get("bbox") for item in evidence))
     explanation = str(row.get("detail") or row.get("difference") or "").strip()
+    raw_confidence = row.get("confidence")
+    confidence = (
+        float(raw_confidence)
+        if isinstance(raw_confidence, int | float)
+        and not isinstance(raw_confidence, bool)
+        and 0 <= raw_confidence <= 1
+        else None
+    )
     return {
         "finding_id": f"graphic:{index}",
         "parameter_code": "GRAPHIC",
         "parameter_name": "Графическое расхождение",
+        "rule": "сопоставление графического решения ПД с РД/ИД",
+        "finding_type": "graphic_difference",
         "priority": "HIGH",
         "completeness_status": "COMPLETE" if complete else "MISSING_EVIDENCE",
         "finding_status": "CANDIDATE",
@@ -220,21 +264,24 @@ def _graphic_check(row: dict, index: int, documents: dict[str, object]) -> dict:
         "review_history": [],
         "difference_kind": row.get("difference_kind"),
         "requirement_ids": list(row.get("requirement_ids") or []),
+        "confidence": confidence,
     }
 
 
-def _graphic_analysis(selected: dict[str, object], config: LlmConfig, runner) -> dict:
-    pd_document = selected["PD"]
-    actual_documents = [selected[stage] for stage in ("RD", "ID") if stage in selected]
-    reference_map = {"PD": pd_document}
+def _graphic_analysis(selected: dict[str, list], config: LlmConfig, runner) -> dict:
+    pd_documents = selected["PD"]
+    actual_documents = [document for stage in ("RD", "ID")
+                        for document in selected.get(stage, [])]
+    reference_map = {f"PD{index}": document
+                     for index, document in enumerate(pd_documents)}
     reference_map.update({f"RD{index}": document
                           for index, document in enumerate(actual_documents)})
     try:
         result = runner(
-            [pd_document.file_path],
+            [document.file_path for document in pd_documents],
             [document.file_path for document in actual_documents],
             llm_config=config,
-            before_names=[pd_document.name],
+            before_names=[document.name for document in pd_documents],
             after_names=[document.name for document in actual_documents],
         )
     except Exception as exc:  # noqa: BLE001 — ошибка остаётся отдельным состоянием
@@ -270,6 +317,15 @@ def _batch_size() -> int:
         return 6
 
 
+def _with_document_selection(result: dict, selected: dict[str, list], problems: dict) -> dict:
+    result["document_selection"] = {
+        "selected": {stage: [document.id for document in stage_documents]
+                     for stage, stage_documents in selected.items()},
+        "problems": problems,
+    }
+    return result
+
+
 def run_official_analysis(
     documents: Sequence,
     config: LlmConfig,
@@ -291,22 +347,35 @@ def run_official_analysis(
     if "PD" not in selected or not ({"RD", "ID"} & selected.keys()):
         missing = "; ".join(f"{stage}: {reason}" for stage, reason in problems.items())
         checks = [_empty_check(item, "MISSING_EVIDENCE", missing) for item in parameters]
-        return _result(object_id, checks)
+        return _with_document_selection(_result(object_id, checks), selected, problems)
+
+    if config.provider != "gigachat":
+        checks = [_empty_check(
+            item, "CLARIFICATION_REQUIRED",
+            "официальная проверка не выполнялась: требуется отечественный провайдер GigaChat",
+        ) for item in parameters]
+        return _with_document_selection(_result(object_id, checks), selected, problems)
 
     if not config.api_key:
         checks = [_empty_check(
             item, "CLARIFICATION_REQUIRED",
             "проверка моделью не выполнялась: ключ провайдера не настроен",
         ) for item in parameters]
-        return _result(object_id, checks)
+        return _with_document_selection(_result(object_id, checks), selected, problems)
 
-    facts_by_stage = {stage: _facts(document) for stage, document in selected.items()}
-    fact_map = {(stage, fact["page"]): fact["text"]
-                for stage, facts in facts_by_stage.items() for fact in facts}
+    selected_documents = [document for stage in ("PD", "RD", "ID")
+                          for document in selected.get(stage, [])]
+    facts_by_document = {document.id: _facts(document) for document in selected_documents}
+    fact_map = {(document_id, fact["page"]): fact["text"]
+                for document_id, facts in facts_by_document.items() for fact in facts}
     digest = hashlib.sha256(
-        "|".join(f"{stage}:{selected[stage].digest}" for stage in sorted(selected)).encode()
+        "|".join(f"{_metadata(document).get('stage')}:{document.digest}"
+                 for document in selected_documents).encode()
     ).hexdigest()
     checks = []
+    selection_note = "; ".join(
+        f"{stage}: {problem}" for stage, problem in problems.items() if stage in selected
+    )
     size = _batch_size()
     batches = [(start, parameters[start:start + size]) for start in range(0, total, size)]
 
@@ -318,16 +387,20 @@ def run_official_analysis(
         rules = [{key: item[key] for key in (
             "code", "name", "unit", "source_pd", "source_rd", "source_id", "trigger"
         )} for item in batch]
-        relevant = _relevant_facts(batch, facts_by_stage)
+        relevant = _relevant_facts(batch, facts_by_document)
         source = "\n".join(
-            _source_text(stage, selected[stage], relevant[stage]) for stage in selected
+            _source_text(str(_metadata(document).get("stage")), document,
+                         relevant[document.id])
+            for document in selected_documents
         )
         prompt = f"""{UNTRUSTED_INPUT_RULE}
-Сопоставь проектные решения ПД с РД и/или ИД только для переданных параметров.
-Не проверяй нормы. Не называй технический сбой или нехватку сведений отсутствием
+ Сопоставь проектные решения ПД с РД и/или ИД только для переданных параметров.
+ Не выполняй самостоятельную проверку по нормативам и не дополняй матрицу нормами.
+ Порог из матрицы используй только как правило сравнения документов.
+ Не называй технический сбой или нехватку сведений отсутствием
 расхождения. Верни JSON: {{"checks":[{{"parameter_code":"M-001",
 "assessment":"CANDIDATE|NO_DIFFERENCE_OBSERVED|INSUFFICIENT_EVIDENCE",
-"expected_value":"...","actual_value":"...","explanation":"...",
+"expected_value":"...","actual_value":"...","explanation":"...","confidence":0.0,
 "evidence":[{{"stage":"PD|RD|ID","document_id":1,"page":1,"quote":"точная цитата"}}]}}]}}.
 Для кандидата нужны точные цитаты минимум из ПД и одной фактической стадии.
 Параметры: {json.dumps(rules, ensure_ascii=False)}
@@ -393,12 +466,27 @@ def run_official_analysis(
             if assessment == "NO_DIFFERENCE_OBSERVED":
                 explanation = (explanation + " Машинный просмотр не является подтверждённым "
                                "отсутствием нарушения.").strip()
+            if selection_note:
+                completeness = "MISSING_EVIDENCE"
+                explanation = (
+                    explanation + " Комплект содержит неразрешённую редакцию: "
+                    + selection_note
+                ).strip()
+            raw_confidence = row.get("confidence")
+            confidence = (
+                float(raw_confidence)
+                if isinstance(raw_confidence, int | float)
+                and not isinstance(raw_confidence, bool)
+                and 0 <= raw_confidence <= 1
+                else None
+            )
             checks.append({
                 **_empty_check(parameter, completeness, explanation, "completed"),
                 "finding_status": status,
                 "expected_value": str(row.get("expected_value") or "") or None,
                 "actual_value": str(row.get("actual_value") or "") or None,
                 "evidence": evidence,
+                "confidence": confidence,
             })
     graphic_analysis = {
         "status": "not_run",
@@ -410,11 +498,17 @@ def run_official_analysis(
         if progress:
             progress("Графическая сверка ПД с РД/ИД", min(len(checks), total), total)
         graphic_analysis = _graphic_analysis(selected, config, graphic_runner)
+        if selection_note and graphic_analysis["status"] == "completed":
+            graphic_analysis["status"] = "incomplete"
+            graphic_analysis["reason"] = (
+                str(graphic_analysis.get("reason") or "")
+                + " Комплект содержит неразрешённую редакцию: " + selection_note
+            ).strip()
     elif cancelled and cancelled():
         graphic_analysis["reason"] = "графическая проверка остановлена инспектором"
     if progress:
         progress("Формирование протокола", min(len(checks), total), total)
-    result = _result(object_id, checks)
+    result = _with_document_selection(_result(object_id, checks), selected, problems)
     result["graphic_analysis"] = graphic_analysis
     return result
 
