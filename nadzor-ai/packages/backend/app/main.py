@@ -41,7 +41,13 @@ from .document_composition import describe_volume, name_unread_sheets, render_co
 from .document_coverage import CoverageReport, CoverageRequest, build_coverage
 from .document_split import split_pdf
 from .level_pages import augment_room_index_with_level_fallback
-from .llm import LlmConfig, ca_bundle_description, check_llm_reachable, credentials_from_file
+from .llm import (
+    LlmConfig,
+    available_models,
+    ca_bundle_description,
+    check_llm_reachable,
+    credentials_from_file,
+)
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import (
     attach_norms,
@@ -1463,8 +1469,18 @@ def llm_check(db: Session = Depends(get_session)):
             tls=ca_bundle_description(),
         )
     ok, message = check_llm_reachable(config)
-    return schemas.LlmCheckOut(reachable=ok, provider=config.provider, message=message,
-                               tls=ca_bundle_description())
+    # Перечень моделей запрашивается только когда связь уже подтверждена:
+    # при мёртвой связи это второй вызов с заранее известным исходом.
+    models = available_models(config) if ok else None
+    return schemas.LlmCheckOut(
+        reachable=ok, provider=config.provider, message=message,
+        tls=ca_bundle_description(),
+        model=config.resolved_model(),
+        model_available=models.configured_available if models else None,
+        models_available=models.models if models else [],
+        models_message=(models.error if models else
+                        "перечень моделей не запрашивался: связи нет"),
+    )
 
 
 # Соответствие вида прогона его таблице. Один словарь вместо четырёх почти

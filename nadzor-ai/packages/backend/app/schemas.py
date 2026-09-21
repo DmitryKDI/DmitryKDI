@@ -289,6 +289,14 @@ class LlmCheckOut(BaseModel):
     # «проверка отключена» обязано быть видно всегда, а не только когда
     # что-то сломалось (Г.110).
     tls: str = ""
+    # Какая модель выбрана и есть ли она у аккаунта. Техническое задание
+    # запрещает менять модель, не сверившись с перечнем доступных, а
+    # сверяться инспектору было не с чем. `model_available` трёхзначно:
+    # None означает «перечень не получен», а не «модели нет» (Г.10).
+    model: str = ""
+    model_available: bool | None = None
+    models_available: list[str] = []
+    models_message: str = ""
 
 
 class ComplianceRunCreate(BaseModel):

@@ -142,6 +142,16 @@ export interface ProviderCheck {
   provider: string
   message: string
   tls?: string
+  /** Какая модель выбрана сейчас. */
+  model?: string
+  /**
+   * Есть ли выбранная модель у аккаунта. Намеренно трёхзначно: null —
+   * «перечень не получен», а не «модели нет»: сбой связи и недоступную
+   * модель инспектор чинит по-разному.
+   */
+  model_available?: boolean | null
+  models_available?: string[]
+  models_message?: string
 }
 
 export const officialApi = {

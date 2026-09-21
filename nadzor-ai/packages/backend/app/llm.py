@@ -293,6 +293,24 @@ def _upload_image_uncached(access_token: str, png_bytes: bytes) -> str:
     return resp.json()["id"]
 
 
+def _gigachat_credentials(api_key: str) -> tuple[str, str]:
+    """Разобрать ключ GigaChat в пару «идентификатор — секрет».
+
+    Вынесено в общую функцию, потому что тот же ключ читают и рабочий
+    вызов, и запрос перечня моделей: два разбора одного формата рано или
+    поздно разойдутся.
+    """
+    import base64
+    try:
+        decoded = base64.b64decode(api_key).decode()
+        parts = decoded.split(":", 1)
+        if len(parts) != 2:
+            raise ValueError("api_key должен быть Base64 от 'client_id:client_secret'")
+        return parts[0], parts[1]
+    except Exception as exc:
+        raise ValueError(f"Не удалось разобрать api_key: {exc}") from None
+
+
 def _gigachat_token(client_id: str, client_secret: str) -> str:
     with _TOKEN_LOCK:
         return _gigachat_token_locked(client_id, client_secret)
@@ -509,15 +527,7 @@ def _call_llm_json_uncached(
         # GigaChat 2 про: клиентские реквизиты в формате Client ID:Client Secret
         if not config.api_key:
             raise ValueError("не задан GigaChat api_key (Base64-строка Client ID:Client Secret)")
-        import base64
-        try:
-            decoded = base64.b64decode(config.api_key).decode()
-            parts = decoded.split(":", 1)
-            if len(parts) != 2:
-                raise ValueError("api_key должен быть Base64 от 'client_id:client_secret'")
-            client_id, client_secret = parts
-        except Exception as exc:
-            raise ValueError(f"Не удалось разобрать api_key: {exc}") from None
+        client_id, client_secret = _gigachat_credentials(config.api_key)
         access_token = _gigachat_token(client_id, client_secret)
         # GigaChat не поддерживает response_format и inline image_url —
         # изображения загружаются в хранилище через /files и передаются как attachments.
@@ -571,6 +581,63 @@ def _call_llm_json_uncached(
 _REACH_TIMEOUT = 45.0
 _REACH_ATTEMPTS = 3
 _REACH_RETRY_DELAY = 2.0
+
+
+@dataclass
+class ModelAvailability:
+    """Что аккаунту доступно на самом деле, а не что записано в настройках.
+
+    `configured_available` намеренно трёхзначно: True — модель в перечне,
+    False — перечня достигли и модели в нём нет, None — перечня не
+    достигли. Сбой связи не является ответом «модели нет»: одно требует
+    чинить сеть или ключ, другое — менять модель (Г.10).
+    """
+
+    models: list[str]
+    configured: str
+    configured_available: bool | None
+    error: str = ""
+
+
+def available_models(llm_config: LlmConfig | None) -> ModelAvailability:
+    """Перечень моделей, доступных аккаунту провайдера.
+
+    Техническое задание запрещает менять модель, не сверившись с этим
+    перечнем. До появления функции сверяться было не с чем: имя модели
+    задано умолчанием, и недоступность выяснялась падением первого рабочего
+    вызова — то есть после того, как инспектор уже запустил разбор тома.
+
+    Функция ничего не меняет, только сообщает: выбор модели остаётся
+    решением человека.
+    """
+    configured = llm_config.resolved_model() if llm_config else ""
+    if llm_config is None or not llm_config.api_key:
+        return ModelAvailability([], configured, None,
+                                 "ключ провайдера не задан — перечень запросить не у кого")
+    if llm_config.provider != "gigachat":
+        return ModelAvailability(
+            [], configured, None,
+            f"перечень моделей умеет запрашивать только gigachat, "
+            f"а выбран {llm_config.provider}")
+    try:
+        client_id, client_secret = _gigachat_credentials(llm_config.api_key)
+        access_token = _gigachat_token(client_id, client_secret)
+        resp = httpx.get(
+            f"{GIGACHAT_API_BASE}/v1/models",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=_REACH_TIMEOUT, verify=ca_bundle(),
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001 — причина нужна целиком, любая
+        return ModelAvailability([], configured, None, f"{type(exc).__name__}: {exc}")
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    models = [str(row.get("id")) for row in rows or []
+              if isinstance(row, dict) and row.get("id")]
+    if not models:
+        return ModelAvailability([], configured, None,
+                                 "провайдер вернул пустой перечень моделей")
+    return ModelAvailability(models, configured, configured in models)
 
 
 def check_llm_reachable(llm_config: LlmConfig | None) -> tuple[bool, str]:
