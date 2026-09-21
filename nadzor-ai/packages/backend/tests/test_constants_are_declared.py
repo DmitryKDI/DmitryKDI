@@ -67,6 +67,61 @@ DECLARED: dict[str, str] = {
     "llm._RATE_LIMIT_BASE_DELAY": BUDGET,
     "llm._RATE_LIMIT_MAX_DELAY": BUDGET,
     "yandex_ocr.YANDEX_OCR_TIMEOUT_SEC": BUDGET,
+
+    # --- бюджеты, заданные через окружение ------------------------------
+    # Все одного устройства: число в коде — умолчание, переменная окружения
+    # — способ изменить его на месте, не пересобирая программу. Вид от
+    # этого не меняется: ошибка такого числа стоит времени и денег за
+    # вызовы, но не превращается в ложный вывод о документе.
+    #
+    # Сколько кандидатных листов РД оставлять на один лист ПД: чем слабее
+    # признак совпадения, тем менее известно, который лист верный.
+    "control_pair_candidates.TOP_K_STRONG_PAIRS": BUDGET,
+    "control_pair_candidates.TOP_K_MEDIUM_PAIRS": BUDGET,
+    "control_pair_candidates.TOP_K_WEAK_PAIRS": BUDGET,
+    # Сколько пар листов и увеличений разрешено за прогон.
+    "control_pair_runtime.MAX_GRAPHICAL_CANDIDATE_PAIRS": BUDGET,
+    "control_pair_runtime.MAX_REGION_ZOOMS_PER_PAIR": BUDGET,
+    "semantic_pair_runtime.MAX_GRAPHICAL_CANDIDATE_PAIRS": BUDGET,
+    "semantic_pair_runtime.MAX_REGION_ZOOMS_PER_PAIR": BUDGET,
+    "semantic_requirement_runtime.MAX_REQUIREMENT_PAGES": BUDGET,
+    "semantic_requirement_runtime.MAX_REQUIREMENT_ZOOMS": BUDGET,
+    # Нижняя граница работы, а не истины: сколько местных проверок обязано
+    # быть сделано, ПРЕЖДЕ чем разрешено записать «различий нет». Тоже
+    # бюджет — говорит, сколько работать, — но направлен в другую сторону:
+    # занизив его, платишь не временем, а поспешным выводом, поэтому
+    # уменьшать эти два числа опаснее остальных.
+    "semantic_pair_runtime.MIN_LOCAL_CHECKS_FOR_NO_CHANGE": BUDGET,
+    "semantic_requirement_runtime.MIN_REQUIREMENT_LOCAL_CHECKS": BUDGET,
+    # Сколько вызовов зрения по зонам и по помещениям разрешено.
+    "generic_region_vision.MAX_GENERIC_REGION_CALLS": BUDGET,
+    "generic_region_vision.MAX_GENERIC_CALLS_PER_PAIR": BUDGET,
+    "generic_region_vision.MAX_GEOMETRY_REGIONS_PER_PAIR": BUDGET,
+    "generic_region_vision.MAX_PASS0_REGIONS": BUDGET,
+    "high_recall_orchestrator.MAX_FOCUSED_ROOM_CALLS": BUDGET,
+    "high_recall_orchestrator.MAX_FOCUSED_CALLS_PER_PAIR": BUDGET,
+    "high_recall_roi.MAX_FOCUSED_ROOMS_PER_PAIR": BUDGET,
+    # Сколько ходов, страниц и текста отдавать модели за один шаг разбора.
+    "stateful_investigator.MAX_TURNS_CAP": BUDGET,
+    "stateful_investigator.MIN_TURNS": BUDGET,
+    "stateful_investigator.MAX_PAGES": BUDGET,
+    "stateful_investigator.MAX_TEXT_PAGES": BUDGET,
+    "stateful_investigator.MAX_REGIONS": BUDGET,
+    "stateful_investigator.MAX_VERIFY_REFS": BUDGET,
+    "stateful_investigator.PAGE_HINT_CHARS": BUDGET,
+    "stateful_investigator.SEARCH_TEXT_CHARS": BUDGET,
+    "stateful_investigator.PAGE_TEXT_CHARS": BUDGET,
+    "conversation_llm.HISTORY_MAX_CHARS": BUDGET,
+    "conversation_llm.CONVERSATION_RETRIES": BUDGET,
+    "conversation_llm.NAV_ONLY_LIMIT": BUDGET,
+
+    # --- геометрия рендера, заданная через окружение --------------------
+    # Наибольшая сторона изображения в точках: свойство формата и
+    # читаемости картинки, а не наблюдение о конкретном документе.
+    "generic_region_vision.GENERAL_MAX_DIM": GEOMETRY,
+    "generic_region_vision.LOCAL_MAX_DIM": GEOMETRY,
+    "high_recall_roi.FOCUSED_GENERAL_MAX_DIM": GEOMETRY,
+    "high_recall_roi.FOCUSED_ROOM_MAX_DIM": GEOMETRY,
     "yandex_ocr.YANDEX_OCR_RENDER_SCALE": GEOMETRY,
     "yandex_ocr.YANDEX_OCR_MAX_PIXELS": GEOMETRY,
     "yandex_ocr.YANDEX_OCR_MAX_BYTES": GEOMETRY,
@@ -148,13 +203,21 @@ DECLARED: dict[str, str] = {
 }
 
 _CONST_RE = re.compile(r"^([A-Z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*[-+]?\d")
+# Число, спрятанное за чтением окружения, — такая же константа механики.
+# Проверка искала только литеральное присваивание, и 35 бюджетов вида
+# `NAME = _int_env("ПЕРЕМЕННАЯ", 40, 0, 400)` прошли мимо неё незаметно —
+# ровно тем способом, против которого Г.108 её и заводил: число стоит в
+# коде, вид его никем не назван. Возможность переопределить значение
+# переменной окружения не отменяет вопроса «из чего взято 40».
+_ENV_CONST_RE = re.compile(
+    r"^([A-Z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*(?:_int_env|positive_env)\s*\(")
 
 
 def _module_constants() -> dict[str, int]:
     found: dict[str, int] = {}
     for path in sorted(APP.glob("*.py")):
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            match = _CONST_RE.match(line)
+            match = _CONST_RE.match(line) or _ENV_CONST_RE.match(line)
             if match:
                 found[f"{path.stem}.{match.group(1)}"] = number
     return found
