@@ -68,20 +68,42 @@ def digest_of(facts: DocumentFacts) -> dict:
             "status": facts.ocr_status,
             "pages_total": facts.ocr_pages_total,
             "pages_done": len(facts.ocr_pages_done),
+            # Чертёжные листы считаются отдельно от бестекстовых: это разные
+            # причины распознавания и разный способ получения результата,
+            # и в отчёте они сливаться не должны.
+            "graphic_candidates": len(facts.ocr_graphic_candidates),
+            "graphic_done": len(facts.ocr_graphic_pages),
+            "graphic_skipped": len(facts.ocr_graphic_skipped),
             "message": _ocr_message(facts),
         },
     }
 
 
+def _graphic_note(facts: DocumentFacts) -> str:
+    """Отдельная фраза про чертежи: их не читали по другой причине."""
+    if not facts.ocr_graphic_candidates:
+        return ""
+    return (f"; чертёжных листов без пригодного текста: "
+            f"{len(facts.ocr_graphic_candidates)}, из них распознано "
+            f"{len(facts.ocr_graphic_pages)}")
+
+
 def _ocr_message(facts: DocumentFacts) -> str:
+    graphic = _graphic_note(facts)
     if facts.ocr_status == "not_required":
         return "на всех страницах доступен текстовый слой"
     if facts.ocr_status == "not_configured":
-        return "Yandex Vision OCR не настроен; страницы без текстового слоя не распознаны"
+        return ("Yandex Vision OCR не настроен; страницы без текстового слоя "
+                "и чертежи не распознаны" + graphic)
     if facts.ocr_status == "error":
         return (f"распознано {len(facts.ocr_pages_done)} из {facts.ocr_pages_total}; "
-                f"технических ошибок: {len(facts.ocr_errors)}")
-    return f"Yandex Vision OCR обработал страниц: {len(facts.ocr_pages_done)}"
+                f"технических ошибок: {len(facts.ocr_errors)}" + graphic)
+    if facts.ocr_status == "budget_exhausted":
+        # Лист, до которого не дошёл бюджет, не является листом без графики:
+        # это несделанная работа, и называть её надо так (Г.10).
+        return (f"бюджет распознавания исчерпан: не просмотрено чертёжных "
+                f"листов {len(facts.ocr_graphic_skipped)}" + graphic)
+    return f"Yandex Vision OCR обработал страниц: {len(facts.ocr_pages_done)}" + graphic
 
 
 def page_rows(facts: DocumentFacts) -> list[dict]:
