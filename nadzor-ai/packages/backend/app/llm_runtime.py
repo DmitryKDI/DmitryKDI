@@ -63,7 +63,7 @@ class Metrics:
             "image_uploads", "image_cache_hits", "result_cache_hits",
             "persistent_cache_hits", "text_characters", "text_batches",
             "invalid_results", "provider_queue_events", "provider_slot_acquired",
-            "provider_queue_timeouts",
+            "provider_queue_timeouts", "text_batch_narrowed", "text_batch_widened",
         ):
             data.setdefault(name, 0)
         data.setdefault("provider_queue_wait_seconds", 0.0)
@@ -84,6 +84,9 @@ class Metrics:
 
 PROCESS_METRICS = Metrics()
 _RUN_METRICS = ContextVar("llm_run_metrics", default=None)
+# Рядом с метриками намеренно: и то и другое живёт ровно столько, сколько
+# прогон. Сами подстройщики — ниже, AdaptiveTextBatch.
+_TEXT_BATCHES = ContextVar("llm_text_batches", default=None)
 
 
 def record(name: str, value=1):
@@ -97,11 +100,100 @@ def record(name: str, value=1):
 def measure_run(label: str = ""):
     metrics = Metrics()
     token = _RUN_METRICS.set(metrics)
+    # Подстройка длины пачек — часть обстоятельств этого прогона: она
+    # начинается с заявленного потолка и заканчивается вместе с прогоном.
+    batches_token = _TEXT_BATCHES.set({})
     try:
         yield metrics
     finally:
         metrics.finished = time.monotonic()
         _RUN_METRICS.reset(token)
+        _TEXT_BATCHES.reset(batches_token)
+
+
+class AdaptiveTextBatch:
+    """Сколько символов отдавать провайдеру за один текстовый вызов.
+
+    Ограниченная параллельность отвечает на вопрос «сколько вызовов
+    одновременно», а этот класс — «какой длины каждый». Оба подстраиваются
+    под одно и то же поведение провайдера, но раздельно: сузив
+    параллельность, мы всё равно отправляли бы прежнюю по объёму пачку, а
+    именно её длина упирается в лимит выходных токенов и в таймаут.
+
+    Направление подстройки несимметрично намеренно. Сужение немедленное:
+    отказ уже случился, повторять его тем же объёмом незачем. Расширение
+    только после серии успехов: один удачный ответ ещё не значит, что
+    провайдер разгрузился, и поспешное расширение вернуло бы отказ.
+
+    Потолок задаёт вызывающий и превысить его нельзя: у него свои причины
+    для этого числа — лимит контекста и читаемость цитат внутри пачки.
+    """
+
+    # Во сколько раз сужать и насколько расширять — форма подстройки, а не
+    # измеренный порог: половина как самый простой шаг вниз и вчетверо
+    # более осторожный шаг вверх.
+    NARROW_FACTOR = 2
+    WIDEN_FRACTION = 4
+    # Длина серии успехов до расширения — та же осторожность, что у
+    # AdaptiveLimiter.succeeded(): расширяемся редко, сужаемся сразу.
+    SUCCESS_STREAK = 8
+
+    def __init__(self, maximum: int):
+        self.maximum = max(1, int(maximum))
+        self.current = self.maximum
+        self.success_streak = 0
+        self.lock = threading.Lock()
+
+    def chars(self) -> int:
+        with self.lock:
+            return self.current
+
+    def refused(self) -> None:
+        """Провайдер отказал: сузить немедленно."""
+        with self.lock:
+            narrowed = max(1, self.current // self.NARROW_FACTOR)
+            changed = narrowed != self.current
+            self.current = narrowed
+            self.success_streak = 0
+        if changed:
+            # Сужение — наблюдаемое событие прогона: без него в метриках
+            # виден только итог, а не то, что пачки пришлось резать (Г.10).
+            record("text_batch_narrowed")
+
+    def succeeded(self) -> None:
+        with self.lock:
+            if self.current >= self.maximum:
+                self.success_streak = 0
+                return
+            self.success_streak += 1
+            if self.success_streak < self.SUCCESS_STREAK:
+                return
+            self.success_streak = 0
+            step = max(1, self.maximum // self.WIDEN_FRACTION)
+            self.current = min(self.maximum, self.current + step)
+        record("text_batch_widened")
+
+
+def text_batch_for(maximum: int) -> AdaptiveTextBatch:
+    """Подстройщик длины пачки для этого потолка в пределах прогона.
+
+    По одному на каждый заявленный потолок: потолки у шагов разные
+    (извлечение и текстовая сверка читают текст по-разному), и общий
+    счётчик на всех сузил бы пачку там, где отказа не было.
+
+    Вне прогона возвращается свежий подстройщик на каждый вызов: копить
+    историю не на чем, а тянуть её из чужого прогона значит менять нарезку
+    документа по причинам, к нему не относящимся.
+    """
+    key = max(1, int(maximum))
+    registry = _TEXT_BATCHES.get()
+    if registry is None:
+        return AdaptiveTextBatch(key)
+    batch = registry.get(key)
+    if batch is None:
+        batch = AdaptiveTextBatch(key)
+        registry[key] = batch
+    return batch
 
 
 class AdaptiveLimiter:

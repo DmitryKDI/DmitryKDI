@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable
 
 from .llm import LlmConfig, call_llm_json
-from .llm_runtime import parallel_map
+from .llm_runtime import parallel_map, text_batch_for
 from .requirement_registry import Requirement
 from .vision import UNTRUSTED_INPUT_RULE, known_violations_block
 
@@ -204,7 +204,13 @@ def extract_requirements_llm(
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Requirement]:
     """Извлекает требования независимыми пачками с сохранением привязки."""
-    chunks = _chunk_text_facts(text_facts, max_chars_per_call)
+    # Длину пачки задаёт не только вызывающий: подстройщик помнит, чем
+    # кончились предыдущие вызовы с тем же потолком в этом прогоне, и после
+    # отказов режет объём. Пачки нарезаются один раз на документ, поэтому
+    # сужение действует со следующей нарезки — на соседнем шаге разбора и
+    # на следующем томе, а не в середине уже начатой очереди.
+    sizer = text_batch_for(max_chars_per_call)
+    chunks = _chunk_text_facts(text_facts, sizer.chars())
     total = len(chunks)
     if on_progress:
         on_progress(0, total)
@@ -240,12 +246,14 @@ def extract_requirements_llm(
         parallel_map(_call_prepared, prepared), start=1
     ):
         if error is not None:
+            sizer.refused()
             if on_chunk_error:
                 on_chunk_error(chunk[0]["page"] if chunk else -1, error)
             if on_progress:
                 on_progress(done, total)
             continue
 
+        sizer.succeeded()
         if on_norms:
             found = result.get("norms")
             if isinstance(found, list) and found:
