@@ -1,35 +1,122 @@
 name: nadzor-ai
 
-# Г.85 — старый бэкенд (`packages/api`, порт 8000) удалён, вместе с ним ушли
-# Postgres (реальный движок использует SQLite `data/nadzor.db`), миграции
-# alembic (`db/`, они импортировали `api.models`) и профиль `local-llm` с vLLM
-# (он обслуживал политику суверенности `packages/llm_core`). Осталось ровно
-# то, что реально работает: движок сравнения документов и интерфейс к нему.
+# Закрытый контур без Интернета. Один запуск: `docker compose up -d`.
+#
+# Три сервиса:
+#   llm      — локальная модель (vLLM, OpenAI-совместимый API) на GPU. Веса
+#              монтируются с диска (./models), в образ не зашиты и из сети
+#              не скачиваются: HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE.
+#   backend  — движок разбора (REST/JSON, порт 8010), локальный OCR Tesseract.
+#   frontend — интерфейс инспектора (порт 5173), проксирует /backend/.
+#
+# Сети. `contour` помечена internal: у контейнеров только в ней нет выхода
+# наружу вообще. Модель живёт только там. Backend подключён ещё к `edge`,
+# потому что порт API публикуется для проверки; его обращения наружу
+# запрещены в коде (app/llm.py: разрешены только адреса контура).
+#
+# NVIDIA-драйвер ставится на хост и в образы не входит; CUDA runtime входит
+# в образ vLLM. Требуется NVIDIA Container Toolkit.
+
+x-offline-env: &offline-env
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_DATASETS_OFFLINE: "1"
+  VLLM_NO_USAGE_STATS: "1"
+  DO_NOT_TRACK: "1"
+
 services:
+  llm:
+    # Версия закреплена. scripts/offline/prepare_bundle.sh скачивает образ
+    # ПО ДАЙДЖЕСТУ и записывает его ID в манифест, load_bundle.sh сверяет ID
+    # после загрузки. Здесь — тег: ссылка по дайджесту после `docker load`
+    # без сети разрешается не на всех версиях Docker.
+    image: vllm/vllm-openai:v0.28.0
+    entrypoint: ["vllm", "serve"]
+    command:
+      - /models/${NADZOR_MODEL_DIR:-Qwen2.5-VL-7B-Instruct}
+      - --served-model-name
+      - ${NADZOR_LOCAL_LLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "${NADZOR_LLM_MAX_MODEL_LEN:-32768}"
+      - --gpu-memory-utilization
+      - "${NADZOR_LLM_GPU_MEMORY:-0.90}"
+      # Сравнение листов передаёт до четырёх изображений в одном вызове;
+      # запас — на повторный кроп. Число пикселей ограничено, чтобы четыре
+      # полноформатных листа укладывались в окно контекста модели.
+      - --limit-mm-per-prompt
+      - '{"image": 6}'
+      - --mm-processor-kwargs
+      - '{"max_pixels": 3211264}'
+      - --seed
+      - "0"
+    environment:
+      <<: *offline-env
+    volumes:
+      - ./models:/models:ro
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks: [contour]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # Загрузка весов в память GPU занимает минуты.
+      start_period: 900s
+    restart: unless-stopped
+
   backend:
     build:
       context: .
       dockerfile: docker/backend.Dockerfile
+    image: nadzor-ai/backend:local
     environment:
+      <<: *offline-env
       PYTHONPATH: /app/packages/backend:/app
-      # Ключ провайдера не зашивается в образ — передаётся окружением при
-      # запуске. GIGACHAT_CA_BUNDLE=false нужен на машине без НУЦ Минцифры
-      # в доверенном наборе ОС (Г.77/78).
-      GIGACHAT_CREDENTIALS: ${GIGACHAT_CREDENTIALS:-}
-      GIGACHAT_CA_BUNDLE: ${GIGACHAT_CA_BUNDLE:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NADZOR_LOCAL_LLM_URL: http://llm:8000
+      NADZOR_LOCAL_LLM_MODEL: ${NADZOR_LOCAL_LLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
+      NADZOR_LLM_CONCURRENCY: ${NADZOR_LLM_CONCURRENCY:-8}
+      NADZOR_OCR_LANGUAGE: ${NADZOR_OCR_LANGUAGE:-rus+eng}
     volumes:
-      # База и загруженные документы переживают пересборку образа.
+      # База, загруженные документы и результаты переживают пересборку образа.
       - ./data:/app/data
+    depends_on:
+      llm:
+        condition: service_healthy
+    networks: [contour, edge]
     ports:
       - "8010:8010"
+    restart: unless-stopped
 
   frontend:
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
+    image: nadzor-ai/frontend:local
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
+    networks: [edge]
     ports:
       - "5173:5173"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5173/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  contour:
+    internal: true
+  edge: {}

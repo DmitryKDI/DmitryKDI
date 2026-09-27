@@ -1,18 +1,26 @@
-# Базовый образ фиксируется по дайджесту в продуктивной сборке.
+# Базовый образ закреплён выпуском ОС: пересборка не должна молча менять
+# версию Tesseract и путь к его словарям.
 # Целевая операционная система — Astra Linux SE; здесь используется
 # совместимый образ для демонстрационного контура.
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app/packages/backend:/app
+    PYTHONPATH=/app/packages/backend:/app \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 WORKDIR /app
 
+# Tesseract — локальное распознавание страниц без текстового слоя: внешние
+# OCR-сервисы в закрытом контуре недопустимы. Русский словарь обязателен:
+# без него кириллица «распознаётся» латиницей, что хуже честного отказа.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-dejavu-core libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+        tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -f "$TESSDATA_PREFIX/rus.traineddata" \
+    && test -f "$TESSDATA_PREFIX/eng.traineddata"
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -20,6 +28,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY packages/backend ./packages/backend
 COPY scripts ./scripts
 COPY data/known_violations.json ./data/known_violations.json
+COPY data/parameter_catalog_v1_1.json ./data/parameter_catalog_v1_1.json
+
+# Сборка падает, если распознавание в образе не настроено: иначе стенд
+# поднялся бы и отвечал «движок распознавания не установлен» на каждом скане.
+RUN python -c "from app.local_ocr import load_config; assert load_config() is not None, 'Tesseract rus+eng не настроен'"
 
 # Приложение работает от непривилегированного пользователя.
 RUN useradd --create-home --uid 10001 nadzor && chown -R nadzor:nadzor /app

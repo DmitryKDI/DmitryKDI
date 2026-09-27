@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Запуск системы одной командой. Поднимает два процесса:
 #
-#   8010  packages/backend  — движок разбора документов (Anthropic/GigaChat)
+#   8010  packages/backend  — движок разбора документов (локальная модель)
 #   5173  frontend          — интерфейс (vite.config.ts проксирует на 8010)
 #
 # Г.85: старый сервер на порту 8000 (packages/api — дашборд, журналы, аудит)
@@ -32,11 +32,9 @@ trap cleanup EXIT INT TERM
 
 ./scripts/setup.sh
 
-# Г.71 — провайдер ЛЛМ сокращён до Anthropic/GigaChat, ключ вводится в
-# интерфейсе (Новый анализ -> Настроить ИИ) и хранится в БД (Settings), не
-# читается из .env. Файл .env, если есть, всё ещё загружается — он может
-# нести GIGACHAT_API_BASE/GIGACHAT_SCOPE/GIGACHAT_CA_BUNDLE (см. app/llm.py),
-# но сам API-ключ туда не идёт.
+# Файл .env, если есть, загружается: он задаёт адрес и имя локальной модели
+# (NADZOR_LOCAL_LLM_URL, NADZOR_LOCAL_LLM_MODEL) и бюджеты прогона.
+# Облачных провайдеров и ключей нет.
 if [ -f "$ROOT/.env" ]; then
   set -a
   # shellcheck disable=SC1091

@@ -10,3 +10,7 @@ data/demo/generated/
 data/*.db
 docs/
 tests/
+models/
+bundle/
+packages/backend/uploads/
+packages/backend/nadzor.db
