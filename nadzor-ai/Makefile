@@ -25,7 +25,7 @@ openapi:         ## Выгрузить схему API (OpenAPI 3.0) в docs/open
 down:            ## Остановить и удалить контейнеры
 	docker compose down -v
 
-test:            ## Прогнать тесты с покрытием
+test:            ## Прогнать тесты движка
 	PYTHONPATH=.:packages/backend .venv/bin/python -m pytest packages/backend/tests -q
 
 check-generic:   ## Проверить, что код не заточен под конкретный пример (раздел 0, п.8)

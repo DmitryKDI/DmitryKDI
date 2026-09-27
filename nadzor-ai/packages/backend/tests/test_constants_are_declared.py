@@ -48,12 +48,10 @@ DECLARED: dict[str, str] = {
     "classification.MAX_STAMP_SCAN_PAGES": BUDGET,
     "classification.TITLE_PAGE_MAX_BLOCKS": BUDGET,
     "classification.STAGE_SCAN_PAGES": BUDGET,
-    "compliance.DEFAULT_MAX_VISUAL_PAGES": BUDGET,
     # Сколько примеров показывать в выжимке и какими кусками читать файл ради
     # отпечатка: сколько работы и сколько строк читается взглядом, а не что
     # считать правдой. Версия разборщика — тоже не порог: это номер, по
     # которому прежний разбор перестаёт подходить (Г.114).
-    "facts_digest.EXAMPLES": BUDGET,
     "facts_store.FACTS_VERSION": BUDGET,
     "facts_store._CHUNK": BUDGET,
     "file_store.SQLITE_BUSY_TIMEOUT_SEC": BUDGET,
@@ -114,15 +112,8 @@ DECLARED: dict[str, str] = {
     # --- геометрия рендера, заданная через окружение --------------------
     # Наибольшая сторона изображения в точках: свойство формата и
     # читаемости картинки, а не наблюдение о конкретном документе.
-    "review_dialog.HISTORY_LIMIT": BUDGET,
     "vision.VISION_MAX_DIM": BUDGET,
-    "stamp_vision.RENDER_SCALE": BUDGET,
-    "visual_prefilter._GRID": BUDGET,
     "semantic_contract.REGIONS_PER_CALL": BUDGET,
-    "routing_graph._GRID_CELL": BUDGET,
-    "routing_graph._MAX_PHRASE_WORDS": BUDGET,
-    "section_profile.HINT_MIN_DOCUMENTS": BUDGET,
-    "triangulation.DEFAULT_MIN_SOURCES": BUDGET,
     "llm_runtime.DEFAULT_CACHE_ENTRIES": BUDGET,
     "llm_runtime.DEFAULT_CLASSIFICATION_TOKENS": BUDGET,
     "llm_runtime.DEFAULT_CONCURRENCY": BUDGET,
@@ -147,16 +138,6 @@ DECLARED: dict[str, str] = {
     "classification.DRAWING_FORMAT_LONG_SIDE_MM": GEOMETRY,
     "stamp.STAMP_LEFT": GEOMETRY,
     "stamp.STAMP_TOP": GEOMETRY,
-    "stamp_vision.CROP_LEFT": GEOMETRY,
-    "stamp_vision.CROP_TOP": GEOMETRY,
-    "routing_graph.DEFAULT_SNAP": GEOMETRY,
-    "routing_graph.DEFAULT_TOUCH_TOLERANCE": GEOMETRY,
-    "routing_graph.DEFAULT_JOIN_RADIUS": GEOMETRY,
-    "routing_graph.DEFAULT_ROOM_MARGIN": GEOMETRY,
-    "visual_prefilter._HOT_ZONE_PADDING": GEOMETRY,
-    "visual_prefilter._SAMPLES": GEOMETRY,
-    "visual_prefilter._ALIGNMENT_MARGIN": GEOMETRY,
-    "visual_prefilter._COMPARE_MARGIN": GEOMETRY,
     "semantic_contract.BBOX_AREA_MIN": GEOMETRY,
     "semantic_contract.BBOX_AREA_MAX": GEOMETRY,
     "semantic_contract.BBOX_MAX_OVERLAP": GEOMETRY,
@@ -164,7 +145,6 @@ DECLARED: dict[str, str] = {
     # --- ПОДОГНАНО под наблюдение: честный n и почему не выводится ---
     "classification.MIN_CODE_SCORE": f"{FITTED}, n=1",
     "classification.DRAWING_MIN_VECTOR_PATHS": f"{FITTED}, n=1",
-    "document_composition.POOR_TEXT_LAYER_CHARS": f"{FITTED}, n=1",
     "material._MIN_CATALOG_PAGES": f"{FITTED}, n=1",
     "material._MIN_PRICE_TOKENS": f"{FITTED}, n=1",
     "matching.MIN_PAGE_MATCH_SIMILARITY": f"{FITTED}, n=1",
@@ -175,17 +155,6 @@ DECLARED: dict[str, str] = {
     "matching.EQUIPMENT_ANCHOR_FLOOR": f"{FITTED}, n=1",
     "diffing.MIN_SIMILARITY": f"{FITTED}, n=1",
     "diffing.MAX_SIMILARITY": f"{FITTED}, n=1",
-    "norms_registry.MIN_DESIGNATIONS": f"{FITTED}, n=1",
-    "room_entity_check.DEFAULT_TABLE_PAGE_MAX_TEXT_LEN": f"{FITTED}, n=2",
-    "table_registry.DEFAULT_MAX_TABLE_PAGE_TEXT_LEN": f"{FITTED}, n=2",
-    "router.TEXT_DIFF_THRESHOLD": f"{FITTED}, n=1",
-    "routing_graph.DEFAULT_MIN_CHAIN_NODES": f"{FITTED}, n=1",
-    "section_profile.MIN_TERM_REPEATS": f"{FITTED}, n=1",
-    "visual_prefilter.DIFF_RATIO_THRESHOLD": f"{FITTED}, n=1",
-    "visual_prefilter._CELL_DARKNESS_THRESHOLD": f"{FITTED}, n=1",
-    "visual_prefilter._LOCAL_MIN_CHANGED_CELLS": f"{FITTED}, n=1",
-    "visual_prefilter._LOCAL_MAX_AREA": f"{FITTED}, n=1",
-    "visual_prefilter._HOT_ZONE_MAX_FRACTION": f"{FITTED}, n=1",
     "semantic_contract.SAFE_COVERAGE_MIN": f"{FITTED}, n=1",
 }
 

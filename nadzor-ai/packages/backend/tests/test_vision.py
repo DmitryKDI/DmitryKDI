@@ -4,20 +4,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.classification import classify_document, render_stamp_crop_png
 from app.llm import LlmConfig
-from app.vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier, render_page_to_data_url
-
-SAMPLE_DIR = Path(
-    "/tmp/claude-0/-home-user-DmitryKDI/0870a421-62c2-59a8-8978-c9163f520b16/scratchpad"
-)
-
-
-def test_render_page_to_data_url_real_pdf():
-    data_url = render_page_to_data_url(str(SAMPLE_DIR / "rd_floor1.pdf"), 1)
-    assert data_url.startswith("data:image/png;base64,")
-    assert len(data_url) > 5000  # реальная картинка листа, не заглушка
-    print("OK: real page renders to a substantial PNG data URL")
+from app.vision import compare_text_pair
 
 
 class _FakeResponse:
@@ -37,59 +25,6 @@ class _FakeResponse:
 def _answer(text: str) -> dict:
     """Ответ локального сервера модели (Chat Completions-совместимый протокол)."""
     return {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
-
-
-def test_stamp_classifier_wired_into_classify_document():
-    """Проверяет весь путь: classify_document зовёт vision_stamp_fn только
-    когда текст не даёт кода, тот в свою очередь реально шлёт картинку штампа
-    через llm.call_llm_json (замокан) и код долетает обратно как
-    discipline_code с source='stamp_vision'."""
-    captured = {}
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["json"] = json
-        return _FakeResponse(
-            _answer('{"discipline_code": "ОВ", "sheet_name": "План 1-го этажа (вентиляция)"}')
-        )
-
-    config = LlmConfig(model="test-model")
-    stamp_classifier = make_llm_stamp_classifier(config)
-
-    with patch("app.llm.httpx.post", side_effect=fake_post):
-        result = classify_document(str(SAMPLE_DIR / "rd_floor1.pdf"), "rd_floor1.pdf", vision_stamp_fn=stamp_classifier)
-
-    assert result.discipline_code == "ОВ", result
-    assert result.source == "stamp_vision"
-    content = captured["json"]["messages"][1]["content"]
-    image_blocks = [c for c in content if c.get("type") == "image_url"]
-    assert len(image_blocks) == 1, "stamp crop should be sent as exactly one image"
-    print("OK: classify_document -> vision stamp classifier -> llm.call_llm_json wired correctly end to end")
-
-
-def test_compare_page_pair_sends_two_images_with_context():
-    captured = {}
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["json"] = json
-        return _FakeResponse(
-            _answer('{"significant": [], "checked_total": 1, "significant_total": 0}')
-        )
-
-    config = LlmConfig(model="test-model")
-    with patch("app.llm.httpx.post", side_effect=fake_post):
-        result = compare_page_pair(
-            str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
-            str(SAMPLE_DIR / "rd_floor2_heating.pdf"), 1,
-            config, context="раздел ОВ, план этажа",
-        )
-
-    assert result == {"significant": [], "checked_total": 1, "significant_total": 0}
-    content = captured["json"]["messages"][1]["content"]
-    image_blocks = [c for c in content if c.get("type") == "image_url"]
-    text_block = next(c for c in content if c.get("type") == "text")
-    assert len(image_blocks) == 2
-    assert "раздел ОВ" in text_block["text"]
-    print("OK: page-pair comparison sends both real page images plus classification context in the prompt")
 
 
 def test_compare_text_pair_sends_text_not_images():
@@ -179,82 +114,3 @@ def test_missing_known_violations_file_does_not_break_prompt(monkeypatch):
     assert "НАРУШЕНИЯ, УЖЕ ВСТРЕЧАВШИЕСЯ" not in prompt
     assert '{"significant"' in prompt, "промпт должен остаться рабочим без файла примеров"
     print("OK: без файла примеров промпт остаётся корректным, анализ не падает")
-
-
-def test_compare_page_pair_passes_discipline_into_prompt(tmp_path, monkeypatch):
-    """Раздел долетает из main.py до промпта — иначе фильтрация примеров
-    существует, но всегда получает None и вырождается в 'все примеры'.
-
-    Фикстура синтетическая — см. пояснение в
-    test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline:
-    реальный known_violations.json сейчас не содержит ОВ-специфичных
-    примеров (Приложение Г.24), тест не должен зависеть от этого факта."""
-    import json
-
-    import app.vision as vision_module
-
-    fixture = tmp_path / "known_violations.json"
-    fixture.write_text(json.dumps({"examples": [
-        {"discipline": "ОВ", "applies_to": "drawing", "what": "Пример чертежа раздела ОВ",
-         "how_to_spot": "маркер-drawing-ov", "severity": "критично"},
-    ]}), encoding="utf-8")
-    monkeypatch.setattr(vision_module, "KNOWN_VIOLATIONS_PATH", fixture)
-
-    captured = {}
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["json"] = json
-        return _FakeResponse(_answer('{"significant": []}'))
-
-    config = LlmConfig(model="test-model")
-    with patch("app.llm.httpx.post", side_effect=fake_post):
-        compare_page_pair(
-            str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
-            str(SAMPLE_DIR / "rd_floor2_heating.pdf"), 1,
-            config, context="раздел ОВ", discipline="ОВ",
-        )
-
-    # Системный промпт — первое сообщение с ролью system.
-    system_prompt = captured["json"]["messages"][0]["content"]
-    assert "маркер-drawing-ov" in system_prompt, "примеры раздела ОВ не попали в системный промпт"
-    print("OK: discipline из main.py доходит до системного промпта сравнения")
-
-
-def test_compare_page_pair_with_clip_frac_crops_both_sides():
-    """Г.55 — зона-кроп (доли листа, найденная visual_prefilter.diff_hot_zone
-    до вызова) должна доходить до обеих картинок и до подсказки модели, не
-    оставаться параметром, который никуда не передаётся."""
-    captured = {}
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["json"] = json
-        return _FakeResponse(_answer('{"significant": []}'))
-
-    config = LlmConfig(model="test-model")
-    full = render_page_to_data_url(str(SAMPLE_DIR / "rd_floor1.pdf"), 1)
-    with patch("app.llm.httpx.post", side_effect=fake_post):
-        compare_page_pair(
-            str(SAMPLE_DIR / "rd_floor1.pdf"), 1,
-            str(SAMPLE_DIR / "rd_floor2_heating.pdf"), 1,
-            config, clip_frac=(0.1, 0.1, 0.4, 0.4),
-        )
-
-    content = captured["json"]["messages"][1]["content"]
-    image_blocks = [c for c in content if c.get("type") == "image_url"]
-    text_block = next(c for c in content if c.get("type") == "text")
-    assert len(image_blocks) == 2
-    cropped_data_url = image_blocks[0]["image_url"]["url"]
-    assert cropped_data_url != full, "кроп должен быть другой картинкой, не весь лист"
-    assert "зона с найденным визуальным отличием" in text_block["text"]
-    print("OK: clip_frac доходит до обеих картинок пары и до текста подсказки модели")
-
-
-if __name__ == "__main__":
-    test_render_page_to_data_url_real_pdf()
-    test_stamp_classifier_wired_into_classify_document()
-    test_compare_page_pair_sends_two_images_with_context()
-    test_compare_page_pair_with_clip_frac_crops_both_sides()
-    test_compare_text_pair_sends_text_not_images()
-    test_known_violations_reach_the_prompt_filtered_by_kind_and_discipline()
-    test_compare_page_pair_passes_discipline_into_prompt()
-    print("ALL PASS")

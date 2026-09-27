@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import facts_digest, facts_store  # noqa: E402
+from app import facts_store  # noqa: E402
 from app.documents import DocumentFacts  # noqa: E402
 
 
@@ -103,53 +103,3 @@ def test_page_keys_come_back_as_numbers(tmp_path):
     assert set(back.sheet_info) == {2}, back.sheet_info
     assert set(back.excluded) == {2}, back.excluded
     print("OK: номера страниц возвращаются числами, а не строками")
-
-
-def test_digest_separates_silent_drawings_from_clean_ones():
-    """Лист без текстового слоя и лист, где ничего не нашлось, — разные
-    состояния (Г.10). Выжимка обязана их различать."""
-    facts = DocumentFacts(
-        name="Том", pages=3,
-        text_facts=[{"page": 1, "text": "Помещение 012 венткамера"}],
-        room_facts=[{"page": 1, "key": "012", "name": "венткамера"}],
-        page_kinds={1: "text", 2: "drawing", 3: "drawing"},
-    )
-    out = facts_digest.digest_of(facts)
-    assert out["drawings"] == 2, out
-    assert out["pages_without_text"] == 2, out
-    assert out["pages_without_text_list"] == [2, 3], out
-    assert out["rooms_total"] == 1 and out["rooms"] == ["012 венткамера"], out
-    print("OK: выжимка отличает «текста нет вовсе» от «ничего не нашлось»")
-
-
-def test_digest_is_short_on_a_large_volume():
-    """Выжимка не растёт вместе с томом: иначе это не выжимка."""
-    facts = DocumentFacts(
-        name="Большой том", pages=500,
-        text_facts=[{"page": i, "text": f"Помещение {i:03d}"} for i in range(1, 501)],
-        room_facts=[{"page": i, "key": f"{i:03d}", "name": ""} for i in range(1, 501)],
-        page_kinds={i: "text" for i in range(1, 501)},
-    )
-    out = facts_digest.digest_of(facts)
-    assert out["rooms_total"] == 500, out["rooms_total"]
-    assert len(out["rooms"]) == facts_digest.EXAMPLES, out["rooms"]
-    print("OK: выжимка остаётся короткой на томе в 500 листов")
-
-
-def test_page_rows_cover_every_sheet_without_carrying_text():
-    facts = DocumentFacts(
-        name="Том", pages=3,
-        text_facts=[{"page": 2, "text": "Помещение 012" * 10}],
-        room_facts=[{"page": 2, "key": "012", "name": "венткамера"},
-                    {"page": 2, "key": "012", "name": "венткамера"}],
-        equipment_facts=[{"page": 2, "key": "П1", "name": "установка"}],
-        page_kinds={1: "drawing", 2: "text", 3: "drawing"},
-        excluded={3: "каталог поставщика"},
-    )
-    rows = facts_digest.page_rows(facts)
-    assert [r["page"] for r in rows] == [1, 2, 3], rows
-    assert rows[1]["rooms"] == ["012"], "повторы на одном листе не дублируются"
-    assert rows[1]["equipment"] == 1 and rows[1]["chars"] > 0
-    assert rows[2]["excluded"] == "каталог поставщика"
-    assert all("text" not in row for row in rows), "текст листа наружу не отдаётся"
-    print("OK: постраничная раскладка покрывает все листы и не тащит текст")

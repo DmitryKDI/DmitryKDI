@@ -66,7 +66,7 @@ ok "python3 $(python3 -V 2>&1 | cut -d' ' -f2)"
 NPM="$(pick_npm)"; NODE="$(pick_node)"
 ok "node $("$NODE" -v)"
 
-say "1/4 Библиотеки Python"
+say "1/3 Библиотеки Python"
 if stamp_current python requirements.txt; then
   ok "уже установлены"
 else
@@ -77,7 +77,7 @@ else
   ok "установлены"
 fi
 
-say "2/4 Библиотеки интерфейса"
+say "2/3 Библиотеки интерфейса"
 # node_modules мог быть удалён вручную — проверяем и метку, и саму папку.
 if stamp_current npm frontend/package.json && [ -d frontend/node_modules ]; then
   ok "уже установлены"
@@ -87,18 +87,11 @@ else
   ok "установлены"
 fi
 
-say "3/4 Демонстрационный комплект документации"
-if [ -f data/demo/generated/manifest.json ]; then
-  ok "уже сформирован"
-else
-  ok "сформирован"
-fi
-
 # Модель ИИ работает только локально: Chat Completions-совместимый сервер внутри
 # контура (docker compose, сервис llm). Облачных провайдеров нет, ключей
 # нет. Без запущенного сервера модели прогон честно сообщает «модель не
 # отвечает», а не выдаёт пустой результат за разбор (Г.10).
-say "4/4 Модель ИИ"
+say "3/3 Модель ИИ"
 ok "локальная модель: ${NADZOR_LOCAL_LLM_URL:-http://llm:8000} (запуск — docker compose up -d)"
 
 printf '\n%s\n' "${GREEN}${BOLD}Готово к запуску.${OFF}"

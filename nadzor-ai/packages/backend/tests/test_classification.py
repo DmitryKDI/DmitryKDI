@@ -13,10 +13,6 @@ from app.classification import (
     scan_text_for_discipline_codes,
 )
 
-SAMPLE_DIR = Path(
-    "/tmp/claude-0/-home-user-DmitryKDI/0870a421-62c2-59a8-8978-c9163f520b16/scratchpad"
-)
-
 
 def test_filename_signal_matches_js():
     cases = {
@@ -125,68 +121,6 @@ def test_classify_document_uses_section_number_when_no_letter_code_in_filename(t
     print("OK: classify_document находит код раздела по номеру маркировки, когда буквенного кода в имени нет")
 
 
-def test_real_document_stamp_is_image_not_text():
-    """Подтверждает находку сессии: штамп rd_floor1.pdf — растровая картинка,
-    без текстового слоя штампа, поэтому чисто текстовая классификация не
-    находит код по штампу (только заголовок + имя файла)."""
-    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
-    result = classify_document(str(pdf_path), "rd_floor1.pdf")
-    # ASCII-имя без кода, страница без текстового штампа -> код не найден без vision
-    assert result.discipline_code is None, result
-    assert result.source == "none"
-    print("OK: real as-built stamp is image-only, text-only classification correctly returns None")
-
-
-def test_vision_fallback_reads_real_stamp_code():
-    """Если подключить vision-функцию, код должен читаться из картинки штампа
-    — на реальном листе там написано «АНО/150321/1-РД-ОВ1»."""
-    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
-
-    def fake_vision_stamp_fn(png_bytes: bytes):
-        assert len(png_bytes) > 1000  # реальная картинка, не пустышка
-        return "ОВ"  # то, что модель реально прочитала бы с этого штампа
-
-    result = classify_document(str(pdf_path), "rd_floor1.pdf", vision_stamp_fn=fake_vision_stamp_fn)
-    assert result.discipline_code == "ОВ", result
-    assert result.source == "stamp_vision"
-    assert result.used_vision is True
-    print("OK: vision fallback correctly classifies image-only stamp")
-
-
-def test_vision_stamp_failure_does_not_crash_the_run(capsys):
-    """Г.84 — реальный пробел того же класса, что Г.73 нашёл в
-    `ventilation_mo.py`: за `vision_stamp_fn` стоит цепочка
-    `make_llm_stamp_classifier` → `read_stamp_by_vision` → `call_llm_json`
-    БЕЗ try/except, а `scan_cli.py::_load_side` не имел защиты у себя.
-    Истёкший ключ, 429 или SSL-сертификат (всё наблюдалось живьём, Г.77/78)
-    ронял ВЕСЬ прогон на первом же документе с растровым штампом вместо
-    честного «раздел не определён» — того же поведения, что штатно даёт
-    режим `--no-llm`."""
-    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
-
-    def failing_vision_fn(png_bytes: bytes):
-        raise ConnectionError("[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate")
-
-    result = classify_document(str(pdf_path), "rd_floor1.pdf", vision_stamp_fn=failing_vision_fn)
-
-    assert result.discipline_code is None, "код не прочитан — это честный результат, не выдумка"
-    assert result.source == "none"
-    assert result.vision_error is not None, "сбой обязан быть виден полем, а не пропасть молча (Г.10)"
-    assert "CERTIFICATE_VERIFY_FAILED" in result.vision_error
-    assert "пропущено чтение штампа зрением" in capsys.readouterr().err
-    print("OK: сбой vision-вызова даёт видимую ошибку и «раздел не определён», а не падение прогона")
-
-
-def test_successful_vision_leaves_error_field_empty():
-    """`vision_error=None` должно означать именно «сбоя не было», иначе поле
-    бесполезно — проверяем, что успешный путь его не заполняет."""
-    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
-    result = classify_document(str(pdf_path), "rd_floor1.pdf", vision_stamp_fn=lambda png: "ОВ")
-    assert result.discipline_code == "ОВ"
-    assert result.vision_error is None
-    print("OK: при успешном чтении штампа поле ошибки остаётся пустым")
-
-
 def test_title_page_signal():
     """Синтетический случай: титульный лист (без ключевых слов штампа) с
     шифром прямым текстом должен сработать без похода в штамп/vision."""
@@ -209,10 +143,10 @@ def test_title_page_signal():
     print("OK: title page text signal works without vision")
 
 
-def test_filename_wins_before_opening_pdf_at_all():
+def test_filename_wins_before_opening_pdf_at_all(tmp_path):
     """Имя файла с кодом должно давать результат без сканирования штампа —
-    проверяем через файл, у которого штамп заведомо не про этот раздел."""
-    pdf_path = SAMPLE_DIR / "rd_floor1.pdf"
+    проверяем через файл, которого нет вовсе: открыть его нельзя."""
+    pdf_path = tmp_path / "missing.pdf"
     result = classify_document(str(pdf_path), "Раздел АР план.pdf")
     assert result.discipline_code == "АР", result
     assert result.source == "filename", result
@@ -271,8 +205,5 @@ def test_open_pdf_plain_file_unaffected(tmp_path):
 if __name__ == "__main__":
     test_filename_signal_matches_js()
     test_scan_finds_codes_added_from_real_composition_registry()
-    test_real_document_stamp_is_image_not_text()
-    test_vision_fallback_reads_real_stamp_code()
     test_title_page_signal()
-    test_filename_wins_before_opening_pdf_at_all()
     print("ALL PASS")

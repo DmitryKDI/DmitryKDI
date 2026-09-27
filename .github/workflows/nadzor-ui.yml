@@ -49,55 +49,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
-      - name: Compile active runtime modules
-        run: |
-          python -m py_compile app/conversation_llm.py
-          python -m py_compile app/inspector_memory.py
-          python -m py_compile app/stateful_investigator.py
-          python -m py_compile app/lean_analysis_runtime.py
-          python -m py_compile app/triangulated_pipeline.py
-          python -m py_compile app/semantic_contract.py
-          python -m py_compile app/facts_store.py
-          python -m py_compile app/llm.py
-          python -m py_compile app/llm_runtime.py
-          python -m py_compile app/local_ocr.py
-          python -m py_compile app/protocol.py
-          python -m py_compile app/protocol_export.py
-          python -m py_compile app/api_v1.py
-          python -m py_compile app/document_convert.py
-          python -m py_compile app/openapi30.py
-          python -m py_compile app/run_logger.py
-      - name: Run active runtime regression tests
-        run: >-
-          pytest -q
-          tests/test_conversation_resilience.py
-          tests/test_stateful_investigator.py
-          tests/test_inspector_memory.py
-          tests/test_semantic_contract.py
-          tests/test_triangulated_pipeline.py
-          tests/test_triangulated_synthesis_budget.py
-          tests/test_compliance.py
-          tests/test_compliance_sheet_fallback.py
-          tests/test_requirement_check_unified.py
-          tests/test_requirement_text_verify.py
-          tests/test_run_logger.py
-          tests/test_run_logger_snapshots.py
-          tests/test_llm_runtime.py
-          tests/test_llm_runtime_queue_metrics.py
-          tests/test_facts_store_concurrency.py
-          tests/test_matching.py
-          tests/test_matching_confidence.py
-          tests/test_vision_grounding.py
-          tests/test_blind_runtime.py
-          tests/test_llm.py
-          tests/test_model_availability.py
-          tests/test_local_ocr.py
-          tests/test_graphic_ocr_pipeline.py
-          tests/test_official_pipeline.py
-          tests/test_process_contract.py
-          tests/test_protocol.py
-          tests/test_api_v1.py
-          tests/test_official_api.py
-          tests/test_document_convert.py
-          tests/test_incremental_reload.py
-          tests/test_openapi30.py
+      - name: Compile backend modules
+        run: python -m compileall -q app
+      - name: Run backend tests
+        run: pytest -q tests

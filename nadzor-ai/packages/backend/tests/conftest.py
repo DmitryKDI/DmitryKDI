@@ -20,20 +20,3 @@ def isolate_local_environment(monkeypatch):
                  "NADZOR_LLM_JSON_MODE", "NADZOR_LLM_CONCURRENCY"):
         monkeypatch.delenv(name, raising=False)
     yield
-
-
-@pytest.fixture(autouse=True)
-def isolate_run_logs(tmp_path_factory, monkeypatch):
-    """Логи прогонов тестов — во временный каталог, а не в рабочий.
-
-    Фоновые задачи пишут диагностику при каждом прогоне, и без изоляции
-    каталог `data/run_logs` рабочей копии заполняется тестовыми снимками.
-    Дальше их читает разбор диагностики — и тестовый мусор выглядит как
-    настоящие прогоны инспектора.
-    """
-    from app import run_logger
-
-    root = tmp_path_factory.mktemp("run_logs")
-    monkeypatch.setattr(run_logger, "RUN_LOGS_DIR", root, raising=False)
-    monkeypatch.setattr(run_logger, "TASK_LOGS_DIR", root / "tasks", raising=False)
-    yield

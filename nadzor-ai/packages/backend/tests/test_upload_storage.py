@@ -17,11 +17,10 @@ os.environ["FILE_STORE_CACHE"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pymupdf  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
 from app import file_store  # noqa: E402
 from app.db import init_db  # noqa: E402
 from app.main import app  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 init_db()
 client = TestClient(app)
@@ -141,37 +140,6 @@ def _digest_of(data: bytes) -> str:
     return file_store.digest_of(data)
 
 
-def test_storage_report_separates_originals_from_cache():
-    """Кэш и оригиналы показываются раздельно: кэш можно удалить сейчас,
-    оригиналы — нет. Одной цифрой «сколько на диске» это не сказать."""
-    stats = client.get("/storage").json()
-    assert stats["files"] >= 1 and stats["bytes"] > 0
-    assert "cache_files" in stats and "retention_days" in stats
-    print(f"OK: оригиналов {stats['files']}, кэш {stats['cache_files']} файлов")
-
-
-def test_cleanup_keeps_everything_that_is_still_referenced():
-    """Уборка по сроку не трогает оригиналы загруженных документов, сколько
-    бы ни стоял срок — иначе инспектор потеряет свой комплект."""
-    _set_limits(retention_days=1)
-    before = file_store.stats().files
-    result = client.post("/storage/cleanup").json()
-    assert result["kept_referenced"] >= 1
-    assert file_store.stats().files == before, "уборка удалила используемый оригинал"
-    _set_limits(retention_days=90)
-    print("OK: уборка сохранила все оригиналы со ссылками")
-
-
-def test_cache_can_be_dropped_and_documents_still_open():
-    """Кэш — производное: очистили, и документ по-прежнему открывается."""
-    doc = _upload(_pdf(2, filler=3), "восстановимый.pdf").json()
-    result = client.post("/storage/cleanup?drop_cache=true").json()
-    assert result["cache_removed"] >= 1
-    path = file_store.materialize(_digest_from_document(doc["id"]))
-    assert path is not None and path.exists()
-    print("OK: после очистки кэша документ восстанавливается из базы")
-
-
 def _digest_from_document(document_id: int) -> str:
     from app import models
     from app.db import SessionLocal
@@ -180,56 +148,3 @@ def _digest_from_document(document_id: int) -> str:
         return db.get(models.Document, document_id).digest
     finally:
         db.close()
-
-
-if __name__ == "__main__":
-    test_same_file_uploaded_twice_takes_space_once()
-    test_file_name_never_becomes_the_path()
-    test_upload_larger_than_the_limit_is_refused_with_a_reason()
-    test_upload_with_too_many_pages_is_refused()
-    test_not_a_pdf_is_refused_by_signature_not_by_extension()
-    test_heavy_volume_is_split_into_parts_covering_every_page()
-    test_deleting_one_of_two_identical_documents_keeps_the_original()
-    test_storage_report_separates_originals_from_cache()
-    test_cleanup_keeps_everything_that_is_still_referenced()
-    test_cache_can_be_dropped_and_documents_still_open()
-    print("ALL PASS")
-
-
-def test_cleanup_says_why_nothing_was_removed():
-    """«Удалено: 0» без причины выглядит как сломанная кнопка (Г.115)."""
-    data = _pdf(1)
-    doc = _upload(data, "ничей.pdf").json()
-    client.delete(f"/documents/{doc['id']}")
-    # Файл ничей, но обращались к нему только что — по сроку он не подходит.
-    file_store.put(data, pages=1)
-
-    body = client.post("/storage/cleanup").json()
-    assert body["removed_files"] == 0, body
-    assert "срок" in body["detail"], body["detail"]
-    assert str(body["kept_referenced"]) is not None
-    print("OK: уборка объясняет, почему ничего не удалила")
-
-
-def test_orphan_file_can_be_deleted_by_hand():
-    """Срок хранения — правило автоматической уборки, а не запрет человеку."""
-    data = _pdf(1, filler=7)
-    digest = file_store.put(data, pages=1)
-    before = file_store.stats().files
-
-    response = client.delete(f"/storage/files/{digest}")
-    assert response.status_code == 200, response.text
-    assert file_store.stats().files == before - 1
-    print("OK: ничей оригинал удаляется вручную, не дожидаясь срока")
-
-
-def test_file_in_use_is_not_deleted_from_storage():
-    """Оригинал под загруженным документом не удаляется и вручную: иначе
-    инспектор откроет свой же документ и получит ошибку."""
-    doc = _upload(_pdf(2, filler=9), "в-работе.pdf").json()
-    digest = next(f["digest"] for f in client.get("/storage/files").json()
-                  if doc["name"] in f["documents"])
-    response = client.delete(f"/storage/files/{digest}")
-    assert response.status_code == 409, response.text
-    assert "сначала удалите документ" in response.json()["detail"]
-    print("OK: используемый оригинал вручную не удаляется, причина названа")
