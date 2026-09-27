@@ -162,7 +162,7 @@ _LOCAL_TRANSPORT = "внутренняя сеть контура, внешних
 # листов по изображению штампа ЗА ОДИН ПРОГОН (не на каждый том: инспектор
 # нажимает кнопку на комплект, и потолок должен относиться к тому, что он
 # нажал). Ноль (умолчание) — шаг не выполняется вовсе.
-# Задаётся администратором при развёртывании, как и ключ (Г.94): у рабочей
+# Задаётся администратором при развёртывании (Г.94): у рабочей
 # документации это порядка сотни вызовов на том, и такое решение принимает не
 # инспектор нажатием кнопки, а тот, кто отвечает за бюджет обращений.
 SHEET_NAME_VISION_BUDGET_ENV = "SHEET_NAME_VISION_BUDGET"
@@ -758,7 +758,7 @@ def _run_pd(run_id: int) -> None:
     Промпт, модель, разбивка на пачки и правила выжимки зашиты в код и
     сюда не передаются: их не надо знать, вводить и присылать.
 
-    Связь с провайдером проверяется ДО разбора (Г.91): разбор тома — это
+    Связь с моделью проверяется ДО разбора (Г.91): разбор тома — это
     десятки вызовов и минуты, а при оборванной связи каждый молча вернул
     бы пустой результат, и прогон закончился бы правдоподобной пустой
     сводкой. Это ловушка Г.77, уже стоившая проекту трёх раундов правок
@@ -1122,10 +1122,8 @@ def _run_compliance(run_id: int) -> None:
         run.stage = "проверяю связь с ИИ"
         run.units_total = len(requirements)
         db.commit()
-        # Раньше называлось has_key: наличие ключа облака. У локальной модели
-        # ключа нет, и проверка по нему молча выключала бы сверку целиком.
-        has_key = model_configured(config)
-        if has_key:
+        has_model = model_configured(config)
+        if has_model:
             reachable, why = check_llm_reachable(config)
             if not reachable:
                 run.status = "error"
@@ -1137,7 +1135,7 @@ def _run_compliance(run_id: int) -> None:
         run.stage = "строю реестр помещений рабочей документации"
         db.commit()
         sources = [(d.file_path, d.name, _manual_section(d)) for _, d in rd_docs]
-        room_index = _rd_room_index(sources) if has_key else {}
+        room_index = _rd_room_index(sources) if has_model else {}
         run.stage = "сверяю требования с рабочей документацией"
         db.commit()
 
@@ -1174,10 +1172,10 @@ def _run_compliance(run_id: int) -> None:
             display_names={d.file_path: d.name for _, d in rd_docs},
             rd_text_facts=rd_text_facts,
             rd_sources=sources,
-            config=config if has_key else None,
+            config=config if has_model else None,
             llm_verify=(lambda reqs, facts, cfg: verify_general_requirements_llm(reqs, facts, cfg))
-            if has_key else None,
-            vision_check=check_requirement_on_page if has_key else None,
+            if has_model else None,
+            vision_check=check_requirement_on_page if has_model else None,
             room_index=room_index,
         )
         # Отчёт склеивается из трёх частей в порядке пользы инспектору:
@@ -1591,16 +1589,10 @@ def get_settings(db: Session = Depends(get_session)):
 
 
 def _settings_out(row: "models.Settings", db: Session) -> schemas.SettingsOut:
-    """Настройки БЕЗ ключа: наружу идёт только факт, задан он или нет.
-
-    Ключ считается заданным и тогда, когда он приходит из переменной
-    окружения при развёртывании (Г.94) — инспектор не должен видеть
-    «не задан» только потому, что поле в базе пустое.
-    """
+    """Настройки для интерфейса: действующая модель и лимиты хранения."""
     out = schemas.SettingsOut.model_validate(row)
     # Показывается модель, которой прогон реально пойдёт, а не строка базы:
-    # в базе, заведённой до закрытого контура, остались облачные значения,
-    # и показать их значило бы описывать не ту систему, что работает.
+    # модель выбирает окружение развёртывания.
     effective = local_config()
     out.provider = effective.provider
     out.model = effective.resolved_model()
