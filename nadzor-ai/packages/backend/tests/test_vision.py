@@ -35,7 +35,7 @@ class _FakeResponse:
 
 
 def _answer(text: str) -> dict:
-    """Ответ локального сервера модели (OpenAI-совместимый протокол)."""
+    """Ответ локального сервера модели (Chat Completions-совместимый протокол)."""
     return {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
 
 

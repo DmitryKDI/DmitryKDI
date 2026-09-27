@@ -2,85 +2,45 @@
 
 ## Этап
 
-Активная задача снова **ПД -> РД/ИД blind semantic comparison**.
-Старое описание «РД нет, только ООС/извлечение требований» больше не является
-текущей задачей.
+Сдача конкурсной задачи №10: проверка комплекта ПД → РД → ИД по матрице
+параметров ТЗ. Запуск — офлайн, в закрытом контуре, одной командой
+`docker compose up`; модель только локальная (vLLM + Qwen2.5-VL-7B-Instruct),
+внешних API нет.
 
-## Главное архитектурное решение
-
-Прежний lean runtime был формально проще Python-кодом, но фактически заставлял
-модель решать слишком много маленьких задач без общей памяти: scope,
-inventory, region discovery, bbox, finding contract и verification шли
-раздельными вызовами.
-
-Новый active path:
+## Рабочий путь
 
 ```text
-requirements + document map
--> stateful local-model investigator
--> search/open/zoom tools
--> self-review
--> independent verifier
+POST /api/v1/documents/upload (файлы + реестр) -> process_id
+-> разбор и OCR (Tesseract, качество страницы OK / LOW_QUALITY / ABSTAIN)
+-> выбор актуальных редакций по шифру
+-> матрица параметров (official_pipeline) + графическая сверка
+-> протокол: 5 таблиц, карточки доказательств, версии
+-> решения инспектора -> finalize -> выгрузка JSON / XML / DOCX / PDF
 ```
 
-Один investigator сохраняет историю разговора между ходами.
-
-## Почему это важно
-
-В свежем прогоне до перехода на stateful architecture было:
-- fresh inference;
-- 214 requests / 214 responses;
-- 0 provider errors;
-- 0 semantic cache hits;
-- но внешний review всё равно оценивал local coverage как недостаточное,
-  no-candidate trust как low и absence risk как high.
-
-Следовательно, главным ограничением была уже не сеть/кэш, а механика
-взаимодействия с моделью.
-
-## Обучение на ошибках
-
-Локальная `inspector_memory.sqlite3` хранит только generalized lessons.
-Blind benchmark всегда запускается с `NADZOR_BLIND_BENCHMARK=1` и не видит
-эту память. Experienced/demo mode может использовать lessons.
-
-Это позволяет говорить модели «ты ошибся, надо было проверить вот так»,
-обобщать урок и использовать его дальше, не выдавая повторный benchmark за
-blind 3/3.
-
-## Постоянные правила
-
-- Не подгонять runtime под эталон.
-- Не коммитить реальные документы/сырые runtime data.
-- `main` не трогать.
-- Error != no finding.
-- Not observed != absent.
-- Routing/search != evidence.
-- Multi-room requirement требует покрытия всех относящихся к выводу зон.
-- Investigator proposal != confirmed finding.
-- Перед finish обязателен self-review.
-- Финальный finding должен пройти independent verifier.
+Интерфейс — один экран «Проверка ПД–РД–ИД» (`frontend/src/pages/OfficialAnalysis.tsx`).
 
 ## Главные файлы
 
-- `packages/backend/app/stateful_investigator.py`
-- `packages/backend/app/conversation_llm.py`
-- `packages/backend/app/inspector_memory.py`
-- `packages/backend/app/lean_analysis_runtime.py`
-- `scripts/teach_investigator.py`
-- `scripts/autoloop.py`
+- `packages/backend/app/api_v1.py` — внешний контракт `/api/v1`
+- `packages/backend/app/official_api.py`, `official_pipeline.py` — процесс и сверка по матрице
+- `packages/backend/app/protocol.py`, `protocol_export.py` — протокол и выгрузки
+- `packages/backend/app/llm.py` — единственная точка обращения к модели, запрет внешней сети
+- `packages/backend/app/local_ocr.py`, `document_convert.py` — OCR и приём DOCX/XML
+- `scripts/smoke/` — проверка запуска без GPU (`make smoke`)
 
-Legacy runtime сохраняется только для regression/forensics.
+## Постоянные правила
 
-## Следующий критерий прогресса
+- Техническая ошибка ≠ «нарушений нет» (Г.10).
+- Не наблюдали ≠ отсутствует; кандидат ≠ подтверждённое нарушение.
+- Подтверждает нарушение только инспектор.
+- Не подгонять механику под один комплект; числовые константы — в
+  `test_constants_are_declared.py`.
+- Реальные документы и реквизиты объектов в git не попадают.
 
-После каждого изменения нужен fresh blind run и внешний evaluator.
-Смотреть не только число findings, но и:
-- turns used;
-- action pattern;
-- pages inspected;
-- zoom regions;
-- self_reviewed;
-- turn budget exhausted;
-- candidates / verifier confirmed / unresolved;
-- provider/verifier errors.
+## Какие пункты Приложения Г применимы сейчас
+
+Г.8–Г.12 (честность пропусков и слепая проверка), Г.21, Г.24, Г.42, Г.88–Г.89,
+Г.102–Г.108 (обобщённость кода), Г.109 (хранилище оригиналов), Г.118–Г.121
+(подбор страниц, цитаты, покрытие, редакции). Остальные — журнал прошлых
+этапов, открывать по необходимости.

@@ -30,3 +30,4 @@ data/run_logs/
 # контекст сборки не идут. Поставляются отдельно (scripts/offline).
 models/
 bundle/
+*.tsbuildinfo

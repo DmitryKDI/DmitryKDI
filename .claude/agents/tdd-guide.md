@@ -183,9 +183,9 @@ jest.mock('@/lib/redis', () => ({
 }))
 ```
 
-### Mock OpenAI
+### Mock external API
 ```typescript
-jest.mock('@/lib/openai', () => ({
+jest.mock('@/lib/external-api', () => ({
   generateEmbedding: jest.fn(() => Promise.resolve(
     new Array(1536).fill(0.1)
   ))

@@ -195,7 +195,7 @@ components/Button.tsx (with variant prop)
 - Privy authentication code
 - Solana wallet integration
 - Supabase database clients
-- Redis/OpenAI semantic search
+- Redis/внешний API semantic search
 - Market trading logic
 - Real-time subscription handlers
 
@@ -207,7 +207,7 @@ components/Button.tsx (with variant prop)
 - Unused TypeScript types/interfaces
 
 **ALWAYS VERIFY:**
-- Semantic search functionality (lib/redis.js, lib/openai.js)
+- Semantic search functionality (lib/redis.js, lib/external-api.js)
 - Market data fetching (api/markets/*, api/market/[slug]/)
 - Authentication flows (HeaderWallet.tsx, UserMenu.tsx)
 - Trading functionality (Meteora SDK integration)

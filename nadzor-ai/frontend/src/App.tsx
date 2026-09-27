@@ -11,9 +11,6 @@ export default function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<OfficialAnalysis />} />
-        <Route path="/documents" element={<Navigate to="/" replace />} />
-        <Route path="/analysis/new" element={<Navigate to="/" replace />} />
-        <Route path="/parsed" element={<Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>

@@ -362,7 +362,7 @@ name = user.name
  * @param query - Natural language search query
  * @param limit - Maximum number of results (default: 10)
  * @returns Array of markets sorted by similarity score
- * @throws {Error} If OpenAI API fails or Redis unavailable
+ * @throws {Error} If external API fails or Redis unavailable
  *
  * @example
  * ```typescript
@@ -451,7 +451,7 @@ test('calculates similarity correctly', () => {
 ```typescript
 // ✅ GOOD: Descriptive test names
 test('returns empty array when no markets match query', () => { })
-test('throws error when OpenAI API key is missing', () => { })
+test('throws error when external API key is missing', () => { })
 test('falls back to substring search when Redis unavailable', () => { })
 
 // ❌ BAD: Vague test names

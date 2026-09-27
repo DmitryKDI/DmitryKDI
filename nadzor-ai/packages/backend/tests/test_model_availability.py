@@ -72,7 +72,7 @@ def test_external_server_address_is_refused(monkeypatch):
     monkeypatch.setattr(llm.httpx, "get", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("внешний вызов состоялся")))
 
-    result = llm.available_models(llm.LlmConfig(base_url="https://api.giga.chat"))
+    result = llm.available_models(llm.LlmConfig(base_url="https://llm.example.com"))
 
     assert result.configured_available is None
     assert "запрещено" in result.error

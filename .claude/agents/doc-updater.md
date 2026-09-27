@@ -194,7 +194,7 @@ API Route → Supabase Query → Redis (cache) → Response
 
 - Supabase - PostgreSQL database
 - Redis Stack - Vector search
-- OpenAI - Embeddings
+- External API - Embeddings
 ```
 
 ### Integrations Codemap (docs/CODEMAPS/integrations.md)
@@ -213,7 +213,7 @@ API Route → Supabase Query → Redis (cache) → Response
 - Real-time subscriptions
 - Row Level Security
 
-## Search (Redis + OpenAI)
+## Search (Redis + внешний API)
 - Vector embeddings (text-embedding-ada-002)
 - Semantic search (KNN)
 - Fallback to substring search
@@ -241,7 +241,7 @@ npm install
 
 # Environment variables
 cp .env.example .env.local
-# Fill in: OPENAI_API_KEY, REDIS_URL, etc.
+# Fill in: EXTERNAL_API_KEY, REDIS_URL, etc.
 
 # Development
 npm run dev

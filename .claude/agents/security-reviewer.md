@@ -170,11 +170,11 @@ API Security:
 - [ ] No sensitive data in URLs
 - [ ] Proper HTTP methods (GET safe, POST/PUT/DELETE idempotent)
 
-Search Security (Redis + OpenAI):
+Search Security (Redis + внешний API):
 - [ ] Redis connection uses TLS
-- [ ] OpenAI API key server-side only
+- [ ] external API key server-side only
 - [ ] Search queries sanitized
-- [ ] No PII sent to OpenAI
+- [ ] No PII sent to external APIs
 - [ ] Rate limiting on search endpoints
 - [ ] Redis AUTH enabled
 ```
@@ -190,9 +190,9 @@ const password = "admin123"
 const token = "ghp_xxxxxxxxxxxx"
 
 // ✅ CORRECT: Environment variables
-const apiKey = process.env.OPENAI_API_KEY
+const apiKey = process.env.EXTERNAL_API_KEY
 if (!apiKey) {
-  throw new Error('OPENAI_API_KEY not configured')
+  throw new Error('EXTERNAL_API_KEY not configured')
 }
 ```
 

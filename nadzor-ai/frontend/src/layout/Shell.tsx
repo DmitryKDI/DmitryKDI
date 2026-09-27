@@ -1,7 +1,6 @@
 import { type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useApp } from '../store'
-import { Toasts } from '../components/ui'
 
 const MENU = [
   { to: '/', label: 'Проверка ПД–РД–ИД', icon: '▤' },
@@ -90,7 +89,6 @@ export default function Shell({ children }: { children: ReactNode }) {
         <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
       </div>
 
-      <Toasts />
     </div>
   )
 }

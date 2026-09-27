@@ -105,6 +105,6 @@ assuming it's wired, don't infer from this file alone (Г.11).
   placeholders — if you need a fixture for local testing, use `nadzor_sample/`
   (the repo's own committed demo dataset) or clearly synthetic data, never
   content that looks like a real inspection finding.
-- Don't add real GigaChat/provider API keys anywhere in code, commits, or logs.
+- Don't add real API keys anywhere in code, commits, or logs.
 - Don't remove the CRM shell navigation structure — the user confirmed keeping
   it, only simplifying what's inside each screen.

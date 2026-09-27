@@ -59,7 +59,7 @@ def test_extract_json_object_invalid_returns_none():
 
 
 def test_request_goes_to_the_local_server_in_its_protocol(monkeypatch):
-    """Протокол OpenAI-совместимого сервера: system и user отдельными ролями."""
+    """Протокол Chat Completions-совместимого сервера: system и user отдельными ролями."""
     captured = {}
 
     def fake_post(url, **kwargs):
@@ -126,9 +126,8 @@ def test_non_local_provider_setting_cannot_reach_the_network(monkeypatch):
 
 
 @pytest.mark.parametrize("url", [
-    "https://api.giga.chat/v1/chat/completions",
-    "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText",
-    "https://api.anthropic.com/v1/messages",
+    "https://llm.example.com/v1/chat/completions",
+    "https://ocr.example.net/v1/recognize",
     "https://8.8.8.8/v1/chat/completions",
 ])
 def test_external_address_is_refused_before_sending(monkeypatch, url):

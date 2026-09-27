@@ -1,6 +1,6 @@
 """Сквозной тест через настоящий FastAPI-роут: загрузка реальных файлов,
 запуск анализа, проверка находок — с замоканной LLM (и для чтения штампа, и
-для сравнения листов), чтобы не требовать реального Ollama в CI/песочнице."""
+для сравнения листов), чтобы не требовать сервера модели в CI."""
 import sys
 import time
 from pathlib import Path
@@ -43,7 +43,7 @@ class _FakeResponse:
 
 
 def fake_llm_post(url, json=None, headers=None, timeout=None):
-    # Протокол локального сервера модели (OpenAI-совместимый): системный
+    # Протокол локального сервера модели (Chat Completions-совместимый): системный
     # промпт — первое сообщение, ответ — choices[0].message.content.
     system = json["messages"][0]["content"]
     if "штамп" in system:

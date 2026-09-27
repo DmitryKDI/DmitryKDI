@@ -3,7 +3,7 @@ name: nadzor-ai
 # Закрытый контур без Интернета. Один запуск: `docker compose up -d`.
 #
 # Три сервиса:
-#   llm      — локальная модель (vLLM, OpenAI-совместимый API) на GPU. Веса
+#   llm      — локальная модель (vLLM, Chat Completions-совместимый API) на GPU. Веса
 #              монтируются с диска (./models), в образ не зашиты и из сети
 #              не скачиваются: HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE.
 #   backend  — движок разбора (REST/JSON, порт 8010), локальный OCR Tesseract.

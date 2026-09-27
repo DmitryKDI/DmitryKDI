@@ -90,31 +90,13 @@ DECLARED: dict[str, str] = {
     #
     # Сколько кандидатных листов РД оставлять на один лист ПД: чем слабее
     # признак совпадения, тем менее известно, который лист верный.
-    "control_pair_candidates.TOP_K_STRONG_PAIRS": BUDGET,
-    "control_pair_candidates.TOP_K_MEDIUM_PAIRS": BUDGET,
-    "control_pair_candidates.TOP_K_WEAK_PAIRS": BUDGET,
     # Сколько пар листов и увеличений разрешено за прогон.
-    "control_pair_runtime.MAX_GRAPHICAL_CANDIDATE_PAIRS": BUDGET,
-    "control_pair_runtime.MAX_REGION_ZOOMS_PER_PAIR": BUDGET,
-    "semantic_pair_runtime.MAX_GRAPHICAL_CANDIDATE_PAIRS": BUDGET,
-    "semantic_pair_runtime.MAX_REGION_ZOOMS_PER_PAIR": BUDGET,
-    "semantic_requirement_runtime.MAX_REQUIREMENT_PAGES": BUDGET,
-    "semantic_requirement_runtime.MAX_REQUIREMENT_ZOOMS": BUDGET,
     # Нижняя граница работы, а не истины: сколько местных проверок обязано
     # быть сделано, ПРЕЖДЕ чем разрешено записать «различий нет». Тоже
     # бюджет — говорит, сколько работать, — но направлен в другую сторону:
     # занизив его, платишь не временем, а поспешным выводом, поэтому
     # уменьшать эти два числа опаснее остальных.
-    "semantic_pair_runtime.MIN_LOCAL_CHECKS_FOR_NO_CHANGE": BUDGET,
-    "semantic_requirement_runtime.MIN_REQUIREMENT_LOCAL_CHECKS": BUDGET,
     # Сколько вызовов зрения по зонам и по помещениям разрешено.
-    "generic_region_vision.MAX_GENERIC_REGION_CALLS": BUDGET,
-    "generic_region_vision.MAX_GENERIC_CALLS_PER_PAIR": BUDGET,
-    "generic_region_vision.MAX_GEOMETRY_REGIONS_PER_PAIR": BUDGET,
-    "generic_region_vision.MAX_PASS0_REGIONS": BUDGET,
-    "high_recall_orchestrator.MAX_FOCUSED_ROOM_CALLS": BUDGET,
-    "high_recall_orchestrator.MAX_FOCUSED_CALLS_PER_PAIR": BUDGET,
-    "high_recall_roi.MAX_FOCUSED_ROOMS_PER_PAIR": BUDGET,
     # Сколько ходов, страниц и текста отдавать модели за один шаг разбора.
     "stateful_investigator.MAX_TURNS_CAP": BUDGET,
     "stateful_investigator.MIN_TURNS": BUDGET,
@@ -132,15 +114,10 @@ DECLARED: dict[str, str] = {
     # --- геометрия рендера, заданная через окружение --------------------
     # Наибольшая сторона изображения в точках: свойство формата и
     # читаемости картинки, а не наблюдение о конкретном документе.
-    "generic_region_vision.GENERAL_MAX_DIM": GEOMETRY,
-    "generic_region_vision.LOCAL_MAX_DIM": GEOMETRY,
-    "high_recall_roi.FOCUSED_GENERAL_MAX_DIM": GEOMETRY,
-    "high_recall_roi.FOCUSED_ROOM_MAX_DIM": GEOMETRY,
     "review_dialog.HISTORY_LIMIT": BUDGET,
     "vision.VISION_MAX_DIM": BUDGET,
     "stamp_vision.RENDER_SCALE": BUDGET,
     "visual_prefilter._GRID": BUDGET,
-    "high_recall_orchestrator.FOCUSED_ROOMS_PER_CALL": BUDGET,
     "semantic_contract.REGIONS_PER_CALL": BUDGET,
     "routing_graph._GRID_CELL": BUDGET,
     "routing_graph._MAX_PHRASE_WORDS": BUDGET,
@@ -156,7 +133,6 @@ DECLARED: dict[str, str] = {
     # Число строк задано официальной Матрицей 1.1, порог IoU — официальным
     # правилом приёмки геометрии доказательства, а не наблюдением на объекте.
     "parameter_catalog.PARAMETER_COUNT": GEOMETRY,
-    "official_evaluator.MIN_BBOX_IOU": GEOMETRY,
 
     # --- свойства языка и формы документа ---
     "requirement_registry._ROOM_KEYWORD_MIN_WORD_LEN": LANGUAGE,

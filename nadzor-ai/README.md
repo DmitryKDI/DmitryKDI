@@ -187,7 +187,7 @@ JSON/XML/DOCX/PDF → пакет для ИАИС «РиН». Сценарий и
 
 ## Разработка
 
-Нужны Python 3.11+ и Node.js 22. Модель — любой OpenAI-совместимый сервер внутри
+Нужны Python 3.11+ и Node.js 22. Модель — любой Chat Completions-совместимый сервер внутри
 контура (`NADZOR_LOCAL_LLM_URL`, `NADZOR_LOCAL_LLM_MODEL`, см. `.env.example`).
 
 ```bash

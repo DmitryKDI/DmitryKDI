@@ -61,7 +61,7 @@ export default defineConfig({
       manifest: {
         name: 'НАДЗОР.ИИ — предиктивный строительный надзор',
         short_name: 'НАДЗОР.ИИ',
-        description: 'Карта внимания инспектора и оценка гипотез на объекте',
+        description: 'Сверка ПД, РД и ИД по матрице параметров с решениями инспектора',
         theme_color: '#5B5BD6',
         background_color: '#F5F6F8',
         display: 'standalone',
