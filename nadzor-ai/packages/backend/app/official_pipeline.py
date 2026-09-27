@@ -19,6 +19,7 @@ from .lean_analysis_runtime import run_lean_analysis
 from .llm import LlmConfig, call_llm_json, model_configured
 from .llm_runtime import parallel_map
 from .parameter_catalog import CATALOG_VERSION, list_parameters
+from .protocol import numeric_delta
 from .vision import UNTRUSTED_INPUT_RULE
 
 
@@ -255,7 +256,11 @@ def _graphic_check(row: dict, index: int, documents: dict[str, object]) -> dict:
         "finding_type": "graphic_difference",
         "priority": "HIGH",
         "completeness_status": "COMPLETE" if complete else "MISSING_EVIDENCE",
-        "finding_status": "CANDIDATE",
+        # Гипотеза вне матрицы становится кандидатом только с источниками и
+        # координатами с обеих сторон; без них это SUSPICION (ТЗ 9.5): её
+        # видно, но в число расхождений и в обучение она не входит.
+        "finding_status": "CANDIDATE" if complete else "SUSPICION",
+        "discovery_method": "GRAPHIC_COMPARISON",
         "expected_value": str(row.get("pd_observation") or "") or None,
         "actual_value": str(row.get("rd_observation") or "") or None,
         "explanation": explanation or "Графический кандидат требует проверки инспектором.",
@@ -394,10 +399,13 @@ def run_official_analysis(
  Порог из матрицы используй только как правило сравнения документов.
  Не называй технический сбой или нехватку сведений отсутствием
 расхождения. Верни JSON: {{"checks":[{{"parameter_code":"M-001",
-"assessment":"CANDIDATE|NO_DIFFERENCE_OBSERVED|INSUFFICIENT_EVIDENCE",
+"assessment":"CANDIDATE|NO_DIFFERENCE_OBSERVED|INSUFFICIENT_EVIDENCE|NOT_APPLICABLE",
 "expected_value":"...","actual_value":"...","explanation":"...","confidence":0.0,
+"approved_change_ref":"NONE или ссылка на ведомость/лист согласованного изменения",
 "evidence":[{{"stage":"PD|RD|ID","document_id":1,"page":1,"quote":"точная цитата"}}]}}]}}.
 Для кандидата нужны точные цитаты минимум из ПД и одной фактической стадии.
+NOT_APPLICABLE — только если документы прямо показывают, что параметр к
+объекту не относится; в explanation укажи основание с цитатой.
 Параметры: {json.dumps(rules, ensure_ascii=False)}
 Документы:
 {source}"""
@@ -454,15 +462,26 @@ def run_official_analysis(
                 status = "CANDIDATE"
             elif assessment == "INSUFFICIENT_EVIDENCE":
                 completeness, status = "MISSING_EVIDENCE", None
+            elif assessment == "NOT_APPLICABLE" and evidence:
+                # Неприменимость — утверждение, и у него обязано быть основание
+                # в документе; без цитаты это просто «не нашли» (Г.10).
+                completeness, status = "NOT_APPLICABLE", None
             else:
                 completeness = "COMPLETE" if evidence_complete else "MISSING_EVIDENCE"
-                status = None
+                # Сопоставимые источники проверены с обеих сторон, расхождения
+                # нет: предварительный NEGATIVE_VERIFIED (ТЗ 9.2). Без
+                # доказательств с обеих сторон статуса нет вовсе.
+                status = ("NEGATIVE_VERIFIED"
+                          if assessment == "NO_DIFFERENCE_OBSERVED" and evidence_complete
+                          else None)
             explanation = str(row.get("explanation") or "")
             if assessment == "NO_DIFFERENCE_OBSERVED":
                 explanation = (explanation + " Машинный просмотр не является подтверждённым "
                                "отсутствием нарушения.").strip()
             if selection_note:
-                completeness = "MISSING_EVIDENCE"
+                completeness = "CLARIFICATION_REQUIRED"
+                if status == "NEGATIVE_VERIFIED":
+                    status = None
                 explanation = (
                     explanation + " Комплект содержит неразрешённую редакцию: "
                     + selection_note
@@ -482,6 +501,13 @@ def run_official_analysis(
                 "actual_value": str(row.get("actual_value") or "") or None,
                 "evidence": evidence,
                 "confidence": confidence,
+                "delta": numeric_delta(row.get("expected_value"), row.get("actual_value")),
+                "approved_change_ref": str(row.get("approved_change_ref") or "NONE"),
+                "stages_compared": sorted(stages),
+                # Стадия, которой нет в комплекте, при парном сравнении
+                # неприменима к этой проверке, а не «пропущена» (ТЗ 9.2).
+                "stages_not_applicable": sorted(
+                    stage for stage in ("RD", "ID") if stage not in selected),
             })
     graphic_analysis = {
         "status": "not_run",
@@ -521,3 +547,18 @@ def _result(object_id: str, checks: list[dict]) -> dict:
             "performance": {},
         },
     }
+
+
+def clarification_result(object_id: str, reason: str, *, include_medium: bool = False) -> dict:
+    """Результат, где проверка не начиналась: каждый параметр — уточнение.
+
+    Нужен, когда вход не позволяет выбрать сопоставимые редакции вовсе
+    (например, пакет без реестра файлов): отчёт по каждому параметру
+    говорит, почему сравнения не было, а не выглядит пустым.
+    """
+    parameters = [item for item in list_parameters()
+                  if item["priority"] == "HIGH" or include_medium]
+    checks = [_empty_check(item, "CLARIFICATION_REQUIRED", reason) for item in parameters]
+    result = _result(object_id, checks)
+    result["document_selection"] = {"selected": {}, "problems": {"ALL": reason}}
+    return result

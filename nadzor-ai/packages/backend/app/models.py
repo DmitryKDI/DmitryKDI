@@ -69,6 +69,27 @@ class OfficialRun(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Финализация протокола (ТЗ 9.3): после неё решения и дозагрузка закрыты.
+    finalized_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    finalized_by: Mapped[str] = mapped_column(String, default="")
+    # Передача во внешнюю систему. В закрытом контуре внешнего адреса нет,
+    # поэтому состояние честно «не отправлялось», а не «отправлено».
+    sync_status: Mapped[str] = mapped_column(String, default="NOT_SENT")
+    # Прежние версии протокола при дозагрузке: новая версия не затирает
+    # предыдущую (ТЗ 9.2, инкрементальное обновление).
+    protocol_history: Mapped[list] = mapped_column(JSON, default=list)
+    model_version: Mapped[str] = mapped_column(String, default="")
+
+
+class ProtocolEvent(Base):
+    """Журнал действий с протоколом: финализация, отмена, дозагрузка."""
+    __tablename__ = "protocol_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("official_runs.id"))
+    action: Mapped[str] = mapped_column(String)
+    author: Mapped[str] = mapped_column(String, default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
 class InspectorDecision(Base):
@@ -81,6 +102,8 @@ class InspectorDecision(Base):
     status: Mapped[str] = mapped_column(String)
     author: Mapped[str] = mapped_column(String)
     reason: Mapped[str] = mapped_column(Text)
+    # Кодированная причина решения (ТЗ 9.3): обязательна при отклонении.
+    reason_code: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     run: Mapped[OfficialRun] = relationship()
 

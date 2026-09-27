@@ -121,6 +121,27 @@ export interface OfficialRun {
   result: OfficialRunResult | null
   error: string | null
   version?: number
+  /** Статус процесса в словаре ТЗ: PENDING … FINALIZED. */
+  process_status?: string
+  verification_status?: string
+  finalized_at?: string | null
+  protocol?: {
+    scenario: string
+    upload_status: Record<string, string>
+    pending_candidates: string[]
+    versions: Record<string, string>
+  }
+}
+
+/** Кодированные причины отклонения кандидата (ТЗ 9.3). */
+export const REASON_CODES: Record<string, string> = {
+  WRONG_REVISION: 'неверно выбрана актуальная редакция',
+  APPROVED_CHANGE: 'есть согласованное изменение',
+  OCR_ERROR: 'ошибка распознавания',
+  BINDING_ERROR: 'ошибка привязки доказательства',
+  NOT_APPLICABLE: 'параметр неприменим',
+  NO_DIFFERENCE: 'расхождения нет',
+  OTHER: 'иное (см. основание)',
 }
 
 export interface DecisionInput {
@@ -129,6 +150,7 @@ export interface DecisionInput {
   author: string
   reason: string
   expected_version: number
+  reason_code?: string
 }
 
 export interface ProviderSettings {
@@ -187,6 +209,11 @@ export const officialApi = {
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
   ),
   exportUrl: (id: number, format: 'json' | 'csv') => `/backend/official/runs/${id}/export?format=${format}`,
+  protocolUrl: (id: number, format: 'pdf' | 'docx' | 'xml') => `/backend/api/v1/processes/${id}/export?format=${format}`,
+  finalize: (id: number, author: string) => request<OfficialRun>(
+    `/official/runs/${id}/finalize`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ author }) },
+  ),
   pageImageUrl: (documentId: number, page: number) => `/backend/page-image/${documentId}/${page}`,
 }
 

@@ -70,6 +70,7 @@ from .vision import (
     render_page_to_png_bytes,
 )
 from .vision_page_compare import check_requirement_on_page
+from .api_v1 import router as api_v1_router
 from .official_api import router as official_router
 
 # Каталог кэша оригиналов — производное от хранилища (`file_store`): его
@@ -81,6 +82,7 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 app.include_router(official_router)
+app.include_router(api_v1_router)
 
 
 @app.get("/health")
@@ -265,12 +267,21 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
                     db: Session = Depends(get_session)):
     if side not in ("before", "after"):
         raise HTTPException(400, "side must be 'before' or 'after'")
-
-    limits = _limits(db)
     # Читаем в память один раз: отпечаток, лимит и укладка в хранилище нужны
     # до того, как файл где-то окажется. Лимит проверяется по факту
     # прочитанного, а не по заголовку запроса — заголовок присылает клиент.
-    data = file.file.read()
+    doc = ingest_pdf(db, file.file.read(), file.filename or "document.pdf", side,
+                     background_tasks)
+    # Через `_document_out`, а не напрямую: число частей — вычисляемое поле,
+    # и возврат ORM-объекта отдавал бы ноль частей у разрезанного тома.
+    return _document_out(doc)
+
+
+def ingest_pdf(db: Session, data: bytes, filename: str, side: str,
+               background_tasks: BackgroundTasks) -> models.Document:
+    """Проверка, укладка в хранилище и постановка разбора — общая для всех
+    способов загрузки. Отказ — HTTPException с причиной для пользователя."""
+    limits = _limits(db)
     if not data:
         raise HTTPException(400, "пустой файл")
     max_bytes = max(1, limits.max_upload_kb) * 1024
@@ -285,7 +296,7 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
     # Оригинальное имя файла — только отображаемые метаданные (используется в
     # классификации по имени и в подписях находок), на диск не идёт вообще:
     # приходит от клиента и не должно участвовать в построении пути.
-    original_name = Path(file.filename or "document.pdf").name
+    original_name = Path(filename).name
 
     digest = file_store.digest_of(data)
     pages = 0
@@ -331,9 +342,7 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
     db.commit()
     db.refresh(doc)
     background_tasks.add_task(_parse_document, doc.id)
-    # Через `_document_out`, а не напрямую: число частей — вычисляемое поле,
-    # и возврат ORM-объекта отдавал бы ноль частей у разрезанного тома.
-    return _document_out(doc)
+    return doc
 
 
 @app.get("/documents", response_model=list[schemas.DocumentOut])

@@ -70,26 +70,50 @@ scripts/offline/load_bundle.sh
 Первый старт модели — несколько минут (загрузка весов в GPU); `docker compose ps`
 показывает `healthy`, когда всё готово. Backend ждёт готовности модели.
 
-## Программный интерфейс: асинхронная pull-модель
+## Программный интерфейс: асинхронная pull-модель (ТЗ 1.3–1.4, 9)
 
-REST/JSON, OpenAPI 3.0. Проверка запускается и опрашивается по `process_id`:
+REST/JSON, OpenAPI 3.0 (`/docs`, `/openapi.json`). Внешний контракт — `/api/v1`:
 
 ```text
-POST /documents?side=before|after            загрузить PDF → {id}
-PUT  /official/documents/{id}/metadata       объект, стадия ПД/РД/ИД, шифр, редакция
-POST /official/processes                     {object_id, document_ids} → {process_id, status: "queued"}
-GET  /official/processes/{process_id}        status: queued → running → completed | cancelled | error
-                                             stage, completed/total — прогресс; result — по завершении
-POST /official/processes/{process_id}/cancel остановка на безопасной точке
-GET  /official/runs/{process_id}/export?format=json|csv        выгрузка протокола
+POST /api/v1/documents/upload                 files[] + registry (JSON/CSV) → {process_id, status: PENDING,
+                                              upload_status, scenario, accepted[], rejected[]}
+                                              process_id в форме — дозагрузка в существующий процесс
+GET  /api/v1/processes/{process_id}/status    мониторинг: статус, этап, прогресс
+GET  /api/v1/processes/{process_id}           протокол: статус загрузки, сценарий, пять таблиц, версии
+POST /api/v1/processes/{process_id}/decisions решение инспектора (при отклонении — reason_code)
+POST /api/v1/processes/{process_id}/finalize  «Завершить»: только когда у всех кандидатов есть решение
+POST /api/v1/processes/{process_id}/unfinalize отмена — администратор/супервизор, с причиной, в журнал
+GET  /api/v1/processes/{process_id}/export?format=json|xml|docx|pdf
+POST /api/v1/inspection/{process_id}          пакет для ИАИС «РиН»: только FINALIZED, только подтверждённое
 ```
 
-Пример ответа по завершении — [docs/example-output.json](docs/example-output.json)
-(синтетические документы, ответ модели задан сценарием; файл собирает настоящий
-код конвейера: `scripts/make_example_output.py`). Параметр, по которому
-проверка не выполнилась, никогда не выдаётся за «нарушений нет»: у него
-`technical_status: "not_run"` и `completeness_status: "CLARIFICATION_REQUIRED"`
-с причиной.
+| Что | Значения |
+|---|---|
+| Статус процесса | `PENDING` → `PARSING` → `READY` → `VERIFYING` → `COMPLETED` → `FINALIZED` (+ `ERROR`, `CANCELLED`) |
+| Статус загрузки | `PD/RD/ID_UPLOADED`, `_PARTIAL`, `_MISSING` |
+| Сценарий | `FULL`, `PD_RD_ONLY`, `PD_ID_ONLY`, `RD_ID_ONLY`, `SINGLE_ONLY`, `PARTIALLY_LOADED` |
+| Полнота | `COMPLETE`, `MISSING_EVIDENCE`, `NOT_APPLICABLE`, `NOT_COMPARABLE`, `CLARIFICATION_REQUIRED` |
+| Находка | `CANDIDATE`, `NEGATIVE_VERIFIED`, `CONFIRMED_VIOLATION` (только инспектор), `SUSPICION` |
+
+Реестр файлов (перечень ИД): `file_id`, `file_name`, `object_id`, `doc_stage`, `document_code`,
+`revision`, `approval_status`, `approval_date`, `predecessor_id`, необязательно `sha256`,
+`sheet_page_range`, `signature_status`. Без реестра пакет принимается, но каждый параметр
+получает `CLARIFICATION_REQUIRED`. Лимиты: 50 МБ на файл, 200 МБ на пакет; формат — PDF
+(DOCX и XML в этой версии не принимаются, отказ называет причину). Сбой проверки
+повторяется до двух раз.
+
+Протокол содержит раздельные таблицы: комплектность, кандидаты, подтверждённые,
+проверенные отрицательные, гипотезы свободного поиска. Карточка кандидата: `finding_id`,
+параметр, `expected/actual/delta`, по каждому источнику `file_id`, SHA-256, стадия, шифр,
+редакция, статус утверждения, страница, bbox в [0;1], `approved_change_ref`, решение и
+причина инспектора. Версии в каждом протоколе: `matrix_version`, `model_version`,
+`dataset_version`, `input_manifest_hash`. При дозагрузке прежняя версия протокола
+сохраняется.
+
+Пример ответа — [docs/example-output.json](docs/example-output.json) (синтетические
+документы, ответ модели задан сценарием; файл собирает настоящий код:
+`scripts/make_example_output.py`). Параметр, по которому проверка не выполнилась, не
+выдаётся за «нарушений нет»: `technical_status: "not_run"` и причина.
 
 ## Модели
 

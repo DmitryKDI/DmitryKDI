@@ -18,7 +18,10 @@ import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
-from app import official_pipeline  # noqa: E402
+from app import (
+    official_pipeline,  # noqa: E402
+    protocol,  # noqa: E402
+)
 from app.llm import LlmConfig  # noqa: E402
 from app.parameter_catalog import list_parameters  # noqa: E402
 
@@ -58,11 +61,19 @@ def main() -> None:
         ],
     }]}
     with tempfile.TemporaryDirectory() as folder:
+        documents = _documents(Path(folder))
         result = official_pipeline.run_official_analysis(
-            _documents(Path(folder)), LlmConfig(), graphic_runner=None)
-    envelope = {"process_id": 1, "status": "completed", "stage": "Готово",
+            documents, LlmConfig(), graphic_runner=None)
+    snapshot = [{"id": doc.id, "digest": doc.digest, "metadata": doc.source_metadata}
+                for doc in documents]
+    built = protocol.build(result, snapshot, run_status="completed", finalized=False,
+                           decisions=0, model_version=LlmConfig().resolved_model())
+    # Форма ответа GET /api/v1/processes/{process_id}.
+    envelope = {"process_id": 1, "status": built["status"], "run_state": "completed",
+                "verification_status": built["verification_status"], "stage": "Готово",
+                "protocol_version": 1, "sync_status": "NOT_SENT",
                 "completed": result["coverage"]["total"], "total": result["coverage"]["total"],
-                "error": None, "result": result}
+                "error": None, "protocol": built, "result": result}
     json.dump(envelope, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
 

@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from . import models
+from . import models, protocol
 from .db import SessionLocal, get_session
 from .llm import LlmConfig, local_config
 from .official_pipeline import run_official_analysis
@@ -72,6 +72,24 @@ class DecisionInput(BaseModel):
     author: str
     reason: str
     expected_version: int
+    # Кодированная причина (ТЗ 9.3): обязательна при отклонении кандидата.
+    reason_code: str = ""
+
+
+class FinalizeInput(BaseModel):
+    author: str
+
+
+class UnfinalizeInput(BaseModel):
+    author: str
+    reason: str
+    # Отмена финализации — право администратора или супервизора (ТЗ 9.3).
+    role: str
+
+
+# Сколько раз повторить проверку, упавшую с исключением (ТЗ 9.1: таймаут —
+# до двух повторов). Результат с честным not_run не повторяется: это не сбой.
+EXECUTE_RETRIES = 2
 
 
 def _document_dict(document: models.Document) -> dict:
@@ -113,17 +131,31 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
             history = check.setdefault("review_history", [])
             history.append({
                 "status": decision.status, "author": decision.author,
-                "reason": decision.reason, "created_at": decision.created_at.isoformat(),
+                "reason": decision.reason, "reason_code": decision.reason_code,
+                "created_at": decision.created_at.isoformat(),
                 "version": decision.version,
             })
             check["finding_status"] = decision.status
+    built = protocol.build(
+        result, run.input_snapshot or [], run_status=run.status,
+        finalized=run.finalized_at is not None, decisions=len(decisions),
+        model_version=run.model_version or "")
     return {
         # process_id — идентификатор процесса в контракте pull-модели: клиент
         # запускает проверку, получает process_id и опрашивает статус по нему.
         # id оставлен для интерфейса; значения совпадают всегда.
         "process_id": run.id,
         "id": run.id, "object_id": run.object_id, "status": run.status, "stage": run.stage,
+        # Статус процесса в словаре ТЗ (PENDING … FINALIZED); status выше —
+        # внутреннее состояние фоновой задачи, по нему работает интерфейс.
+        "process_status": built["status"],
+        "verification_status": built["verification_status"],
+        "finalized_at": run.finalized_at.isoformat() if run.finalized_at else None,
+        "finalized_by": run.finalized_by or None,
+        "sync_status": run.sync_status,
+        "protocol_version": len(run.protocol_history or []) + 1,
         "completed": run.completed, "total": run.total, "result": result,
+        "protocol": built,
         "error": run.error, "version": max((row.version for row in decisions), default=0),
     }
 
@@ -221,10 +253,20 @@ def _execute(run_id: int) -> None:
             db.expire(run)
             return run.cancelled_at is not None
 
-        result = run_official_analysis(
-            documents, _settings_config(db), include_medium=run.include_medium,
-            progress=progress, cancelled=cancelled,
-        )
+        config = _settings_config(db)
+        run.model_version = config.resolved_model()
+        db.commit()
+        result = None
+        for attempt in range(EXECUTE_RETRIES + 1):
+            try:
+                result = run_official_analysis(
+                    documents, config, include_medium=run.include_medium,
+                    progress=progress, cancelled=cancelled,
+                )
+                break
+            except Exception:  # noqa: BLE001 — после повторов сбой уйдёт в статус error
+                if attempt == EXECUTE_RETRIES or cancelled():
+                    raise
         db.expire(run)
         run.result = result
         run.completed = result["coverage"]["total"]
@@ -298,6 +340,66 @@ def cancel_run(run_id: int, db: Session = Depends(get_session)):
     return _run_dict(db, row)
 
 
+def _event(db: Session, run_id: int, action: str, author: str = "", reason: str = "") -> None:
+    db.add(models.ProtocolEvent(run_id=run_id, action=action, author=author, reason=reason))
+
+
+@router.post("/runs/{run_id}/finalize")
+def finalize_run(run_id: int, body: FinalizeInput, db: Session = Depends(get_session)):
+    """Финализация протокола («Завершить», ТЗ 9.3, п.4).
+
+    Разрешена, только когда у каждого кандидата есть решение инспектора или
+    он явно переведён в CLARIFICATION_REQUIRED. После неё решения и
+    дозагрузка закрыты.
+    """
+    row = db.get(models.OfficialRun, run_id)
+    if row is None:
+        raise HTTPException(404, "прогон не найден")
+    if not body.author.strip():
+        raise HTTPException(422, "укажите инспектора")
+    if row.finalized_at is not None:
+        raise HTTPException(409, "протокол уже финализирован")
+    if row.status != "completed" or not row.result:
+        raise HTTPException(409, "финализировать можно только сформированный протокол")
+    pending = protocol.pending_candidates(_run_dict(db, row)["result"])
+    if pending:
+        raise HTTPException(409, "есть кандидаты без решения инспектора: " + ", ".join(pending))
+    row.finalized_at = dt.datetime.utcnow()
+    row.finalized_by = body.author.strip()
+    _event(db, run_id, "FINALIZE", row.finalized_by)
+    db.commit()
+    db.refresh(row)
+    return _run_dict(db, row)
+
+
+@router.post("/runs/{run_id}/unfinalize")
+def unfinalize_run(run_id: int, body: UnfinalizeInput, db: Session = Depends(get_session)):
+    """Отмена финализации — только администратор или супервизор, с причиной."""
+    row = db.get(models.OfficialRun, run_id)
+    if row is None:
+        raise HTTPException(404, "прогон не найден")
+    if body.role not in {"admin", "supervisor"}:
+        raise HTTPException(403, "отменить финализацию может только администратор или супервизор")
+    if not body.author.strip() or not body.reason.strip():
+        raise HTTPException(422, "укажите автора и причину отмены")
+    if row.finalized_at is None:
+        raise HTTPException(409, "протокол не финализирован")
+    row.finalized_at = None
+    row.finalized_by = ""
+    _event(db, run_id, "UNFINALIZE", body.author.strip(), body.reason.strip())
+    db.commit()
+    db.refresh(row)
+    return _run_dict(db, row)
+
+
+@router.get("/runs/{run_id}/events")
+def run_events(run_id: int, db: Session = Depends(get_session)):
+    rows = (db.query(models.ProtocolEvent).filter_by(run_id=run_id)
+            .order_by(models.ProtocolEvent.id).all())
+    return [{"action": row.action, "author": row.author, "reason": row.reason,
+             "created_at": row.created_at.isoformat()} for row in rows]
+
+
 @router.post("/runs/{run_id}/decisions")
 def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session)):
     row = db.get(models.OfficialRun, run_id)
@@ -305,8 +407,14 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session))
         raise HTTPException(404, "прогон не найден")
     if row.status != "completed" or not row.result:
         raise HTTPException(409, "решение можно сохранить только для завершённой проверки")
+    if row.finalized_at is not None:
+        raise HTTPException(409, "протокол финализирован: решения изменить нельзя")
     if body.status not in DECISION_STATUSES:
         raise HTTPException(422, "неизвестный статус решения")
+    reason_code = body.reason_code.strip().upper()
+    if body.status == "NEGATIVE_VERIFIED" and reason_code not in protocol.REASON_CODES:
+        raise HTTPException(422, "при отклонении нужна кодированная причина: "
+                                 + ", ".join(protocol.REASON_CODES))
     if not body.author.strip() or not body.reason.strip():
         raise HTTPException(422, "укажите инспектора и основание решения")
     current = _version(db, run_id)
@@ -326,6 +434,7 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session))
     db.add(models.InspectorDecision(
         run_id=run_id, version=current + 1, finding_id=body.finding_id,
         status=body.status, author=body.author.strip(), reason=body.reason.strip(),
+        reason_code=reason_code,
     ))
     db.commit()
     db.refresh(row)

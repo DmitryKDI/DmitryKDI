@@ -103,7 +103,7 @@ def test_final_expert_decision_requires_evidence(db, status):
     with pytest.raises(HTTPException, match="полного комплекта доказательств"):
         official_api.decide(run.id, official_api.DecisionInput(
             finding_id="M-001:matrix", status=status, author="Инспектор",
-            reason="Решение", expected_version=0,
+            reason="Решение", expected_version=0, reason_code="APPROVED_CHANGE",
         ), db)
     print("OK: окончательное решение без локализованного источника отклоняется")
 
