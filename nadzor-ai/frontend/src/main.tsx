@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
 import './index.css'
 
-// START-NADZOR открывает приложение с уникальным ?started=... на каждый
+// Скрипт запуска открывает приложение с уникальным ?started=... на каждый
 // запуск. Это граница рабочей сессии: старые id прогонов, фильтры и отметки
 // из Zustand persist не должны переноситься в новый комплект документов.
 // Обычный F5 внутри уже запущенной сессии состояние не стирает.

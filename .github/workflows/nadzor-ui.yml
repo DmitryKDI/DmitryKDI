@@ -10,9 +10,6 @@ on:
       - 'nadzor-ai/packages/backend/tests/**'
       - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/CONTEXT.md'
-      - 'nadzor-ai/CURRENT-TASK.md'
-      - 'nadzor-ai/AUTOMATION-WISHES.md'
-      - '.claude/PROJECT-NADZOR.md'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
 

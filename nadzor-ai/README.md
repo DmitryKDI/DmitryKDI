@@ -252,7 +252,6 @@ cd frontend && npm run build
 | Файл | О чём |
 |---|---|
 | [AGENTS.md](../AGENTS.md) | правила разработки, команды, что нельзя менять |
-| [HANDOFF.md](../HANDOFF.md) | состояние: что готово, что сломано, что дальше |
 | [CONTEXT.md](CONTEXT.md) | карта: что читать сейчас |
 | [CLAUDE.md](CLAUDE.md) | техзадание и Приложение Г — правила механики |
 | [docs/PRILOZHENIE-G-ISTORIYA.md](docs/PRILOZHENIE-G-ISTORIYA.md) | журнал решений с доказательствами |

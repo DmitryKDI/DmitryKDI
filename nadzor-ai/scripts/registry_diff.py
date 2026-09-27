@@ -268,7 +268,7 @@ def _extract_requirements_llm_visible(pd_text_facts: list[dict], llm_config: Llm
 def _emit_general_requirements(general_requirements: list, llm_config: Optional[LlmConfig], _emit) -> None:
     """Печатает каталог формы 3 (Г.47) — через ЛЛМ-фильтр (Г.69), если модель
     подключена, иначе как раньше, сырым regex-каталогом
-    (`RUN-NO-LLM.bat` не теряет функциональность). Общая точка для
+    (режим без модели не теряет функциональность). Общая точка для
     `run_triangulated`/`run_requirements` — раньше обе звали
     `render_general_requirements_summary` напрямую и дублировали бы эту
     развилку по отдельности.
@@ -770,7 +770,7 @@ def run_requirements(
         работает на прозе любого формата и раздела, требует модели.
       - `llm_config` не задан: `requirement_registry.py` — узкий regex-
         путь по одному наблюдённому формату списка, без модели
-        (RUN-NO-LLM.bat); см. предупреждение в докстринге самого модуля.
+        (режим без модели); см. предупреждение в докстринге самого модуля.
 
     Тот же `llm_config`, если задан, используется и для эскалации находок
     «no_code_visual_check_needed» в зрение по листу РД
