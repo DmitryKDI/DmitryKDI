@@ -88,8 +88,11 @@ services:
       NADZOR_LLM_CONCURRENCY: ${NADZOR_LLM_CONCURRENCY:-8}
       NADZOR_OCR_LANGUAGE: ${NADZOR_OCR_LANGUAGE:-rus+eng}
     volumes:
-      # База, загруженные документы и результаты переживают пересборку образа.
-      - ./data:/app/data
+      # База, загруженные документы и результаты переживают пересборку и
+      # обновление образа. Именованный том, а не каталог хоста: том
+      # наследует права каталога из образа, и приложение, работающее не от
+      # root, может в него писать на любой машине.
+      - nadzor-state:/app/state
     depends_on:
       llm:
         condition: service_healthy
@@ -120,3 +123,6 @@ networks:
   contour:
     internal: true
   edge: {}
+
+volumes:
+  nadzor-state: {}

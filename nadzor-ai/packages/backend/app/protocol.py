@@ -232,6 +232,7 @@ def build(result: dict | None, snapshot: list[dict], *, run_status: str,
             "completeness": [{
                 "finding_id": item.get("finding_id"),
                 "parameter_code": item.get("parameter_code"),
+                "parameter_name": item.get("parameter_name"),
                 "completeness_status": item.get("completeness_status"),
                 "technical_status": item.get("technical_status"),
                 "reason": item.get("explanation"),

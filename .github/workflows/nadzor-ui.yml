@@ -83,6 +83,7 @@ jobs:
           python -m py_compile app/protocol_export.py
           python -m py_compile app/api_v1.py
           python -m py_compile app/document_convert.py
+          python -m py_compile app/openapi30.py
           python -m py_compile app/run_logger.py
           python -m py_compile ../../scripts/teach_investigator.py
           python -m py_compile ../../scripts/autoloop.py
@@ -136,3 +137,4 @@ jobs:
           tests/test_official_api.py
           tests/test_document_convert.py
           tests/test_incremental_reload.py
+          tests/test_openapi30.py

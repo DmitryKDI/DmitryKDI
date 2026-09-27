@@ -1,4 +1,4 @@
-.PHONY: help install backend web up down test check-generic lint security clean
+.PHONY: help install backend web up down test check-generic lint security smoke openapi clean
 
 help:            ## Список команд
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -13,8 +13,14 @@ backend:         ## Запустить движок разбора докуме�
 web:             ## Запустить интерфейс
 	cd frontend && npm run dev
 
-up:              ## Поднять всё одной командой
-	docker compose up --build
+up:              ## Поднять всё одной командой (нужны GPU и веса в models/)
+	docker compose up -d
+
+smoke:           ## Проверка запуска без GPU: дублёр модели + сквозной сценарий API
+	bash scripts/smoke/run_local.sh
+
+openapi:         ## Выгрузить схему API (OpenAPI 3.0) в docs/openapi.json
+	cd packages/backend && PYTHONPATH=. ../../.venv/bin/python -c "import json, app.main as m; json.dump(m.app.openapi(), open('../../docs/openapi.json', 'w'), ensure_ascii=False, indent=2)"
 
 down:            ## Остановить и удалить контейнеры
 	docker compose down -v

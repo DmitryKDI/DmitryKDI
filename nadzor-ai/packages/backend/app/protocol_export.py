@@ -25,14 +25,16 @@ _FONT_CANDIDATES = (
 
 def _rows(table: str, items: list[dict]) -> list[list[str]]:
     if table == "completeness":
-        return [[str(i.get("parameter_code") or ""), str(i.get("completeness_status") or ""),
-                 str(i.get("reason") or "")] for i in items]
+        return [[f'{i.get("parameter_code") or ""} {i.get("parameter_name") or ""}'.strip(),
+                 str(i.get("completeness_status") or ""), str(i.get("reason") or "")]
+                for i in items]
     rows = []
     for card in items:
         pages = "; ".join(f'{s.get("stage")} {s.get("document_code") or ""} '
                           f'ред.{s.get("revision") or "?"} стр.{s.get("page")}'
                           for s in card.get("sources") or [])
-        rows.append([str(card.get("parameter_code") or ""),
+        title = f'{card.get("parameter_code") or ""} {card.get("parameter_name") or ""}'
+        rows.append([title.strip(),
                      str(card.get("expected_value") or ""), str(card.get("actual_value") or ""),
                      pages, str(card.get("inspector_decision") or "")])
     return rows

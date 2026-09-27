@@ -25,6 +25,7 @@ from . import (
     facts_store,
     file_store,
     models,
+    openapi30,
     requirement_kind,
     review_dialog,
     run_control,
@@ -83,6 +84,8 @@ app.add_middleware(
 )
 app.include_router(official_router)
 app.include_router(api_v1_router)
+# ТЗ 1.3: схема API — OpenAPI 3.0 (FastAPI по умолчанию строит 3.1).
+openapi30.install(app)
 
 
 @app.get("/health")

@@ -6,6 +6,7 @@ import csv
 import datetime as dt
 import io
 import json
+import threading
 from types import SimpleNamespace
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
@@ -276,14 +277,23 @@ def _execute(run_id: int) -> None:
             source_metadata=copy.deepcopy(snapshot["metadata"]),
         ) for document, snapshot in zip(stored, run.input_snapshot, strict=True)]
 
+        # Сессия SQLAlchemy не потокобезопасна, а сверка идёт параллельно:
+        # cancelled() вызывается из рабочих потоков. Раньше она трогала общую
+        # сессию одновременно с записью прогресса, и прогон падал ошибкой
+        # «строка удалена» посреди работы. Теперь проверка остановки читает
+        # своей короткой сессией, а запись прогресса идёт под блокировкой.
+        progress_lock = threading.Lock()
+
         def progress(stage: str, completed: int, total: int) -> None:
-            db.expire(run)
-            run.stage, run.completed, run.total = stage, completed, total
-            db.commit()
+            with progress_lock:
+                db.expire(run)
+                run.stage, run.completed, run.total = stage, completed, total
+                db.commit()
 
         def cancelled() -> bool:
-            db.expire(run)
-            return run.cancelled_at is not None
+            with SessionLocal() as probe:
+                row = probe.get(models.OfficialRun, run_id)
+                return row is None or row.cancelled_at is not None
 
         config = _settings_config(db)
         run.model_version = config.resolved_model()

@@ -1,0 +1,25 @@
+# Проверка состава контейнеров на машине без видеокарты.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.smoke.yml up -d
+#   .venv/bin/python scripts/smoke/e2e_api.py --base-url http://127.0.0.1:8010
+#
+# Сервис llm заменяется дублёром модели (scripts/smoke/fake_model.py) с тем
+# же протоколом, что у vLLM: backend и frontend работают без изменений, а
+# проверяется механика — загрузка, протокол, решения, выгрузки. Качество
+# модели этим не проверяется. Для зачётного запуска эта надстройка не нужна.
+services:
+  llm:
+    image: python:3.12-slim-bookworm
+    entrypoint: ["python", "/smoke/fake_model.py", "--host", "0.0.0.0", "--port", "8000",
+                 "--model", "${NADZOR_LOCAL_LLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}"]
+    command: []
+    volumes: !override
+      - ./scripts/smoke:/smoke:ro
+    deploy: !reset {}
+    ipc: !reset
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s

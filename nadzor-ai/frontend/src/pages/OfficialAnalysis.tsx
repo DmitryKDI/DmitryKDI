@@ -158,11 +158,11 @@ function FileStage({
           onChange={(event) => apply('sheet_page_range', event.target.value)} placeholder="Не задано" />
       </label>
       <div className="mt-3 rounded-xl border border-dashed border-surface-line bg-surface-muted/50 p-4 text-center">
-        <p className="text-sm font-medium text-ink">Перетащите PDF или выберите файл</p>
+        <p className="text-sm font-medium text-ink">Перетащите PDF, DOCX или XML либо выберите файл</p>
         <button className="btn-ghost mt-2" type="button" disabled={busy} onClick={() => input.current?.click()}>
-          {busy ? 'Загружаю…' : 'Выбрать PDF'}
+          {busy ? 'Загружаю…' : 'Выбрать файл'}
         </button>
-        <input ref={input} hidden type="file" accept=".pdf" onChange={(event) => {
+        <input ref={input} hidden type="file" accept=".pdf,.docx,.xml" onChange={(event) => {
           void upload(event.target.files)
           event.target.value = ''
         }} />

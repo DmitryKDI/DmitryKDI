@@ -97,3 +97,45 @@ def test_reload_with_a_new_current_revision_recomputes(deferred, monkeypatch):
     body = client.get(f"/api/v1/processes/{pid}").json()
     assert calls == [1]
     assert body["result"]["incremental"]["recomputed"] == "all"
+
+
+def test_cancel_checks_from_worker_threads_do_not_break_the_run(deferred, monkeypatch):
+    """Сверка параллельна: проверка остановки идёт из рабочих потоков, пока
+    основной пишет прогресс. Общая сессия ломала прогон посреди работы
+    ошибкой «строка удалена» — воспроизведено на составе в Docker."""
+    import threading
+
+    pid = _upload("pd3.pdf", "PD", "APPROVED")["process_id"]
+    _upload("rd3.pdf", "RD", "APPROVED", process_id=pid)
+
+    def fake(documents, config, *, progress, cancelled, **kwargs):
+        stop = threading.Event()
+        errors = []
+
+        def worker():
+            while not stop.is_set():
+                try:
+                    cancelled()
+                except Exception as exc:  # noqa: BLE001 — ошибку и проверяем
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(16)]
+        for thread in threads:
+            thread.start()
+        for step in range(200):
+            progress("Сверка параметров матрицы", step, 200)
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=10)
+        # Общая сессия на старом коде не только падала, но и зависала —
+        # тест должен упасть по таймауту, а не висеть.
+        assert not any(thread.is_alive() for thread in threads), "потоки зависли"
+        assert not errors, errors[:3]
+        return {"matrix_version": "1.1", "checks": [],
+                "coverage": {"total": 0, "completed": 0, "not_run": 0},
+                "graphic_analysis": {"status": "not_run", "candidates": []},
+                "document_selection": {"selected": {}, "problems": {}}}
+
+    monkeypatch.setattr(official_api, "run_official_analysis", fake)
+    deferred(pid)
+    assert client.get(f"/api/v1/processes/{pid}").json()["run_state"] == "completed"

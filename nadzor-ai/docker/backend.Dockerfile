@@ -34,8 +34,23 @@ COPY data/parameter_catalog_v1_1.json ./data/parameter_catalog_v1_1.json
 # поднялся бы и отвечал «движок распознавания не установлен» на каждом скане.
 RUN python -c "from app.local_ocr import load_config; assert load_config() is not None, 'Tesseract rus+eng не настроен'"
 
+# Изменяемые данные — базы прогонов, оригиналы документов, разборы, журналы —
+# в отдельном каталоге, принадлежащем пользователю приложения. Справочные
+# файлы (матрица параметров) остаются в образе: при обновлении образа они
+# меняются вместе с кодом, а не застревают в томе с данными.
+ENV NADZOR_DB_PATH=/app/state/nadzor.db \
+    FACTS_STORE_DB=/app/state/facts_store.db \
+    FILE_STORE_DB=/app/state/file_store.db \
+    FILE_STORE_CACHE=/app/state/uploads \
+    NADZOR_PD_STORE=/app/state/pd_store.db \
+    SECTION_PROFILE_DB=/app/state/section_profiles.db \
+    NADZOR_INSPECTOR_MEMORY=/app/state/inspector_memory.sqlite3 \
+    NADZOR_LLM_CACHE_DB=/app/state/llm_result_cache.sqlite3 \
+    NADZOR_RUN_LOGS_DIR=/app/state/run_logs
+
 # Приложение работает от непривилегированного пользователя.
-RUN useradd --create-home --uid 10001 nadzor && chown -R nadzor:nadzor /app
+RUN useradd --create-home --uid 10001 nadzor && mkdir -p /app/state \
+    && chown -R nadzor:nadzor /app
 USER nadzor
 
 EXPOSE 8010
