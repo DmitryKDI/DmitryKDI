@@ -16,7 +16,7 @@ import pymupdf
 
 from . import facts_store
 from .lean_analysis_runtime import run_lean_analysis
-from .llm import LlmConfig, call_llm_json
+from .llm import LlmConfig, call_llm_json, model_configured
 from .llm_runtime import parallel_map
 from .parameter_catalog import CATALOG_VERSION, list_parameters
 from .vision import UNTRUSTED_INPUT_RULE
@@ -349,17 +349,12 @@ def run_official_analysis(
         checks = [_empty_check(item, "MISSING_EVIDENCE", missing) for item in parameters]
         return _with_document_selection(_result(object_id, checks), selected, problems)
 
-    if config.provider != "gigachat":
+    if not model_configured(config):
+        # Не «нарушений нет», а «проверка не выполнялась» — и по каждому
+        # параметру отдельно, чтобы отчёт не выглядел пройденным (Г.10).
         checks = [_empty_check(
             item, "CLARIFICATION_REQUIRED",
-            "официальная проверка не выполнялась: требуется отечественный провайдер GigaChat",
-        ) for item in parameters]
-        return _with_document_selection(_result(object_id, checks), selected, problems)
-
-    if not config.api_key:
-        checks = [_empty_check(
-            item, "CLARIFICATION_REQUIRED",
-            "проверка моделью не выполнялась: ключ провайдера не настроен",
+            "официальная проверка не выполнялась: локальная модель не подключена",
         ) for item in parameters]
         return _with_document_selection(_result(object_id, checks), selected, problems)
 

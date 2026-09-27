@@ -45,7 +45,7 @@ def test_active_runtime_runs_one_stateful_investigator_not_legacy_synthesis(monk
 
     result = pipeline.run_triangulated_analysis(
         ["pd.pdf"], ["rd.pdf"],
-        llm_config=LlmConfig(provider="anthropic", api_key="fake-key"),
+        llm_config=LlmConfig(),
     )
 
     assert calls == [True]
@@ -79,7 +79,7 @@ def test_registry_and_routing_branches_are_not_part_of_active_result(monkeypatch
 
     result = pipeline.run_triangulated_analysis(
         ["pd.pdf"], ["rd.pdf"],
-        llm_config=LlmConfig(provider="anthropic", api_key="fake-key"),
+        llm_config=LlmConfig(),
     )
 
     assert result["rooms"]["active"] is False

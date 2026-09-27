@@ -13,10 +13,10 @@ from dataclasses import dataclass, field
 from .balance_box import extract_balance_facts
 from .classification import PAGE_KIND_DRAWING, classify_page_kind, open_pdf
 from .equipment import extract_equipment_facts
+from .local_ocr import OcrConfig, load_config, recognize_page
 from .material import non_project_reason
 from .rooms import extract_room_facts
 from .stamp import read_stamp
-from .yandex_ocr import YandexOcrConfig, load_config, recognize_page
 
 
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
@@ -105,7 +105,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
         page_kinds = {}
         sheet_info = {}
         excluded = {}
-        ocr_config: YandexOcrConfig | None = load_config()
+        ocr_config: OcrConfig | None = load_config()
         ocr_pages_total = 0
         ocr_pages_done = []
         ocr_text_pages = []

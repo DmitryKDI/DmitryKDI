@@ -190,7 +190,9 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
 
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=120.0, **kwargs):
         calls.append(user_text)
-        if len(calls) == 1:
+        # Сбой привязан к пачке, а не к порядку вызова: пачки идут
+        # параллельно, и «первым» может оказаться любой из вызовов.
+        if "aaaa" in user_text:
             raise ConnectionError("сеть недоступна")
         return {"requirements": [{
             "rooms": ["2"], "code": None,

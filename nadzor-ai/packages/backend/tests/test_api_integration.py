@@ -205,27 +205,28 @@ def test_page_image_endpoint_serves_real_png():
     print("OK: /page-image returns 404 for an out-of-range page instead of crashing")
 
 
-def test_settings_roundtrip():
-    """Г.71 — провайдер должен быть из реально поддерживаемого набора
-    (anthropic/gigachat), иначе следующий реальный вызов ИИ (в этом же
-    тестовом процессе, той же БД) получит ValueError: unknown provider —
-    этот тест сам был реальным источником такой порчи до фикса: ставил
-    "local", который backend больше не принимает, и не возвращал дефолт
-    обратно, ломая порядко-зависимые прогоны с test_findings_quality.py."""
+def test_settings_show_the_model_that_actually_runs():
+    """Строка настроек в базе модель не выбирает: в базе, заведённой до
+    закрытого контура, остались облачные значения. Показывать их значило бы
+    описывать не ту систему, что работает, поэтому наружу идёт действующая
+    локальная модель, что бы ни было записано."""
+    from app.llm import local_config
     try:
-        resp = client.put("/settings", json={"provider": "gigachat", "base_url": "", "model": "GigaChat-2-Pro"})
+        resp = client.put("/settings", json={"provider": "gigachat", "base_url": "",
+                                             "model": "cloud-model"})
         assert resp.status_code == 200
         got = client.get("/settings").json()
-        assert got["provider"] == "gigachat"
-        assert got["model"] == "GigaChat-2-Pro"
-        print("OK: settings roundtrip through API")
+        effective = local_config()
+        assert got["provider"] == "local"
+        assert got["model"] == effective.resolved_model()
+        assert got["base_url"] == effective.resolved_base_url()
     finally:
-        client.put("/settings", json={"provider": "anthropic", "base_url": "", "model": ""})
+        client.put("/settings", json={"provider": "local", "base_url": "", "model": ""})
 
 
 if __name__ == "__main__":
     test_full_pipeline_upload_analyze_findings()
     test_llm_failure_is_visible_not_silent()
     test_page_image_endpoint_serves_real_png()
-    test_settings_roundtrip()
+    test_settings_show_the_model_that_actually_runs()
     print("ALL PASS")

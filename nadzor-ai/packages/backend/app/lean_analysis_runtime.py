@@ -17,7 +17,7 @@ from time import perf_counter
 from typing import Optional
 
 from .facts_store import facts_for
-from .llm import LlmConfig
+from .llm import LlmConfig, model_configured
 from .matching import DocumentInput
 from .requirement_llm_extract import extract_requirements_llm
 from .requirement_registry import Requirement, extract_requirements
@@ -228,11 +228,10 @@ def run_lean_analysis(
             "active_architecture": "stateful_investigator",
         }
 
-    use_llm = bool(
-        llm_config is not None
-        and bool(llm_config.api_key)
-        and llm_config.provider not in ("", "local")
-    )
+    # Прежнее условие прямо исключало локального провайдера — графический
+    # исследователь выключался бы ровно в той конфигурации, в которой идёт
+    # зачётный прогон.
+    use_llm = model_configured(llm_config)
     call_failures: list[str] = before.incomplete + after.incomplete
 
     stage = perf_counter()
@@ -303,7 +302,7 @@ def run_lean_analysis(
         "not_run": (["stateful semantic investigation: нет ключа ИИ"] if not use_llm else []),
         "performance": {"duration_seconds": timings["total"], "stages_seconds": timings},
         "active_architecture": (
-            "PD document map + requirements -> stateful GigaChat investigator "
+            "PD document map + requirements -> stateful local-model investigator "
             "-> Python page/search/zoom tools -> self-review -> independent verifier"
         ),
         "semantic_contract": {

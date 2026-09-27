@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from . import models
 from .db import SessionLocal, get_session
-from .llm import LlmConfig, credentials_from_file
+from .llm import LlmConfig, local_config
 from .official_pipeline import run_official_analysis
 from .parameter_catalog import CATALOG_VERSION, list_parameters
 
@@ -83,15 +83,8 @@ def _document_dict(document: models.Document) -> dict:
 
 
 def _settings_config(db: Session) -> LlmConfig:
-    settings = db.query(models.Settings).first()
-    provider = settings.provider if settings else "gigachat"
-    env_name = "GIGACHAT_CREDENTIALS" if provider == "gigachat" else "ANTHROPIC_API_KEY"
-    import os
-    key = ((settings.api_key if settings else "") or os.environ.get(env_name, "")
-           or credentials_from_file(provider))
-    return LlmConfig(provider=provider, api_key=key,
-                     base_url=settings.base_url if settings else "",
-                     model=settings.model if settings else "")
+    """Модель локальная и задаётся при развёртывании (см. llm.local_config)."""
+    return local_config()
 
 
 def _version(db: Session, run_id: int) -> int:
@@ -125,6 +118,10 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
             })
             check["finding_status"] = decision.status
     return {
+        # process_id — идентификатор процесса в контракте pull-модели: клиент
+        # запускает проверку, получает process_id и опрашивает статус по нему.
+        # id оставлен для интерфейса; значения совпадают всегда.
+        "process_id": run.id,
         "id": run.id, "object_id": run.object_id, "status": run.status, "stage": run.stage,
         "completed": run.completed, "total": run.total, "result": result,
         "error": run.error, "version": max((row.version for row in decisions), default=0),
@@ -363,3 +360,24 @@ def export_run(
         writer.writerow({field: check.get(field) for field in fields})
     return Response(stream.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="run-{run_id}.csv"'})
+
+
+# Контракт асинхронной pull-модели: POST запускает процесс и сразу отдаёт
+# process_id со статусом queued; GET по process_id возвращает статус
+# (queued → running → completed | cancelled | error), этап, прогресс и,
+# по завершении, результат. Это те же обработчики, что /runs, под именами
+# контракта — второй реализации нет, расходиться нечему.
+@router.post("/processes", summary="Запустить процесс проверки")
+def start_process(body: RunInput, background: BackgroundTasks,
+                  db: Session = Depends(get_session)):
+    return create_run(body, background, db)
+
+
+@router.get("/processes/{process_id}", summary="Статус и результат процесса")
+def process_status(process_id: int, db: Session = Depends(get_session)):
+    return run(process_id, db)
+
+
+@router.post("/processes/{process_id}/cancel", summary="Остановить процесс")
+def cancel_process(process_id: int, db: Session = Depends(get_session)):
+    return cancel_run(process_id, db)

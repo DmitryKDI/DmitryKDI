@@ -76,7 +76,7 @@ def test_facade_uses_one_stateful_investigator(monkeypatch):
     result = run_triangulated_analysis(
         ["pd.pdf"],
         ["rd.pdf"],
-        llm_config=LlmConfig(provider="anthropic", api_key="fake-key"),
+        llm_config=LlmConfig(),
     )
 
     assert result["valid"] is True
@@ -116,7 +116,7 @@ def test_room_keys_do_not_gate_stateful_execution(monkeypatch):
         )
 
     monkeypatch.setattr(lean, "run_stateful_investigator", fake_investigator)
-    config = LlmConfig(provider="anthropic", api_key="fake-key")
+    config = LlmConfig()
 
     first = run_triangulated_analysis(["pd.pdf"], ["rd.pdf"], room_keys=[], llm_config=config)
     second = run_triangulated_analysis(

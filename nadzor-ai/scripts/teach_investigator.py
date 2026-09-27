@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -11,7 +10,7 @@ BACKEND = ROOT / "packages" / "backend"
 sys.path.insert(0, str(BACKEND))
 
 from app.inspector_memory import learn_from_feedback  # noqa: E402
-from app.llm import LlmConfig, credentials_from_file  # noqa: E402
+from app.llm import LOCAL_LLM_MODEL, LlmConfig  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,17 +20,14 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--feedback-file", type=Path, help="UTF-8 file with teacher/evaluator feedback")
     parser.add_argument("--source-type", default="teacher")
     parser.add_argument("--source-id", default="")
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default=LOCAL_LLM_MODEL)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     feedback = args.feedback or args.feedback_file.read_text(encoding="utf-8")
-    credentials = os.environ.get("GIGACHAT_CREDENTIALS", "").strip() or credentials_from_file("gigachat")
-    if not credentials:
-        raise SystemExit("GigaChat credentials not found in environment or local secrets/")
-    config = LlmConfig(provider="gigachat", api_key=credentials, model=args.model)
+    config = LlmConfig(model=args.model)
     ids = learn_from_feedback(
         config,
         feedback,

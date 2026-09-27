@@ -17,7 +17,7 @@
 
     # сверить разбор №5 с рабочей документацией
     python scripts/compare_with_rd.py --run 5 --rd РД.pdf [--rd РД2.pdf ...] \
-        --provider gigachat --api-key ВАШ_КЛЮЧ
+        [--no-llm]
 
     # взять последний разбор конкретного тома
     python scripts/compare_with_rd.py --for-document "имя файла тома.pdf" --rd РД.pdf
@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -45,7 +44,7 @@ from app.requirement_text_verify import (  # noqa: E402
     render_text_verify_report,
     verify_general_requirements_llm,
 )
-from registry_diff import _PROVIDER_ENV_KEY, _load_text_facts  # noqa: E402
+from registry_diff import _load_text_facts  # noqa: E402
 
 
 def _print_runs() -> None:
@@ -68,8 +67,9 @@ def main() -> None:
     parser.add_argument("--run", type=int, default=0, help="Номер разбора ПД (из --list)")
     parser.add_argument("--for-document", default="", help="Взять последний разбор этого файла")
     parser.add_argument("--rd", action="append", default=[], help="Файл(ы) рабочей документации")
-    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
-    parser.add_argument("--api-key", default="")
+    parser.add_argument("--no-llm", action="store_true",
+                        help="Не вызывать модель: смысловая сверка не выполнится и будет "
+                             "названа невыполненной")
     parser.add_argument("--model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--out", default="")
@@ -102,11 +102,8 @@ def main() -> None:
     if missing:
         sys.exit("ОШИБКА: файл(ы) --rd не найдены:\n" + "\n".join(f"  {p}" for p in missing))
 
-    api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
-    llm_config = (
-        LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
-        if api_key else None
-    )
+    llm_config = (None if args.no_llm
+                  else LlmConfig(base_url=args.base_url, model=args.model))
 
     # noqa: SIM115 — файл живёт весь прогон и закрывается в finally: вывод
     # пишется по мере готовности (Г.41), а не одним куском в конце.
@@ -147,8 +144,8 @@ def main() -> None:
 
         if llm_config is None:
             _emit("=== Смысловая сверка с текстом РД — НЕ выполнялась ===")
-            _emit("  Нужен ключ ЛЛМ: сверка идёт по смыслу, а не по совпадению символов.")
-            _emit("  Передайте --api-key или задайте переменную окружения.")
+            _emit("  Модель отключена флагом --no-llm: сверка идёт по смыслу, а не по")
+            _emit("  совпадению символов, и без модели её выполнить нечем.")
             return
 
         confirmed = {f.sentence_pd for f in general.findings

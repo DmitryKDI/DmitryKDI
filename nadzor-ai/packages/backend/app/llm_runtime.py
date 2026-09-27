@@ -15,9 +15,11 @@ from contextvars import ContextVar, copy_context
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-# GigaChat для физлиц по умолчанию даёт один одновременный поток. Более
-# высокая корпоративная квота включается только явно через окружение.
-DEFAULT_CONCURRENCY = 1
+# Сколько запросов к модели держать одновременно. Локальный сервер
+# (vLLM) сам собирает параллельные запросы в пакеты на GPU, поэтому
+# несколько одновременных вызовов быстрее, чем очередь по одному. Бюджет, а
+# не граница истины: больше — выше загрузка GPU и памяти под контекст.
+DEFAULT_CONCURRENCY = 4
 DEFAULT_CACHE_ENTRIES = 256
 DEFAULT_CLASSIFICATION_TOKENS = 1024
 DEFAULT_EXTRACTION_TOKENS = 4096
@@ -197,7 +199,7 @@ def text_batch_for(maximum: int) -> AdaptiveTextBatch:
 
 
 class AdaptiveLimiter:
-    """Единый лимит GigaChat с осторожным восстановлением после 429.
+    """Единый лимит запросов к модели с осторожным восстановлением после 429.
 
     Лимитер не решает семантический приоритет задач, но является единой точкой
     сериализации для провайдера и явно измеряет ожидание слота. Это позволяет
@@ -264,8 +266,8 @@ class AdaptiveLimiter:
                 self.succeeded()
 
 
-GIGACHAT_LIMITER = AdaptiveLimiter(
-    positive_env("NADZOR_GIGACHAT_CONCURRENCY", DEFAULT_CONCURRENCY)
+PROVIDER_LIMITER = AdaptiveLimiter(
+    positive_env("NADZOR_LLM_CONCURRENCY", DEFAULT_CONCURRENCY)
 )
 
 
@@ -276,7 +278,7 @@ def parallel_map(function, items, workers: int | None = None):
     запрос ещё выполняется. Наружу результаты по-прежнему выдаются в исходном
     порядке, чтобы существующие callback-и и отчёты не меняли семантику.
     """
-    budget = workers or positive_env("NADZOR_GIGACHAT_CONCURRENCY", DEFAULT_CONCURRENCY)
+    budget = workers or positive_env("NADZOR_LLM_CONCURRENCY", DEFAULT_CONCURRENCY)
     iterator = enumerate(items)
     next_to_yield = 0
     ready = {}

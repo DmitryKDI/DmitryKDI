@@ -21,7 +21,7 @@ sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.inspector_memory import lessons_prompt  # noqa: E402
-from app.llm import LlmConfig, call_llm_json, credentials_from_file  # noqa: E402
+from app.llm import LOCAL_LLM_MODEL, LlmConfig, call_llm_json  # noqa: E402
 from app.llm_runtime import measure_run  # noqa: E402
 from entity_guided_retrieval import priority_rd_context  # noqa: E402
 from requirement_driven_retrieval import (  # noqa: E402
@@ -159,10 +159,9 @@ def _priority_context(pd_path: Path, rd_paths: Sequence[Path]) -> str:
 
 
 def _config(model: str) -> LlmConfig:
-    credentials = os.environ.get("GIGACHAT_CREDENTIALS", "").strip() or credentials_from_file("gigachat")
-    if not credentials:
-        raise RuntimeError("GigaChat credentials not found in environment or local secrets/")
-    return LlmConfig(provider="gigachat", api_key=credentials, model=model)
+    # Модель локальная: ключа нет, адрес и имя задаются окружением
+    # развёртывания, --model лишь переопределяет имя.
+    return LlmConfig(model=model)
 
 
 def _extract_requirements(pd_path: Path, config: LlmConfig) -> list[dict]:
@@ -405,7 +404,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Two-pass PD->RD comparator with optional deep requirement retrieval")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default=LOCAL_LLM_MODEL)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--blind", action="store_true", help="ignore learned inspector lessons")
     parser.add_argument(

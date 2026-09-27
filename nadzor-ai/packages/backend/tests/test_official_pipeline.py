@@ -64,10 +64,12 @@ def test_page_ranking_keeps_a_fallback_when_terms_do_not_match():
     print("OK: ранжирование не отбрасывает страницы только из-за OCR или иной лексики")
 
 
-def test_missing_key_is_reported_for_every_parameter_and_not_as_clean_result():
+def test_missing_model_is_reported_for_every_parameter_and_not_as_clean_result(monkeypatch):
+    from app import llm
+    monkeypatch.setattr(llm, "LOCAL_LLM_MODEL", "")
     result = official_pipeline.run_official_analysis(
         [document(1, "PD"), document(2, "RD")],
-        LlmConfig(provider="gigachat", api_key="", base_url="", model=""),
+        LlmConfig(),
     )
     assert result["coverage"] == {"total": 106, "completed": 0, "not_run": 106}
     assert all(item["completeness_status"] == "CLARIFICATION_REQUIRED"
@@ -76,10 +78,10 @@ def test_missing_key_is_reported_for_every_parameter_and_not_as_clean_result():
                for item in result["checks"])
     assert result["document_selection"]["selected"] == {"PD": [1], "RD": [2]}
     assert result["document_selection"]["problems"]["ID"] == "документ стадии не загружен"
-    print("OK: отсутствие ключа явно оставляет все параметры невыполненными")
+    print("OK: неподключённая модель явно оставляет все параметры невыполненными")
 
 
-def test_official_flow_rejects_a_non_domestic_model_provider():
+def test_official_flow_rejects_a_cloud_model_provider():
     result = official_pipeline.run_official_analysis(
         [document(1, "PD"), document(2, "RD")],
         LlmConfig(provider="anthropic", api_key="synthetic", base_url="", model=""),
@@ -87,8 +89,8 @@ def test_official_flow_rejects_a_non_domestic_model_provider():
     assert result["coverage"]["completed"] == 0
     assert all(item["completeness_status"] == "CLARIFICATION_REQUIRED"
                for item in result["checks"])
-    assert all("GigaChat" in item["explanation"] for item in result["checks"])
-    print("OK: официальный сценарий не уходит к неотечественному провайдеру")
+    assert all("локальная модель" in item["explanation"] for item in result["checks"])
+    print("OK: официальный сценарий не уходит к облачному провайдеру")
 
 
 def test_candidate_needs_verified_quotes_and_boxes_from_both_sides(tmp_path, monkeypatch):
@@ -132,7 +134,7 @@ def test_candidate_needs_verified_quotes_and_boxes_from_both_sides(tmp_path, mon
     })
 
     result = official_pipeline.run_official_analysis(
-        documents, LlmConfig(provider="gigachat", api_key="synthetic", base_url="", model=""),
+        documents, LlmConfig(),
         graphic_runner=None,
     )
     check = result["checks"][0]
@@ -162,7 +164,7 @@ def test_no_difference_without_sources_remains_incomplete(monkeypatch):
     })
     result = official_pipeline.run_official_analysis(
         [document(1, "PD"), document(2, "RD")],
-        LlmConfig(provider="gigachat", api_key="synthetic", base_url="", model=""),
+        LlmConfig(),
         graphic_runner=None,
     )
     check = result["checks"][0]
@@ -207,7 +209,7 @@ def test_graphic_analysis_is_separate_and_keeps_page_boxes(monkeypatch):
 
     result = official_pipeline.run_official_analysis(
         [document(1, "PD"), document(2, "RD")],
-        LlmConfig(provider="gigachat", api_key="synthetic", base_url="", model=""),
+        LlmConfig(),
         graphic_runner=graphic_runner,
     )
     graphic = result["graphic_analysis"]

@@ -18,7 +18,7 @@ from .compliance import (
     STATUS_NEEDS_CHECK,
     STATUS_NOT_CHECKED,
 )
-from .llm import LlmConfig, call_llm_json
+from .llm import LlmConfig, call_llm_json, model_configured
 from .requirement_registry import Requirement
 from .semantic_contract import (
     APPEARS_COMPLIANT,
@@ -224,8 +224,8 @@ def check_requirements_semantic(
     if not requirements:
         result.counts = {}
         return result
-    if config is None or not config.api_key:
-        result.not_run.append("semantic requirement verification — no AI key")
+    if not model_configured(config):
+        result.not_run.append("semantic requirement verification — local model not connected")
         for req in requirements:
             result.items.append(ComplianceItem(req, STATUS_NOT_CHECKED, "semantic verification did not run"))
         result.counts = {STATUS_NOT_CHECKED: len(result.items)}

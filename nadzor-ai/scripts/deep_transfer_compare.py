@@ -241,7 +241,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Strict real-transfer PD/RD comparator")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default="", help="Имя локальной модели; пусто — из окружения развёртывания")
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 

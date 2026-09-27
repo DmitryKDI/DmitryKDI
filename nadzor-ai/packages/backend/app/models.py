@@ -369,7 +369,7 @@ class Settings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     # Г.94 — инструмент делается под GigaChat: провайдер по умолчанию он,
     # а не тот, что оставался от разработки. Инспектор ничего не выбирает.
-    provider: Mapped[str] = mapped_column(String, default="gigachat")
+    provider: Mapped[str] = mapped_column(String, default="local")
     base_url: Mapped[str] = mapped_column(String, default="")
     model: Mapped[str] = mapped_column(String, default="")
     api_key: Mapped[str] = mapped_column(String, default="")

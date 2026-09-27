@@ -93,7 +93,7 @@ def _ocr_message(facts: DocumentFacts) -> str:
     if facts.ocr_status == "not_required":
         return "на всех страницах доступен текстовый слой"
     if facts.ocr_status == "not_configured":
-        return ("Yandex Vision OCR не настроен; страницы без текстового слоя "
+        return ("движок распознавания не установлен; страницы без текстового слоя "
                 "и чертежи не распознаны" + graphic)
     if facts.ocr_status == "error":
         return (f"распознано {len(facts.ocr_pages_done)} из {facts.ocr_pages_total}; "
@@ -103,7 +103,7 @@ def _ocr_message(facts: DocumentFacts) -> str:
         # это несделанная работа, и называть её надо так (Г.10).
         return (f"бюджет распознавания исчерпан: не просмотрено чертёжных "
                 f"листов {len(facts.ocr_graphic_skipped)}" + graphic)
-    return f"Yandex Vision OCR обработал страниц: {len(facts.ocr_pages_done)}" + graphic
+    return f"распознано локально страниц: {len(facts.ocr_pages_done)}" + graphic
 
 
 def page_rows(facts: DocumentFacts) -> list[dict]:

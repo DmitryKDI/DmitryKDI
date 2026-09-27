@@ -37,12 +37,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .documents import DocumentFacts, extract_document_facts
-from .yandex_ocr import is_configured as yandex_ocr_is_configured
+from .local_ocr import is_configured as ocr_is_configured
 
 # Версия разборщика. Поднимается при ЛЮБОМ изменении того, что и как
 # извлекается из страницы: иначе сохранённый разбор молча отдавался бы по
 # старым правилам, и новое поведение проверялось бы на старых данных (Г.10).
-FACTS_VERSION = 2
+# 3 — распознавание перенесено на локальный движок и дополнено графическим
+# OCR чертёжных листов. Прежняя правка графического OCR версию не подняла,
+# и уже загруженные тома отдавались бы из памяти без него.
+FACTS_VERSION = 3
 
 STORE_PATH = Path(os.environ.get(
     "FACTS_STORE_DB",
@@ -204,7 +207,7 @@ def facts_for(path: str | Path, name: str, digest: str | None = None) -> Documen
     should_refresh_ocr = (
         remembered is not None
         and remembered.ocr_status == "not_configured"
-        and yandex_ocr_is_configured()
+        and ocr_is_configured()
     )
     if remembered is not None and not should_refresh_ocr:
         # Имя берётся из запроса, а не из памяти: один и тот же файл может

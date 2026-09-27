@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import app.semantic_requirement_runtime as runtime
 from app.compliance import STATUS_CONFIRMED, STATUS_NEEDS_CHECK
+from app.llm import LlmConfig
 from app.requirement_registry import Requirement
 
 
@@ -16,7 +15,7 @@ def _pool():
 
 
 def _config():
-    return SimpleNamespace(api_key="fake-key")
+    return LlmConfig()
 
 
 def _region():

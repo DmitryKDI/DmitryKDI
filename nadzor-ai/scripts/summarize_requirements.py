@@ -25,17 +25,16 @@
 сводку»), поэтому отдельного прохода на отсев шума больше нет: промпт сам
 отделяет требование от декларации. Цена известна и принята — на томе в 177
 страниц это ~69 вызовов против ~5 у regex-пути; взамен исчезает слепое
-пятно регулярки (реальный пропуск Г.56). Без ключа ЛЛМ шаг 3 деградирует
-на regex-каталог: сводка выходит сырой, но программа не встаёт.
+пятно регулярки (реальный пропуск Г.56). С флагом --no-llm шаг 3 идёт
+regex-каталогом: сводка выходит сырой, но программа не встаёт.
 
 Запуск:
     python scripts/summarize_requirements.py --pd том.pdf [--pd том2.pdf ...] \
-        --provider gigachat --api-key ВАШ_КЛЮЧ [--out summary.txt]
+        [--no-llm] [--out summary.txt]
 """
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -64,7 +63,6 @@ from app.requirement_registry import extract_general_requirements  # noqa: E402
 from app.set_overview import official_section_label  # noqa: E402
 from app.stamp_vision import read_stamp_ocr  # noqa: E402
 from registry_diff import (  # noqa: E402
-    _PROVIDER_ENV_KEY,
     _extract_requirements_llm_visible,
     _load_text_facts,
 )
@@ -89,15 +87,16 @@ def _identity_line(path: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pd", action="append", required=True, help="Файл(ы) проектной документации")
-    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
     parser.add_argument(
-        "--api-key", default="",
-        help="Ключ провайдера. Если не передан, берётся из переменной окружения по провайдеру "
-             f"({', '.join(_PROVIDER_ENV_KEY.values())}). Без ключа работает regex-путь: "
-             "сводка выходит сырой, но прогон не падает.",
+        "--no-llm", action="store_true",
+        help="Не вызывать модель: работает regex-путь, сводка выходит сырой, но прогон не "
+             "падает. Раньше этот путь включался отсутствием облачного ключа — у локальной "
+             "модели ключа нет, поэтому выбор сделан явным.",
     )
-    parser.add_argument("--model", default="")
-    parser.add_argument("--base-url", default="")
+    parser.add_argument("--model", default="",
+                        help="Имя модели на локальном сервере; по умолчанию — из окружения")
+    parser.add_argument("--base-url", default="",
+                        help="Адрес локального сервера модели; по умолчанию — из окружения")
     parser.add_argument("--out", default="", help="Дублировать вывод в файл по мере готовности (Г.41)")
     parser.add_argument(
         "--sheet-name-vision", type=int, default=0, metavar="N",
@@ -120,15 +119,12 @@ def main() -> None:
         sys.exit("ОШИБКА: файл(ы) --pd не найдены, отчёт НЕ построен (не путать с "
                  "«в документе нет требований»):\n" + "\n".join(f"  {p}" for p in missing))
 
-    api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
-    llm_config = (
-        LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
-        if api_key else None
-    )
+    llm_config = (None if args.no_llm
+                  else LlmConfig(base_url=args.base_url, model=args.model))
 
     if args.check_llm:
         ok, message = check_llm_reachable(llm_config)
-        print(f"Проверка связи [{args.provider}]: {message}")
+        print(f"Проверка связи с локальной моделью: {message}")
         sys.exit(0 if ok else 2)
 
     # noqa: SIM115 — файл живёт весь прогон и закрывается в finally: вывод
@@ -167,9 +163,9 @@ def main() -> None:
             # Г.91 — связь проверяется ДО десятков вызовов, а не по их итогу.
             reachable, why = check_llm_reachable(llm_config)
             if not reachable:
-                sys.exit(f"ОШИБКА: связь с провайдером {args.provider} не прошла — {why}\n"
+                sys.exit(f"ОШИБКА: локальная модель не отвечает — {why}\n"
                          "  Разбор НЕ выполнен. Это не «в документе нет требований» (Г.10/Г.77).\n"
-                         "  Без ключа осознанно: запустите без --api-key — будет regex-путь.")
+                         "  Без модели осознанно: запустите с --no-llm — будет regex-путь.")
             # Г.99 — наименования листов, не давшиеся текстом, дочитываются
             # по изображению штампа. Только после проверки связи и только по
             # явному бюджету: шаг стоит вызов на лист.
@@ -188,9 +184,9 @@ def main() -> None:
             requirements = _extract_requirements_llm_visible(
                 pd_text_facts, llm_config, _emit, on_norms=llm_norms.extend)
         else:
-            _emit("  Ключ ЛЛМ не задан — regex-путь: сводка будет СЫРОЙ, с шумом.")
+            _emit("  Модель отключена флагом --no-llm — regex-путь: сводка будет СЫРОЙ.")
             _emit("  Это не ошибка, но результат хуже: чтобы модель отсеяла шум сама,")
-            _emit("  передайте --api-key или задайте переменную окружения.")
+            _emit("  запустите без --no-llm.")
             requirements = extract_general_requirements(pd_text_facts)
             for req in requirements:  # Г.86: regex-путь не знает про раздел, проставляем из страниц
                 for fact in pd_text_facts:
@@ -226,8 +222,8 @@ def main() -> None:
             requirements,
             documents=[Path(p).name for p in args.pd],
             extractor="llm" if llm_config is not None else "regex",
-            provider=args.provider if llm_config is not None else "",
-            model=args.model if llm_config is not None else "",
+            provider=llm_config.provider if llm_config is not None else "",
+            model=llm_config.resolved_model() if llm_config is not None else "",
         )
         _emit(f"=== Сохранено: прогон №{run_id} ===")
         _emit(f"  Сверка с РД по этому разбору: python scripts/compare_with_rd.py --run {run_id} --rd <файл РД>")

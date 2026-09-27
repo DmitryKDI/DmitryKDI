@@ -1,6 +1,5 @@
 """Проверки общего бюджета запросов и адресации кэша без внешнего API."""
 import sys
-import base64
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,15 +15,16 @@ from app import llm, llm_runtime
 
 @pytest.fixture(autouse=True)
 def fresh_runtime(monkeypatch):
-    monkeypatch.setattr(llm_runtime, "GIGACHAT_LIMITER", AdaptiveLimiter(2))
+    monkeypatch.setattr(llm_runtime, "PROVIDER_LIMITER", AdaptiveLimiter(2))
     llm_runtime.RESULT_CACHE.clear()
     llm_runtime.IMAGE_CACHE.clear()
-    llm._gigachat_token_cache.clear()
-    monkeypatch.setattr(llm, "ca_bundle", lambda: True)
 
 
 def config():
-    return llm.LlmConfig("gigachat", base64.b64encode(b"synthetic:secret").decode(), model="model")
+    return llm.LlmConfig(model="model")
+
+
+LOCAL_CHAT = "http://llm:8000/v1/chat/completions"
 
 
 def monkeypatch_setter(module, name, value):
@@ -38,12 +38,7 @@ def fake_transport(monkeypatch, content='{"items": []}', finish_reason="stop"):
     requests = []
     def post(url, **kwargs):
         requests.append((url, kwargs))
-        if url == llm.GIGACHAT_OAUTH_URL:
-            data = {"access_token": "synthetic-token"}
-        elif url.endswith("/files"):
-            data = {"id": "synthetic-image"}
-        else:
-            data = {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
+        data = {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
         return httpx.Response(200, json=data, request=httpx.Request("POST", url))
     monkeypatch.setattr(llm.httpx, "post", post)
     return requests
@@ -113,18 +108,6 @@ def test_invalid_or_truncated_answer_is_not_cached_as_no_findings(monkeypatch, c
     print("OK: повреждённый и усечённый ответы дают ошибку и не кэшируются")
 
 
-def test_image_upload_reused_across_different_requirements(monkeypatch):
-    calls = fake_transport(monkeypatch)
-    image = llm.png_bytes_to_data_url(b"synthetic pixels")
-    with measure_run() as metrics:
-        for text in ("requirement A", "requirement B"):
-            llm.call_llm_json(config(), "rules", text, images=[image], operation="vision")
-    assert sum(url.endswith("/files") for url, _ in calls) == 1
-    assert metrics.snapshot()["image_cache_hits"] == 1
-    assert metrics.snapshot()["image_uploads"] == 1
-    print("OK: страница загружается однажды для нескольких проверок требований")
-
-
 def test_operation_specific_response_budget_reaches_provider(monkeypatch):
     calls = fake_transport(monkeypatch)
     monkeypatch.setenv("NADZOR_LLM_CLASSIFICATION_MAX_TOKENS", "777")
@@ -164,7 +147,7 @@ def test_http_error_does_not_expose_response_body(monkeypatch):
         return httpx.Response(422, text="sensitive document", request=httpx.Request("POST", url))
     monkeypatch.setattr(llm.httpx, "post", post)
     with pytest.raises(httpx.HTTPStatusError) as error:
-        llm._post_json(llm.GIGACHAT_API_BASE + "/v1/chat/completions")
+        llm._post_json(LOCAL_CHAT)
     assert "sensitive document" not in str(error.value)
     print("OK: исключение HTTP не раскрывает документ из ответа провайдера")
 
@@ -179,9 +162,9 @@ def test_long_retry_after_stops_without_early_retry(monkeypatch):
     monkeypatch.setattr(llm.httpx, "post", post)
     with measure_run() as metrics:
         with pytest.raises(RuntimeError):
-            llm._post_json(llm.GIGACHAT_API_BASE + "/v1/chat/completions")
+            llm._post_json(LOCAL_CHAT)
     assert len(calls) == 1
-    assert llm_runtime.GIGACHAT_LIMITER.limit == 1
+    assert llm_runtime.PROVIDER_LIMITER.limit == 1
     assert metrics.snapshot()["rate_limits"] == 1
     assert metrics.snapshot()["retries"] == 0
     print("OK: длинный Retry-After не вызывает ранний повтор и снижает параллельность")
@@ -200,41 +183,6 @@ def test_identical_parallel_calls_are_single_flight(monkeypatch):
     print("OK: одновременно запрошенный одинаковый результат оплачивается один раз")
 
 
-def test_different_images_can_upload_in_parallel(monkeypatch):
-    barrier = threading.Barrier(2)
-    def post(url, **kwargs):
-        barrier.wait(timeout=5)
-        return httpx.Response(200, json={"id": "image"}, request=httpx.Request("POST", url))
-    monkeypatch.setattr(llm.httpx, "post", post)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        ids = list(pool.map(lambda data: llm._gigachat_upload_image("token", data), [b"a", b"b"]))
-    assert ids == ["image", "image"]
-    print("OK: разные страницы загружаются параллельно в пределах общего лимита")
-
-
-def test_expired_remote_file_gets_one_reupload(monkeypatch):
-    counts = {"chat": 0, "upload": 0}
-    def post(url, **kwargs):
-        if url == llm.GIGACHAT_OAUTH_URL:
-            payload = {"access_token": "token"}
-        elif url.endswith("/files"):
-            counts["upload"] += 1
-            payload = {"id": str(counts["upload"])}
-        else:
-            counts["chat"] += 1
-            if counts["chat"] == 1:
-                return httpx.Response(404, request=httpx.Request("POST", url))
-            assert kwargs["json"]["messages"][1]["attachments"] == ["2"]
-            payload = {"choices": [{"message": {"content": '{"items": []}'}}]}
-        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
-    monkeypatch.setattr(llm.httpx, "post", post)
-    result = llm.call_llm_json(config(), "rules", "text",
-                               images=[llm.png_bytes_to_data_url(b"image")], operation="vision")
-    assert result == {"items": []}
-    assert counts == {"chat": 2, "upload": 2}
-    print("OK: недоступный file_id обновляется одним повтором без подмены результата")
-
-
 def test_parallel_map_runs_workers_concurrently(monkeypatch):
     """parallel_map с workers=2 должен выполнять вызовы параллельно,
     а не последовательно: общее время ≈ время одного вызова, а не суммы."""
@@ -242,7 +190,7 @@ def test_parallel_map_runs_workers_concurrently(monkeypatch):
     import app.llm_runtime as runtime
 
     # Мокаем limiter, чтобы он не блокировал
-    monkeypatch.setattr(runtime, "GIGACHAT_LIMITER", runtime.AdaptiveLimiter(4))
+    monkeypatch.setattr(runtime, "PROVIDER_LIMITER", runtime.AdaptiveLimiter(4))
     calls = []
 
     def slow_work(value):
@@ -274,7 +222,7 @@ def test_parallel_map_timeout_wrapped_does_not_block_others(monkeypatch):
     import time
     import app.llm_runtime as runtime
 
-    monkeypatch.setattr(runtime, "GIGACHAT_LIMITER", runtime.AdaptiveLimiter(4))
+    monkeypatch.setattr(runtime, "PROVIDER_LIMITER", runtime.AdaptiveLimiter(4))
     call_count = {"n": 0}
 
     def work(value):
@@ -308,7 +256,10 @@ def test_cache_hit_miss_metrics_are_recorded(monkeypatch):
                           operation="text_verify", source_digest="page1")
     snapshot = metrics.snapshot()
     assert snapshot["result_cache_hits"] == 1, "второй вызов взят из кэша"
-    assert snapshot["requests"] == 2, "оба вызова учтены"
+    # Один запрос, а не два: второй вызов взят из кэша и сети не касался.
+    # Прежнее «2» считало ещё и авторизацию облачного провайдера — у
+    # локальной модели её нет.
+    assert snapshot["requests"] == 1, "в сеть ушёл только первый вызов"
     # Проверка: к чату обращались только один раз (второй — кэш)
     chat_calls = sum(1 for url, _ in calls if url.endswith("/chat/completions"))
     assert chat_calls == 1, f"ожидается 1 вызов чата (hit), получено {chat_calls}"
@@ -321,8 +272,8 @@ def test_parallel_map_order_with_random_delays():
     import random
     import app.llm_runtime as runtime
 
-    old_limiter = runtime.GIGACHAT_LIMITER
-    runtime.GIGACHAT_LIMITER = runtime.AdaptiveLimiter(4)
+    old_limiter = runtime.PROVIDER_LIMITER
+    runtime.PROVIDER_LIMITER = runtime.AdaptiveLimiter(4)
     try:
         def work(value):
             time.sleep(random.uniform(0.01, 0.05))
@@ -331,5 +282,5 @@ def test_parallel_map_order_with_random_delays():
         results = list(runtime.parallel_map(work, list(range(5)), workers=2))
         assert results == [0, 1, 2, 3, 4], f"порядок нарушен: {results}"
     finally:
-        runtime.GIGACHAT_LIMITER = old_limiter
+        runtime.PROVIDER_LIMITER = old_limiter
     print("OK: порядок результатов сохранён при рандомных задержках workers")

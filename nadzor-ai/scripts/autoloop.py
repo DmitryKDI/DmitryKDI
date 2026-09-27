@@ -1,8 +1,11 @@
 """Bounded local blind-run automation for NADZOR.AI.
 
 Ground truth stays outside runtime. The loop can automate git sync -> clean
-workspace/LLM cache -> backend -> upload PDFs -> lean run -> logs -> GigaChat
-review -> sanitized handoff -> external evaluator -> optional coding agent.
+workspace/LLM cache -> backend -> upload PDFs -> lean run -> logs ->
+sanitized handoff -> external evaluator -> optional coding agent.
+
+Шаг внешнего ревью облачной моделью удалён: решение работает в закрытом
+контуре, и материалы прогона наружу не передаются ни на каком этапе.
 """
 from __future__ import annotations
 
@@ -24,7 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 BACKEND = ROOT / "packages" / "backend"
 RUN_LOG = ROOT / "data" / "run_logs" / "tasks" / "triangulated" / "latest.json"
-PEER_REVIEW = ROOT / "run_logs" / "gigachat_peer_review_latest.json"
 ITERATIONS = ROOT / "run_logs" / "autoloop"
 HANDOFF_DIR = ROOT / "handoff"
 HANDOFF_FILE = HANDOFF_DIR / "latest_handoff.json"
@@ -163,15 +165,6 @@ def copy_if_exists(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def run_peer_review(iter_dir: Path) -> None:
-    completed = run([sys.executable, "scripts/gigachat_current_review.py"], cwd=ROOT, check=False)
-    if completed.returncode != 0:
-        (iter_dir / "peer_review_error.txt").write_text(
-            f"gigachat_current_review.py exited {completed.returncode}\n", encoding="utf-8"
-        )
-    copy_if_exists(PEER_REVIEW, iter_dir / "gigachat_peer_review_latest.json")
-
-
 def run_hook(command: str, iter_dir: Path, *, label: str, handoff: Path | None = None) -> int:
     env = os.environ.copy()
     env["NADZOR_ITERATION_DIR"] = str(iter_dir)
@@ -207,7 +200,6 @@ def _sanitize_public(value):
 
 
 def build_public_handoff(iter_dir: Path, evaluator_code: int | None) -> Path:
-    peer = _safe_json(iter_dir / "gigachat_peer_review_latest.json")
     tri = _safe_json(iter_dir / "triangulated_latest.json")
     manifest = _safe_json(iter_dir / "manifest.json")
     metrics = tri.get("metrics") if isinstance(tri.get("metrics"), dict) else {}
@@ -217,8 +209,6 @@ def build_public_handoff(iter_dir: Path, evaluator_code: int | None) -> Path:
         "iteration": manifest.get("iteration"),
         "blind": True,
         "ground_truth_visible_to_runtime": False,
-        "model": peer.get("model"),
-        "review_topic": peer.get("review_topic"),
         "runtime_health": {
             "technical_status": tri.get("technical_status"),
             "requests": metrics.get("requests"),
@@ -228,14 +218,11 @@ def build_public_handoff(iter_dir: Path, evaluator_code: int | None) -> Path:
             "result_cache_hits": metrics.get("result_cache_hits"),
             "elapsed_seconds": metrics.get("elapsed_seconds"),
         },
-        "runtime_review": _sanitize_public(peer.get("runtime_review") or {}),
-        "architecture_review": _sanitize_public(peer.get("architecture_review") or {}),
         "evaluator_exit_code": evaluator_code,
         "user_requirements": [
             "never modify main from autoloop",
             "fresh LLM inference for blind evaluation",
             "ground truth only in external evaluator",
-            "GigaChat review after every run",
             "local raw logs must not be published",
             "publish only sanitized handoff and notify the user",
         ],
@@ -278,7 +265,7 @@ def publish_handoff(branch: str, source_sha: str | None) -> bool:
         print("handoff unchanged; nothing to publish", flush=True)
         return True
 
-    message = f"chore: publish GigaChat handoff {(source_sha or git_sha())[:8]}"
+    message = f"chore: publish blind-run handoff {(source_sha or git_sha())[:8]}"
     run(["git", "commit", "-m", message, "--", HANDOFF_RELATIVE], cwd=REPO)
     pushed = run(["git", "push", "origin", f"HEAD:{branch}"], cwd=REPO, check=False)
     if pushed.returncode != 0:
@@ -328,7 +315,6 @@ def iteration(args, index: int) -> tuple[Path, int | None]:
             process.kill()
 
     copy_if_exists(RUN_LOG, iter_dir / "triangulated_latest.json")
-    run_peer_review(iter_dir)
 
     evaluator_code = None
     if args.evaluator_cmd:

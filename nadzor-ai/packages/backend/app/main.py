@@ -44,9 +44,9 @@ from .level_pages import augment_room_index_with_level_fallback
 from .llm import (
     LlmConfig,
     available_models,
-    ca_bundle_description,
     check_llm_reachable,
-    credentials_from_file,
+    local_config,
+    model_configured,
 )
 from .matching import DocumentInput, match_page_pairs
 from .pd_stage import (
@@ -99,7 +99,7 @@ def _ensure_schema_and_defaults() -> None:
             # Г.94 — по умолчанию GigaChat: инструмент делается под него, и
             # инспектор ничего не выбирает. Ключ подхватывается из
             # GIGACHAT_CREDENTIALS, если не задан в настройках (см. _llm_config).
-            db.add(models.Settings(id=1, provider="gigachat", base_url="", model="", api_key=""))
+            db.add(models.Settings(id=1, provider="local", base_url="", model="", api_key=""))
             db.commit()
     finally:
         db.close()
@@ -153,7 +153,10 @@ def _normalize_severity(value: object) -> str:
     return ""
 
 
-_PROVIDER_ENV_KEY = {"gigachat": "GIGACHAT_CREDENTIALS", "anthropic": "ANTHROPIC_API_KEY"}
+# Поле `tls` ответа проверки связи сохранено ради совместимости контракта.
+# Модель работает внутри контура по внутренней сети контейнеров: внешнего
+# канала, который нужно было бы защищать сертификатами, у решения нет.
+_LOCAL_TRANSPORT = "внутренняя сеть контура, внешних соединений нет"
 
 
 # Г.99 — сколько вызовов модели разрешено потратить на чтение наименований
@@ -176,28 +179,13 @@ def _sheet_vision_budget() -> int:
 
 
 def _llm_config(db: Session) -> LlmConfig:
-    """Конфигурация провайдера для прогона, запущенного из интерфейса.
+    """Конфигурация модели для прогона, запущенного из интерфейса.
 
-    Г.94 — ключ берётся из настроек, а если там пусто, из переменной
-    окружения по провайдеру. Так администратор может задать ключ один раз
-    при развёртывании, и инспектор не вводит вообще ничего: загрузил
-    документы и нажал кнопку. Тот же приём, что уже сделан в CLI (Г.82),
-    где отсутствие env-фолбэка приводило к молчаливому прогону без ключа.
+    Модель локальная и задаётся при развёртывании, поэтому настройки из базы
+    здесь не читаются: в базе, заведённой до перехода на закрытый контур,
+    остались облачный провайдер и имя облачной модели (см. llm.local_config).
     """
-    s = db.query(models.Settings).first()
-    provider = s.provider if s is not None else "gigachat"
-    # Три источника по убыванию явности: настройки → переменная окружения →
-    # файл, положенный в каталог `secrets/` (Г.112). Последний нужен, чтобы
-    # стенд был настроен сразу после развёртывания: положил выданный файл —
-    # и всё работает, ничего не вводя. В репозиторий он не попадает.
-    api_key = ((s.api_key if s is not None else "")
-               or os.environ.get(_PROVIDER_ENV_KEY.get(provider, ""), "")
-               or credentials_from_file(provider))
-    return LlmConfig(
-        provider=provider, api_key=api_key,
-        base_url=s.base_url if s is not None else "",
-        model=s.model if s is not None else "",
-    )
+    return local_config()
 
 
 # ---------- Документы ----------
@@ -817,7 +805,7 @@ def _run_pd(run_id: int) -> None:
 
         run.stage = "проверяю связь с ИИ"
         db.commit()
-        reachable, why = check_llm_reachable(config if config.api_key else None)
+        reachable, why = check_llm_reachable(config)
         if not reachable:
             # Состав уже посчитан и сохранён выше — инспектор увидит его
             # вместе с причиной, по которой требования не извлекались.
@@ -1135,7 +1123,9 @@ def _run_compliance(run_id: int) -> None:
         run.stage = "проверяю связь с ИИ"
         run.units_total = len(requirements)
         db.commit()
-        has_key = bool(config.api_key)
+        # Раньше называлось has_key: наличие ключа облака. У локальной модели
+        # ключа нет, и проверка по нему молча выключала бы сверку целиком.
+        has_key = model_configured(config)
         if has_key:
             reachable, why = check_llm_reachable(config)
             if not reachable:
@@ -1421,7 +1411,7 @@ def add_review_message(run_id: int, body: schemas.ReviewMessageCreate,
 
     config = _llm_config(db)
     answer, why = review_dialog.answer_inspector(
-        config if config.api_key else None, run.report, text,
+        config if model_configured(config) else None, run.report, text,
         history=history, examples_block=examples)
 
     reply = models.ReviewMessage(
@@ -1461,20 +1451,19 @@ def llm_check(db: Session = Depends(get_session)):
     о проблеме до запуска разбора на сотни страниц, а не по его пустому
     результату."""
     config = _llm_config(db)
-    if not config.api_key:
-        return schemas.LlmCheckOut(
-            reachable=False, provider=config.provider,
-            message="ключ провайдера не задан — ни в настройках, ни в переменной окружения "
-                    f"{_PROVIDER_ENV_KEY.get(config.provider, '')}",
-            tls=ca_bundle_description(),
-        )
-    ok, message = check_llm_reachable(config)
+    if not model_configured(config):
+        # «Модель не задана» и «модель не отвечает» требуют от администратора
+        # разного: подменять одно другим значит повторять Г.10.
+        ok, message = False, ("локальная модель не задана: укажите "
+                              "NADZOR_LOCAL_LLM_MODEL и NADZOR_LOCAL_LLM_URL")
+    else:
+        ok, message = check_llm_reachable(config)
     # Перечень моделей запрашивается только когда связь уже подтверждена:
     # при мёртвой связи это второй вызов с заранее известным исходом.
     models = available_models(config) if ok else None
     return schemas.LlmCheckOut(
         reachable=ok, provider=config.provider, message=message,
-        tls=ca_bundle_description(),
+        tls=_LOCAL_TRANSPORT,
         model=config.resolved_model(),
         model_available=models.configured_available if models else None,
         models_available=models.models if models else [],
@@ -1610,7 +1599,16 @@ def _settings_out(row: "models.Settings", db: Session) -> schemas.SettingsOut:
     «не задан» только потому, что поле в базе пустое.
     """
     out = schemas.SettingsOut.model_validate(row)
-    out.api_key_set = bool(_llm_config(db).api_key)
+    # Показывается модель, которой прогон реально пойдёт, а не строка базы:
+    # в базе, заведённой до закрытого контура, остались облачные значения,
+    # и показать их значило бы описывать не ту систему, что работает.
+    effective = local_config()
+    out.provider = effective.provider
+    out.model = effective.resolved_model()
+    out.base_url = effective.resolved_base_url()
+    # Локальной модели ключ не нужен. Поле оставлено в контракте, чтобы
+    # старый интерфейс не падал, а значение говорит правду: ключа нет.
+    out.api_key_set = False
     return out
 
 

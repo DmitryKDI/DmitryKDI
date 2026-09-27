@@ -18,7 +18,7 @@
 они называются, скрипт не знает: и то и другое приходит аргументами
 (Г.107 — никакой привязки к конкретному комплекту).
 
-Другой провайдер для сравнения:  --provider anthropic --api-key …
+Другая локальная модель для сравнения:  --model <имя> [--base-url <адрес>]
 """
 from __future__ import annotations
 
@@ -82,14 +82,11 @@ def main() -> None:
     ap.add_argument("--doc", action="append", required=True, metavar="МЕТКА=ПУТЬ",
                     help="документ комплекта: метка из эталона и путь к файлу; "
                          "можно указывать многократно")
-    ap.add_argument("--provider", default="local")
     ap.add_argument("--model", default="")
     ap.add_argument("--base-url", default="")
-    ap.add_argument("--api-key", default="")
     args = ap.parse_args()
 
-    config = LlmConfig(provider=args.provider, api_key=args.api_key,
-                       model=args.model, base_url=args.base_url)
+    config = LlmConfig(model=args.model, base_url=args.base_url)
     docs = {}
     for item in args.doc:
         if "=" not in item:

@@ -1,6 +1,6 @@
 """Run synthetic PD/RD curriculum with cumulative external memory.
 
-This is not weight fine-tuning. Each synthetic case is evaluated by GigaChat.
+This is not weight fine-tuning. Each synthetic case is evaluated by the local model.
 When a reasoning case is missed, only the pre-approved generic training
 abstraction is persisted immediately, so the next case can already use it.
 Object-specific identifiers and the real benchmark ground truth are never stored.
@@ -20,16 +20,15 @@ sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.inspector_memory import add_lesson, active_lessons, master_playbook  # noqa: E402
-from app.llm import LlmConfig, credentials_from_file  # noqa: E402
+from app.llm import LOCAL_LLM_MODEL, LlmConfig  # noqa: E402
 from generate_synthetic_corpus import DEFAULT_OUT, generate  # noqa: E402
 from simple_competition_compare import detect_suspicions  # noqa: E402
 
 
 def _config(model: str) -> LlmConfig:
-    credentials = os.environ.get("GIGACHAT_CREDENTIALS", "").strip() or credentials_from_file("gigachat")
-    if not credentials:
-        raise RuntimeError("GigaChat credentials not found in environment or local secrets/")
-    return LlmConfig(provider="gigachat", api_key=credentials, model=model)
+    # Модель локальная: ключа нет, адрес и имя задаются окружением
+    # развёртывания, --model лишь переопределяет имя.
+    return LlmConfig(model=model)
 
 
 def _norm(value) -> str:
@@ -124,10 +123,10 @@ def _detect_with_retries(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate synthetic corpus and teach generalized lessons cumulatively")
     parser.add_argument("--corpus", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default=LOCAL_LLM_MODEL)
     parser.add_argument("--start-at", type=int, default=1, help="1-based first curriculum case")
     parser.add_argument("--limit", type=int, default=30)
-    parser.add_argument("--retries", type=int, default=2, help="retries for transient GigaChat/network errors")
+    parser.add_argument("--retries", type=int, default=2, help="retries for transient model/network errors")
     parser.add_argument("--no-teach", action="store_true")
     parser.add_argument("--report", type=Path, default=ROOT / "data" / "synthetic_training" / "latest_training_report.json")
     return parser.parse_args()

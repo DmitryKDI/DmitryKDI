@@ -123,10 +123,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Консольное сравнение ПД/РД с маршрутизацией")
     parser.add_argument("--before", action="append", required=True, help="PDF стороны ПД (можно несколько раз)")
     parser.add_argument("--after", action="append", required=True, help="PDF стороны РД/ИД (можно несколько раз)")
-    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
-    parser.add_argument("--model", default="")
-    parser.add_argument("--base-url", default="")
-    parser.add_argument("--api-key", default="")
+    parser.add_argument("--model", default="",
+                        help="Имя модели на локальном сервере; по умолчанию — из окружения")
+    parser.add_argument("--base-url", default="",
+                        help="Адрес локального сервера модели; по умолчанию — из окружения")
     parser.add_argument("--pairs-limit", type=int, default=0, help="Разобрать только первые N пар (0 = все)")
     parser.add_argument("--timeout", type=float, default=120.0, help="Таймаут одного вызова LLM, секунд")
     parser.add_argument("--auto-llm", default="",
@@ -147,9 +147,9 @@ def main() -> None:
         from app.llm import LlmConfig  # noqa
         from app.vision import compare_page_pair, compare_text_pair, make_llm_stamp_classifier  # noqa
 
-        config = LlmConfig(provider=args.provider, api_key=args.api_key, base_url=args.base_url, model=args.model)
-        print(f"Провайдер: {config.provider}  модель: {config.resolved_model()}  "
-              f"эндпоинт: {config.resolved_base_url() or '(по умолчанию)'}\n")
+        config = LlmConfig(base_url=args.base_url, model=args.model)
+        print(f"Локальная модель: {config.resolved_model()}  "
+              f"адрес: {config.resolved_base_url()}\n")
         vision_fn = make_llm_stamp_classifier(config)
         print("ПД:")
         before_docs, before_inputs = _load_side(args.before, vision_fn)

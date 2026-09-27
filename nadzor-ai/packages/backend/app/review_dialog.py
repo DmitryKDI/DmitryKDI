@@ -54,7 +54,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .llm import LlmConfig, call_llm_json
+from .llm import LlmConfig, call_llm_json, model_configured
 
 # Род ошибки, на который указывает инспектор. Список закрытый: свободная
 # формулировка рода не даёт группировать замечания, а именно группировка
@@ -165,8 +165,8 @@ def answer_inspector(config: LlmConfig | None,
     Сама реплика инспектора сохраняется вызывающим кодом ДО этого вызова:
     работа инспектора не должна пропадать из-за недоступности провайдера.
     """
-    if config is None or not config.api_key:
-        return None, "ключ ИИ не задан — замечание сохранено, ответа модели нет"
+    if not model_configured(config):
+        return None, "локальная модель не подключена — замечание сохранено, ответа модели нет"
 
     system = SYSTEM_PROMPT + examples_block
     user = (

@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Continue from persistent memory on focus curriculum and recheck real PD/RD")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default="", help="Имя локальной модели; пусто — из окружения развёртывания")
     parser.add_argument("--limit", type=int, default=12)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--output", type=Path, default=ROOT / "data" / "synthetic_training" / "transfer_result_focus_v2.json")

@@ -50,6 +50,11 @@ class _FakeResponse:
         return self._payload
 
 
+def _answer(text: str) -> dict:
+    """Ответ локального сервера модели (OpenAI-совместимый протокол)."""
+    return {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
+
+
 def test_severity_synonyms_are_normalized():
     assert _normalize_severity("критично") == "critical"
     assert _normalize_severity("Критическое") == "critical"
@@ -85,11 +90,11 @@ def test_text_compare_wraps_document_in_untrusted_container():
     captured = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
-        captured["user"] = json["messages"][0]["content"][0]["text"]
-        return _FakeResponse({"content": [{"text": '{"significant": []}'}]})
+        captured["user"] = json["messages"][1]["content"]
+        return _FakeResponse(_answer('{"significant": []}'))
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
-        compare_text_pair("бетон B30", "бетон B25", LlmConfig(provider="anthropic", api_key="sk-ant-test"))
+        compare_text_pair("бетон B30", "бетон B25", LlmConfig(model="test-model"))
 
     assert captured["user"].count("<НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>") == 2
     assert captured["user"].count("</НЕДОВЕРЕННЫЙ_ДОКУМЕНТ>") == 2
@@ -101,12 +106,11 @@ def _run_analysis_with(llm_content: str) -> list[dict]:
     """Прогнать анализ на двух реальных чертежах с заданным ответом модели."""
 
     def fake_post(url, json=None, headers=None, timeout=None):
-        # Г.71 — дефолтный провайдер anthropic: system отдельным полем,
-        # ответ content-блоками, не Ollama-стилем {"message": ...}.
-        system = json["system"]
+        # Протокол локального сервера: system — первое сообщение.
+        system = json["messages"][0]["content"]
         content = ('{"discipline_code": "ОВ", "sheet_name": "План"}'
                    if "штамп" in system else llm_content)
-        return _FakeResponse({"content": [{"text": content}]})
+        return _FakeResponse(_answer(content))
 
     with patch("app.llm.httpx.post", side_effect=fake_post):
         docs = {}

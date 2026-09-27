@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate synthetic corpus, teach generic lessons, then compare real PD/RD")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default="", help="Имя локальной модели; пусто — из окружения развёртывания")
     parser.add_argument("--limit", type=int, default=30)
     parser.add_argument("--output", type=Path, default=ROOT / "data" / "synthetic_training" / "transfer_result.json")
     return parser.parse_args()

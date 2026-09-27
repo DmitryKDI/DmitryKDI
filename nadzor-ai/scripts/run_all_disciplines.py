@@ -16,11 +16,10 @@ registry_diff.py на каждом документе (`classification.classify_
 эвристика по имени папки — раскладка папок реального комплекта не
 гарантированно совпадает с кодом раздела (Г.4).
 
-Запуск (Windows, тот же ключ и провайдер, что уже использовались вручную):
-    python scripts/run_all_disciplines.py ^
-        --pd-root "C:\\OSR\\DmitryKDI\\123\\ПД" ^
-        --rd-root "C:\\OSR\\DmitryKDI\\123\\Рабочая и исполнительная документация" ^
-        --provider gigachat --api-key "ВАШ_КЛЮЧ" ^
+Запуск (модель локальная, ключ не нужен):
+    python scripts/run_all_disciplines.py \\
+        --pd-root "<каталог ПД>" \\
+        --rd-root "<каталог РД и ИД>" \\
         --out-dir out_by_discipline
 
 Результат — по одному файлу `out_by_discipline/<КОД_РАЗДЕЛА>.txt` на
@@ -61,17 +60,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pd-root", required=True, help="Папка с ПД — ищет *.pdf рекурсивно во всех подпапках")
     parser.add_argument("--rd-root", required=True, help="Папка с РД/ИД (АОСР и т.п.) — та же рекурсивная логика поиска")
-    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
-    parser.add_argument("--api-key", required=True)
-    parser.add_argument("--model", default="")
-    parser.add_argument("--base-url", default="")
+    parser.add_argument("--model", default="",
+                        help="Имя модели на локальном сервере; по умолчанию — из окружения")
+    parser.add_argument("--base-url", default="",
+                        help="Адрес локального сервера модели; по умолчанию — из окружения")
     parser.add_argument("--out-dir", default="out_by_discipline")
     parser.add_argument("--rooms", default="",
                          help="Список номеров помещений через запятую — тот же смысл, что у "
                               "registry_diff.py --rooms, применяется одинаково ко всем разделам сразу")
     args = parser.parse_args()
 
-    llm_config = LlmConfig(provider=args.provider, api_key=args.api_key, base_url=args.base_url, model=args.model)
+    llm_config = LlmConfig(base_url=args.base_url, model=args.model)
 
     pd_paths = _find_pdfs(args.pd_root)
     rd_paths = _find_pdfs(args.rd_root)

@@ -110,7 +110,7 @@ def test_column_default_comes_from_the_model(tmp_path):
 
     assert sql is not None and sql.endswith("DEFAULT 90"), sql
     assert "NOT NULL" in sql, sql
-    assert text_sql is not None and text_sql.endswith("DEFAULT 'gigachat'"), text_sql
+    assert text_sql is not None and text_sql.endswith("DEFAULT 'local'"), text_sql
     print("OK: значение по умолчанию берётся из модели, строка экранируется")
 
 

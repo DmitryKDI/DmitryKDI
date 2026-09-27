@@ -14,12 +14,11 @@
 Проверка кандидатов картинкой (без сети, только против уже указанной LLM —
 локальной по умолчанию):
   python scripts/registry_diff.py --before ПД.pdf --after РД.pdf --verify
-  python scripts/registry_diff.py --before ПД.pdf --after РД.pdf --verify --provider gigachat --model GigaChat-2-Pro --api-key "$KEY"
+  python scripts/registry_diff.py --before ПД.pdf --after РД.pdf --verify
 """
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -30,6 +29,7 @@ import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "backend"))
 
+from app.classification import classify_document  # noqa: E402
 from app.composition_registry import (  # noqa: E402
     SuppliedDocument,
     check_completeness,
@@ -37,34 +37,52 @@ from app.composition_registry import (  # noqa: E402
     find_document_references,
     render_completeness_report,
 )
-from app.classification import classify_document  # noqa: E402
 from app.documents import extract_document_facts  # noqa: E402
-from app.equip_cross_check import cross_check_equipment, render_equip_cross_check_report  # noqa: E402
-from app.escalation import build_ticket, build_tickets, render_ticket_markdown, render_tickets_markdown  # noqa: E402
+from app.equip_cross_check import (  # noqa: E402
+    cross_check_equipment,
+    render_equip_cross_check_report,
+)
+from app.escalation import (  # noqa: E402
+    build_ticket,
+    build_tickets,
+    render_ticket_markdown,
+    render_tickets_markdown,
+)
+from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.matching import DocumentInput, match_page_pairs  # noqa: E402
-from app.router import classify_all_pairs  # noqa: E402
 from app.requirement_cross_check import (  # noqa: E402
     cross_check_general_requirements,
     cross_check_requirements,
     render_general_requirement_cross_check_report,
     render_requirement_cross_check_report,
 )
-from app.level_pages import augment_room_index_with_level_fallback  # noqa: E402
 from app.requirement_llm_extract import extract_requirements_llm  # noqa: E402
 from app.requirement_llm_filter import (  # noqa: E402
     classify_general_requirements,
     render_general_requirements_summary_llm_filtered,
 )
-from app.requirement_text_verify import render_text_verify_report, verify_general_requirements_llm  # noqa: E402
 from app.requirement_registry import (  # noqa: E402
     extract_general_requirements,
     extract_requirements,
     render_general_requirements_summary,
     render_requirements_summary,
 )
+from app.requirement_text_verify import (  # noqa: E402
+    render_text_verify_report,
+    verify_general_requirements_llm,
+)
 from app.room_cross_check import cross_check_rooms, render_cross_check_report  # noqa: E402
-from app.stamp import Stamp, read_stamp  # noqa: E402
+from app.room_entity_check import (  # noqa: E402
+    cross_check_entities,
+    extract_plan_entities,
+    extract_table_page,
+    find_uncovered_rooms,
+)
+from app.room_entity_check import (
+    render_report as render_entity_report,
+)
+from app.router import classify_all_pairs  # noqa: E402
 from app.routing_diff import diff_room_routing, render_routing_diff_report  # noqa: E402
 from app.set_overview import (  # noqa: E402
     compare_section_coverage,
@@ -72,6 +90,8 @@ from app.set_overview import (  # noqa: E402
     render_volume_summary,
     summarize_set,
 )
+from app.stamp import Stamp, read_stamp  # noqa: E402
+from app.table_registry import all_known_kinds, classify_table_page  # noqa: E402
 from app.triangulation import (  # noqa: E402
     Signal,
     candidates_only,
@@ -82,41 +102,22 @@ from app.triangulation import (  # noqa: E402
     signals_from_routing_diff,
     triangulate,
 )
+from app.verdict_synthesis import (  # noqa: E402
+    render_verdict_report,
+    synthesize_all,
+)
 from app.vision import (  # noqa: E402
     compare_page_pair,
     compare_text_pair,
     render_page_to_png_bytes,
     verify_candidate,
 )
-from app.room_entity_check import (  # noqa: E402
-    cross_check_entities,
-    extract_plan_entities,
-    extract_table_page,
-    find_uncovered_rooms,
-    render_report as render_entity_report,
-)
-from app.table_registry import all_known_kinds, classify_table_page  # noqa: E402
-from app.visual_prefilter import diff_hot_zone, is_visually_different  # noqa: E402
 from app.vision_page_compare import (  # noqa: E402
     check_visual_candidates,
     render_vision_finding_line,
     render_vision_requirement_report,
 )
-from app.verdict_synthesis import (  # noqa: E402
-    render_verdict_report,
-    synthesize_all,
-)
-
-# Провайдер -> имя переменной окружения с ключом, то же имя, что в
-# nadzor-ai/.env.example (GIGACHAT_CREDENTIALS уже используется полным
-# приложением, scripts/start-all.sh). Явный --api-key всегда в приоритете —
-# переменная окружения только избавляет от необходимости передавать ключ
-# аргументом командной строки (виден в истории shell/процессов).
-_PROVIDER_ENV_KEY = {
-    "gigachat": "GIGACHAT_CREDENTIALS",
-    "yandexgpt": "YANDEX_GPT_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-}
+from app.visual_prefilter import diff_hot_zone, is_visually_different  # noqa: E402
 
 _KIND_ATTR = {"rooms": "room_facts", "equipment": "equipment_facts"}
 _KIND_LABEL = {"rooms": "помещений", "equipment": "оборудования"}
@@ -1060,11 +1061,10 @@ def main() -> None:
     parser.add_argument("--verify-requirements", action="store_true",
                         help="Требования из ПД извлекать ЛЛМ (общий путь, requirement_llm_extract.py — иначе узкий regex-путь без ключа) "
                              "и эскалировать кандидатов без кода (no_code_visual_check_needed) в зрение по листу РД — vision_page_compare.py")
-    parser.add_argument("--provider", default="gigachat", choices=["anthropic", "gigachat"])
-    parser.add_argument("--model", default="")
-    parser.add_argument("--base-url", default="")
-    parser.add_argument("--api-key", default="",
-                        help=f"По умолчанию берётся из переменной окружения по провайдеру ({', '.join(_PROVIDER_ENV_KEY.values())}), если не передан явно")
+    parser.add_argument("--model", default="",
+                        help="Имя модели на локальном сервере; по умолчанию — из окружения развёртывания")
+    parser.add_argument("--base-url", default="",
+                        help="Адрес локального сервера модели; по умолчанию — из окружения развёртывания")
     parser.add_argument("--out", default="",
                         help="Путь к файлу: обзор комплекта и (для --kind requirements) сводка требований ПД и вердикты "
                              "зрения пишутся туда по мере готовности (не только в конце), не только в stdout")
@@ -1072,14 +1072,11 @@ def main() -> None:
                         help="Не печатать обзор комплекта (сводка по каждому тому + сравнение разделов ПД↔РД) в начале")
     args = parser.parse_args()
 
-    api_key = args.api_key or os.environ.get(_PROVIDER_ENV_KEY.get(args.provider, ""), "")
-    provider_config = LlmConfig(provider=args.provider, api_key=api_key, base_url=args.base_url, model=args.model)
+    # Модель вызывается только по явному флагу: без --verify и
+    # --verify-requirements работает путь без модели, как и раньше.
+    provider_config = LlmConfig(base_url=args.base_url, model=args.model)
     config = provider_config if args.verify else None
     requirements_llm_config = provider_config if args.verify_requirements else None
-
-    if args.verify_requirements and not api_key:
-        print("--verify-requirements задан, но ключ не найден (ни --api-key, ни переменная окружения) — извлечение и эскалация через ЛЛМ пропущены, используется regex-путь без зрения", file=sys.stderr)
-        requirements_llm_config = None
 
     if not args.no_overview:
         run_overview(args.before, args.after, out_path=args.out or None)
@@ -1115,9 +1112,8 @@ def main() -> None:
 
     if args.kind == "mo":
         room_keys = [r.strip() for r in args.rooms.split(",") if r.strip()]
-        if not api_key:
-            print("--kind mo требует ключ ИИ (оба листа читаются только зрением, Г.58)", file=sys.stderr)
-            return
+        # Оба листа читаются только зрением (Г.58): без модели проверять нечем.
+        # Сбой связи виден в отчёте самой проверки, а не подменяется пустым.
         run_mo_check(args.before, args.after, room_keys, provider_config, out_path=args.out or None)
 
     if args.kind in ("requirements", "both"):

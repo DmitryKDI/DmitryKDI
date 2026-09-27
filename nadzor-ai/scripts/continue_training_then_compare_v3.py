@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Continue focus-v3 memory training and run strict deep real transfer")
     parser.add_argument("--pd", type=Path, required=True)
     parser.add_argument("--rd", type=Path, action="append", required=True)
-    parser.add_argument("--model", default="GigaChat-3-Ultra")
+    parser.add_argument("--model", default="", help="Имя локальной модели; пусто — из окружения развёртывания")
     parser.add_argument("--limit", type=int, default=12)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--skip-training", action="store_true", help="reuse existing persistent memory and only rerun the real transfer")

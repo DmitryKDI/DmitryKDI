@@ -1,19 +1,12 @@
-"""Изоляция тестов от локального окружения машины (Г.112).
+"""Изоляция тестов от окружения машины.
 
-Поводом стал реальный провал: после того как ключ стал подхватываться из
-каталога `secrets/`, два теста «поведение без ключа» начали падать — на
-машине разработчика ключ есть, и тесты внезапно проверяли не то, что
-написано в их названиях.
-
-То же касается сертификатов: набор из `certs/` меняет проверку TLS, а тест
-не должен зависеть от того, что лежит в рабочей копии.
-
-Поэтому каталоги ключей и сертификатов на время тестов переводятся на
-пустые временные — тест проверяет код, а не содержимое чужого диска.
+Тест проверяет код, а не содержимое чужого диска или окружения. Раньше здесь
+изолировались каталоги облачных ключей и сертификатов (Г.112): на машине
+разработчика ключ был, и тесты «без ключа» проверяли не то, что написано в их
+названиях. Облака больше нет, но принцип тот же — теперь изолируются адрес и
+имя локальной модели и список разрешённых внутренних адресов.
 """
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,17 +16,9 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def isolate_local_environment(monkeypatch):
-    from app import llm
-
-    empty_secrets = Path(tempfile.mkdtemp())
-    empty_certs = Path(tempfile.mkdtemp())
-    monkeypatch.setattr(llm, "SECRETS_DIR", empty_secrets, raising=False)
-    # Тесты сертификатов подменяют CERTS_DIR сами; здесь важно лишь то,
-    # чтобы каталог рабочей копии не влиял на все остальные тесты.
-    if "test_ca_bundle" not in os.environ.get("PYTEST_CURRENT_TEST", ""):
-        monkeypatch.setattr(llm, "CERTS_DIR", empty_certs, raising=False)
-    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for name in ("NADZOR_LOCAL_LLM_URL", "NADZOR_LOCAL_LLM_MODEL", "NADZOR_ALLOWED_HOSTS",
+                 "NADZOR_LLM_JSON_MODE", "NADZOR_LLM_CONCURRENCY"):
+        monkeypatch.delenv(name, raising=False)
     yield
 
 

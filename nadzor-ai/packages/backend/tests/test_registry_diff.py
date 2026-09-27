@@ -536,15 +536,14 @@ def test_main_cli_kind_mo_does_not_crash(tmp_path, monkeypatch, capsys):
     rd_path = tmp_path / "rd.pdf"
     pd_path.touch()
     rd_path.touch()
-    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
     monkeypatch.setattr(sys, "argv", [
         "registry_diff.py", "--before", str(pd_path), "--after", str(rd_path),
         "--kind", "mo", "--no-overview",
     ])
     registry_diff.main()
     err = capsys.readouterr().err
-    assert "требует ключ ИИ" in err
-    print("OK: --kind mo без ключа проходит через main() без KeyError (честная ошибка в stderr)")
+    assert "пропущен" in err, "нечитаемый файл назван, а не выдан за пустой результат"
+    print("OK: --kind mo проходит через main() без KeyError (честная ошибка в stderr)")
 
 
 # --------------------------------------------------------------------------

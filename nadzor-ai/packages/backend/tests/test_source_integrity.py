@@ -39,7 +39,7 @@ def test_skipped_pdf_does_not_shift_rendering_source(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "run_stateful_investigator", investigate)
     monkeypatch.setattr(runtime, "extract_requirements_llm", lambda *args, **kwargs: [])
     result = runtime.run_lean_analysis(
-        [broken, pd], [rd], llm_config=LlmConfig(provider="gigachat", api_key="test"),
+        [broken, pd], [rd], llm_config=LlmConfig(),
     )
     assert seen["PD0:P1"]["path"] == pd
     assert seen["PD0:P1"]["document"].name == "pd.pdf"
@@ -72,7 +72,7 @@ def test_incomplete_investigation_is_not_valid(monkeypatch, tmp_path, diagnostic
     monkeypatch.setattr(runtime, "run_stateful_investigator", lambda *args:
                         InvestigatorResult(diagnostics=diagnostics))
     result = runtime.run_lean_analysis(
-        [pd], [rd], llm_config=LlmConfig(provider="gigachat", api_key="test"),
+        [pd], [rd], llm_config=LlmConfig(),
     )
     assert result["valid"] is False
     assert result["reason"]
@@ -86,7 +86,7 @@ def test_completed_investigation_remains_valid(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "run_stateful_investigator", lambda *args:
                         InvestigatorResult(diagnostics={"finished": True, "self_reviewed": True}))
     result = runtime.run_lean_analysis(
-        [pd], [rd], llm_config=LlmConfig(provider="gigachat", api_key="test"),
+        [pd], [rd], llm_config=LlmConfig(),
     )
     assert result["valid"] is True
     print("OK: завершённый без ошибок прогон остаётся действительным")
@@ -116,7 +116,7 @@ def test_failed_stage_cannot_be_hidden_by_empty_findings(monkeypatch, tmp_path, 
 
     monkeypatch.setattr(runtime, "extract_requirements_llm", extract)
     monkeypatch.setattr(runtime, "run_stateful_investigator", investigate)
-    config = None if failure == "no_key" else LlmConfig(provider="gigachat", api_key="test")
+    config = None if failure == "no_key" else LlmConfig()
     result = runtime.run_lean_analysis([pd], [rd], llm_config=config)
     assert result["valid"] is False
     assert result["reason"]

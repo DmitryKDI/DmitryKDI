@@ -66,12 +66,15 @@ DECLARED: dict[str, str] = {
     "llm._REACH_RETRY_DELAY": BUDGET,
     "llm._RATE_LIMIT_BASE_DELAY": BUDGET,
     "llm._RATE_LIMIT_MAX_DELAY": BUDGET,
-    "yandex_ocr.YANDEX_OCR_TIMEOUT_SEC": BUDGET,
 
     # --- бюджеты, заданные через окружение ------------------------------
     # Сколько чертёжных листов распознавать графическим OCR: лист сверх
     # бюджета помечается пропущенным, а не прочитанным.
     "documents.GRAPHIC_OCR_PAGE_BUDGET": BUDGET,
+    # Разрешение растеризации для локального распознавания: мелкие подписи
+    # чертежа при меньшем разрешении читаются хуже, больше — дольше без
+    # выигрыша. Свойство формата изображения, а не наблюдение о документе.
+    "local_ocr.OCR_DPI": GEOMETRY,
     # Все одного устройства: число в коде — умолчание, переменная окружения
     # — способ изменить его на месте, не пересобирая программу. Вид от
     # этого не меняется: ошибка такого числа стоит времени и денег за
@@ -125,9 +128,6 @@ DECLARED: dict[str, str] = {
     "generic_region_vision.LOCAL_MAX_DIM": GEOMETRY,
     "high_recall_roi.FOCUSED_GENERAL_MAX_DIM": GEOMETRY,
     "high_recall_roi.FOCUSED_ROOM_MAX_DIM": GEOMETRY,
-    "yandex_ocr.YANDEX_OCR_RENDER_SCALE": GEOMETRY,
-    "yandex_ocr.YANDEX_OCR_MAX_PIXELS": GEOMETRY,
-    "yandex_ocr.YANDEX_OCR_MAX_BYTES": GEOMETRY,
     "review_dialog.HISTORY_LIMIT": BUDGET,
     "vision.VISION_MAX_DIM": BUDGET,
     "stamp_vision.RENDER_SCALE": BUDGET,

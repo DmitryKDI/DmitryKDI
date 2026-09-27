@@ -30,7 +30,7 @@ def test_main_exits_with_clear_error_on_missing_pd_file(monkeypatch):
     """Г.82 — несуществующий путь раньше давал «чистый» отчёт из нулей с
     exit=0, неотличимый от честного «в документе нет требований»."""
     monkeypatch.setattr(sys, "argv", [
-        "summarize_requirements.py", "--pd", "/nonexistent/does-not-exist.pdf", "--api-key", "FAKE",
+        "summarize_requirements.py", "--pd", "/nonexistent/does-not-exist.pdf",
     ])
     with pytest.raises(SystemExit) as exc_info:
         sr.main()
@@ -39,40 +39,42 @@ def test_main_exits_with_clear_error_on_missing_pd_file(monkeypatch):
     print("OK: несуществующий --pd файл — явная ошибка, не тихий нулевой отчёт")
 
 
-def test_runs_without_key_on_regex_path_instead_of_failing(monkeypatch, capsys, tmp_path):
-    """Г.86 — ОБРАТНОЕ прежнему поведению, намеренно. Раньше отсутствие
-    ключа было ошибкой с выходом. Теперь стадия обязана доработать: без
-    ключа идёт regex-путь, сводка выходит сырой, но программа не встаёт —
-    прямое требование пользователя «программа не должна тупануть»."""
+def test_runs_without_model_on_regex_path_instead_of_failing(monkeypatch, capsys, tmp_path):
+    """Г.86 — стадия обязана доработать и без модели: идёт regex-путь,
+    сводка выходит сырой, но программа не встаёт. У локальной модели ключа
+    нет, поэтому этот путь выбирается явным флагом, а не отсутствием ключа."""
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
-    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
-    monkeypatch.setattr(sys, "argv", ["summarize_requirements.py", "--pd", str(pdf_path)])
+    monkeypatch.setattr(sys, "argv",
+                        ["summarize_requirements.py", "--pd", str(pdf_path), "--no-llm"])
+    monkeypatch.setattr(sr, "check_llm_reachable",
+                        lambda cfg: pytest.fail("без модели связь не проверяется"))
 
     sr.main()  # не должно бросить SystemExit
 
     out = capsys.readouterr().out
     assert "regex-путь" in out, "пользователь должен видеть, что сводка сырая"
     assert "СЫРОЙ" in out
-    print("OK: без ключа стадия отрабатывает regex-путём, а не падает")
+    print("OK: без модели стадия отрабатывает regex-путём, а не падает")
 
 
-def test_api_key_from_env_var_reaches_llm_config(monkeypatch, tmp_path):
-    """Ключ из окружения должен доезжать до конфигурации ЛЛМ — иначе
-    vision-keys.env и GIGACHAT_CA_BUNDLE не действуют (Г.82)."""
+def test_model_from_arguments_reaches_llm_config(monkeypatch, tmp_path):
+    """Имя модели и адрес из аргументов обязаны доезжать до конфигурации:
+    иначе прогон молча шёл бы к модели по умолчанию, а не к названной."""
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
-    monkeypatch.setenv("GIGACHAT_CREDENTIALS", "FAKE_ENV_KEY")
-    monkeypatch.setattr(sys, "argv", ["summarize_requirements.py", "--pd", str(pdf_path)])
+    monkeypatch.setattr(sys, "argv", ["summarize_requirements.py", "--pd", str(pdf_path),
+                                      "--model", "test-model", "--base-url", "http://llm:8001"])
 
-    seen: list[str] = []
+    seen: list[tuple[str, str]] = []
     monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible",
-                        lambda facts, cfg, emit, **kw: seen.append(cfg.api_key) or [])
+                        lambda facts, cfg, emit, **kw: seen.append(
+                            (cfg.resolved_model(), cfg.resolved_base_url())) or [])
     sr.main()
 
-    assert seen == ["FAKE_ENV_KEY"]
-    print("OK: GIGACHAT_CREDENTIALS из окружения подхватывается без --api-key")
+    assert seen == [("test-model", "http://llm:8001")]
+    print("OK: модель и адрес из аргументов доходят до конфигурации")
 
 
 def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path):
@@ -85,7 +87,7 @@ def test_step_order_matches_the_specified_pipeline(monkeypatch, capsys, tmp_path
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
     monkeypatch.setattr(sys, "argv",
-                        ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
+                        ["summarize_requirements.py", "--pd", str(pdf_path)])
     monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit, **kw: [])
     sr.main()
@@ -104,7 +106,7 @@ def test_unconnected_steps_are_announced_not_silently_skipped(monkeypatch, capsy
     pdf_path = tmp_path / "test.pdf"
     _make_pdf(pdf_path)
     monkeypatch.setattr(sys, "argv",
-                        ["summarize_requirements.py", "--pd", str(pdf_path), "--api-key", "K"])
+                        ["summarize_requirements.py", "--pd", str(pdf_path)])
     monkeypatch.setattr(sr, "check_llm_reachable", lambda cfg: (True, "мок"))
     monkeypatch.setattr(sr, "_extract_requirements_llm_visible", lambda facts, cfg, emit, **kw: [])
     sr.main()
@@ -196,13 +198,13 @@ def test_preflight_reports_reachable_provider():
     original = app_llm.call_llm_json
     app_llm.call_llm_json = fake_call
     try:
-        ok, message = sr.check_llm_reachable(object())
+        ok, message = sr.check_llm_reachable(app_llm.LlmConfig(model="test-model"))
     finally:
         app_llm.call_llm_json = original
 
     assert ok is True
     assert len(calls) == 1, "проверка стоит один короткий вызов, не прогон тома"
-    assert "связь" in message.lower() or "ok" in message.lower()
+    assert "отвечает" in message.lower()
 
 
 def test_preflight_names_the_reason_when_provider_unreachable():
@@ -214,7 +216,7 @@ def test_preflight_names_the_reason_when_provider_unreachable():
     original = app_llm.call_llm_json
     app_llm.call_llm_json = boom
     try:
-        ok, message = sr.check_llm_reachable(object())
+        ok, message = sr.check_llm_reachable(app_llm.LlmConfig(model="test-model"))
     finally:
         app_llm.call_llm_json = original
 
@@ -222,12 +224,15 @@ def test_preflight_names_the_reason_when_provider_unreachable():
     assert "Connection reset by peer" in message, "точная причина, а не «что-то пошло не так»"
 
 
-def test_preflight_says_no_key_instead_of_pretending_to_check():
-    """Без ключа проверять нечего — и это не «связи нет»: смешивать эти два
+def test_preflight_says_model_is_not_set_instead_of_pretending_to_check(monkeypatch):
+    """Без модели проверять нечего — и это не «связи нет»: смешивать эти два
     состояния значит повторять подмену, которую запрещает Г.10."""
+    monkeypatch.setattr(app_llm, "LOCAL_LLM_MODEL", "")
+    monkeypatch.setattr(app_llm, "call_llm_json",
+                        lambda *a, **kw: pytest.fail("без модели вызова быть не должно"))
     ok, message = sr.check_llm_reachable(None)
     assert ok is False
-    assert "ключ" in message.lower()
+    assert "не задана" in message
 
 
 def test_summary_prints_the_short_form_not_the_whole_quote():

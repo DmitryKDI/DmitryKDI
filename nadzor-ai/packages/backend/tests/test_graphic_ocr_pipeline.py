@@ -1,16 +1,17 @@
-"""Чертёж читается Yandex Vision OCR, а не только зрением модели.
+"""Чертёж читается локальным OCR, а не только зрением модели.
 
 Техническое задание требует отдельного конвейера для графики: определить
-графические страницы, получить изображение, распознать его Yandex Vision
-OCR, извлечь обозначения и подписи и только потом связать найденное с
-требованием и листом.
+графические страницы, получить изображение, распознать его, извлечь
+обозначения и подписи и только потом связать найденное с требованием и
+листом. Распознавание локальное: внешние OCR-сервисы в зачётном прогоне
+недопустимы.
 
 Что мешало. OCR запускался по условию «на странице совсем нет текста». На
 реальном CAD-экспорте это условие у чертежа почти никогда не выполняется:
 основная надпись остаётся текстом, а подписи внутри поля чертежа переведены
 в кривые (Г.8, Г.59). Такой лист выглядел прочитанным — `text` непустой, —
 и графика не читалась НИКОГДА: живой путь отдавал её зрению модели, а
-Yandex Vision OCR в нём не участвовал вовсе.
+распознавание в нём не участвовало вовсе.
 
 Признак здесь структурный, а не пороговый: чертёжный лист, текст которого
 не дал ни одного пригодного для сопоставления факта, графикой не
@@ -25,10 +26,10 @@ import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import documents, yandex_ocr  # noqa: E402
+from app import documents, local_ocr  # noqa: E402
 
 CYRILLIC_TTF = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-CONFIG = yandex_ocr.YandexOcrConfig(api_key="secret", folder_id="folder")
+CONFIG = local_ocr.OcrConfig(language="rus")
 
 
 def _pdf(path: Path, pages: list[tuple[str, bool]]) -> str:
@@ -53,7 +54,7 @@ def _run(path, monkeypatch, *, recognized="", error="", configured=True, budget=
 
     def fake_recognize(page, config):
         seen.append(page.number + 1)
-        return yandex_ocr.YandexOcrResult(text=recognized, error=error)
+        return local_ocr.OcrResult(text=recognized, error=error)
 
     monkeypatch.setattr(documents, "load_config", lambda: CONFIG if configured else None)
     monkeypatch.setattr(documents, "recognize_page", fake_recognize)

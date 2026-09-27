@@ -43,13 +43,6 @@ def _upload(tmp_path: Path, text: str = "Экраны должны быть не
     return r.json()["id"]
 
 
-def _set_provider(provider: str, api_key: str = "") -> None:
-    """Тесты в одном процессе делят базу, поэтому нужное состояние настроек
-    задаётся явно, а не наследуется от порядка запуска."""
-    client.put("/settings", json={"provider": provider, "base_url": "",
-                                  "model": "", "api_key": api_key})
-
-
 def _wait(run_id: int, timeout: float = 20.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -160,42 +153,42 @@ def test_incomplete_saved_extraction_cannot_start_comparison(monkeypatch):
 def test_llm_check_endpoint_reports_state_for_the_button(monkeypatch):
     """Кнопка «Проверить связь» в интерфейсе: инспектор узнаёт о проблеме
     до того, как запустил разбор на сотни страниц."""
-    _set_provider("gigachat", api_key="")
-    monkeypatch.setenv("GIGACHAT_CREDENTIALS", "тестовый-ключ")
     monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (True, "связь есть"))
+    monkeypatch.setattr(main_module, "available_models", lambda cfg: None)
     ok = client.get("/llm-check").json()
-    assert ok["reachable"] is True and ok["provider"] == "gigachat"
+    assert ok["reachable"] is True and ok["provider"] == "local"
 
-    monkeypatch.setattr(main_module, "check_llm_reachable", lambda cfg: (False, "401 Unauthorized"))
+    monkeypatch.setattr(main_module, "check_llm_reachable",
+                        lambda cfg: (False, "не отвечает по адресу http://llm:8000"))
     bad = client.get("/llm-check").json()
-    assert bad["reachable"] is False and "401" in bad["message"]
+    assert bad["reachable"] is False and "не отвечает" in bad["message"]
 
 
-def test_llm_check_says_no_key_instead_of_pretending_to_check(monkeypatch):
-    """«Ключа нет» и «связь не прошла» — разные состояния с разными
+def test_llm_check_says_model_is_not_set_instead_of_pretending_to_check(monkeypatch):
+    """«Модель не задана» и «связь не прошла» — разные состояния с разными
     действиями администратора; смешивать их значит повторять подмену,
     которую запрещает Г.10."""
-    _set_provider("gigachat", api_key="")
-    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
+    from app import llm
+    monkeypatch.setattr(llm, "LOCAL_LLM_MODEL", "")
     called = []
     monkeypatch.setattr(main_module, "check_llm_reachable",
                         lambda cfg: called.append(1) or (True, "не должно вызваться"))
     body = client.get("/llm-check").json()
     assert body["reachable"] is False
-    assert "ключ" in body["message"] and "GIGACHAT_CREDENTIALS" in body["message"]
-    assert not called, "без ключа проверять нечего — вызов не делается"
+    assert "NADZOR_LOCAL_LLM_MODEL" in body["message"]
+    assert not called, "без модели проверять нечего — вызов не делается"
 
 
-def test_gigachat_is_the_default_provider():
-    """Инструмент делается под GigaChat: провайдер по умолчанию — он, а не
-    тот, что оставался от разработки.
+def test_local_model_is_the_default_provider():
+    """Официальный прогон идёт в закрытом контуре: провайдер по умолчанию —
+    локальная модель, облачных провайдеров в продукте нет.
 
     Проверяется УМОЛЧАНИЕ схемы, а не текущая строка настроек: другие тесты
-    в том же процессе законно меняют провайдера под свои моки, и проверка
-    живого состояния была бы проверкой порядка запуска тестов, а не кода.
+    в том же процессе меняют настройки, и проверка живого состояния была бы
+    проверкой порядка запуска тестов, а не кода.
     """
     from app import models
-    assert models.Settings.__table__.c.provider.default.arg == "gigachat"
+    assert models.Settings.__table__.c.provider.default.arg == "local"
 
 
 def test_rd_run_reports_composition_even_without_requirements(tmp_path, monkeypatch):
@@ -266,8 +259,9 @@ def _wait_compliance(run_id: int, timeout: float = 20.0) -> dict:
 def test_compliance_uses_saved_pd_run_and_never_says_violation(tmp_path, monkeypatch):
     """Г.96 — третья кнопка: требования берутся из сохранённого разбора ПД,
     а не извлекаются заново. Отчёт не называет ничего нарушением."""
-    _set_provider("gigachat", api_key="")
-    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
+    from app import llm
+    # Без модели: проверяется контракт отчёта, а не ответ сервера модели.
+    monkeypatch.setattr(llm, "LOCAL_LLM_MODEL", "")
     pd_run_id = _done_pd_run(tmp_path, monkeypatch)
     rd_id = _upload(tmp_path, text="Трубы стальные бесшовные ГОСТ 8732-78 по спецификации.")
 
