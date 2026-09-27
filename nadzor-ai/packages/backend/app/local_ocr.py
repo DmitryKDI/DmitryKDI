@@ -18,6 +18,7 @@ OCR-сервисы в зачётном запуске недопустимы: д
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,13 @@ OCR_LANGUAGE = os.environ.get("NADZOR_OCR_LANGUAGE", "rus+eng")
 # мелкие подписи чертежа при меньшем разрешении распознаются хуже, а больше
 # этого — дольше без выигрыша в качестве.
 OCR_DPI = 300
+# Сколько букв подряд делают фрагмент словом. Свойство языка, а не
+# наблюдение о документах: короче — это уже отдельные символы, которые
+# распознавание выдаёт и на шуме (печать, линии, штриховка).
+MIN_WORD_LETTERS = 3
+
+QUALITY_OK, QUALITY_LOW, QUALITY_ABSTAIN = "OK", "LOW_QUALITY", "ABSTAIN"
+_WORD_RE = re.compile(rf"[^\W\d_]{{{MIN_WORD_LETTERS},}}")
 
 
 @dataclass
@@ -79,6 +87,19 @@ def load_config() -> OcrConfig | None:
 
 def is_configured() -> bool:
     return load_config() is not None
+
+
+def quality(result: OcrResult) -> str:
+    """Качество распознанной страницы (ТЗ 9.1, п.1).
+
+    ABSTAIN — распознавание не дало ничего или упало: страницу прочитать не
+    удалось, и это сказано прямо. LOW_QUALITY — символы есть, но ни одного
+    слова: так выглядят рукопись, печать поверх текста, мелкая графика.
+    Такая страница не молчит и не выдаётся за прочитанную (Г.10).
+    """
+    if result.error or not result.text.strip():
+        return QUALITY_ABSTAIN
+    return QUALITY_OK if _WORD_RE.search(result.text) else QUALITY_LOW
 
 
 def recognize_page(page, config: OcrConfig | None = None) -> OcrResult:

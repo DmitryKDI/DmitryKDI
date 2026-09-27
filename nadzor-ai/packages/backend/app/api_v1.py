@@ -25,7 +25,7 @@ from fastapi import (
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from . import file_store, models, official_api, protocol, protocol_export
+from . import document_convert, models, official_api, protocol, protocol_export
 from .db import get_session
 from .official_pipeline import clarification_result
 
@@ -34,7 +34,6 @@ router = APIRouter(prefix="/api/v1", tags=["api-v1"])
 # Лимиты загрузки из ТЗ (9.1, «Обработка ошибок при загрузке»).
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_PACKAGE_BYTES = 200 * 1024 * 1024
-SUPPORTED_FORMATS = "PDF (DOCX и XML в этой версии не принимаются)"
 REGISTRY_FIELDS = ("file_name", "object_id", "doc_stage", "document_code", "revision",
                    "approval_status")
 
@@ -120,36 +119,44 @@ def upload(background: BackgroundTasks,
             rejected.append({"file_name": name, "reason": f"файл больше "
                              f"{MAX_FILE_BYTES // 1048576} МБ"})
             continue
-        if not data.startswith(b"%PDF-"):
-            rejected.append({"file_name": name,
-                             "reason": "неподдерживаемый формат; поддерживается "
-                                       + SUPPORTED_FORMATS})
+        try:
+            converted = document_convert.to_pdf(data, name)
+        except document_convert.UnsupportedFormatError as exc:
+            rejected.append({"file_name": name, "reason": str(exc)})
             continue
         row = by_name.get(name)
         if rows and row is None:
             rejected.append({"file_name": name, "reason": "файла нет в реестре"})
             continue
         expected_sha = str((row or {}).get("sha256") or "").strip().lower()
-        if expected_sha and expected_sha != file_store.digest_of(data):
+        # Контрольная сумма из реестра — от исходного файла, а не от PDF,
+        # в который DOCX/XML преобразуется при приёме.
+        if expected_sha and expected_sha != converted.source_sha256:
             rejected.append({"file_name": name, "reason": "SHA-256 не совпадает с реестром"})
             continue
         try:
-            doc = main.ingest_pdf(db, data, name, "before", background)
+            doc = main.ingest_pdf(db, converted.pdf, name, "before", background)
         except HTTPException as exc:
             rejected.append({"file_name": name, "reason": str(exc.detail)})
             continue
-        stored[name] = (doc, row)
+        stored[name] = (doc, row, converted)
 
     # Связь редакций в реестре задаётся идентификаторами реестра; переводим
     # их в идентификаторы документов после того, как все файлы приняты.
-    registry_ids = {str(row.get("file_id")): stored[name][0].id
-                    for name, (doc, row) in stored.items() if row and row.get("file_id")}
+    registry_ids = {str(row.get("file_id")): doc.id
+                    for name, (doc, row, _) in stored.items() if row and row.get("file_id")}
     snapshot_add = []
-    for name, (doc, row) in stored.items():
+    for name, (doc, row, converted) in stored.items():
         if row is not None:
             predecessor = registry_ids.get(str(row.get("predecessor_id") or ""))
             try:
-                doc.source_metadata = _metadata(row, predecessor)
+                doc.source_metadata = {
+                    **_metadata(row, predecessor),
+                    # Исходный формат и его отпечаток: доказательство ссылается
+                    # на страницу преобразованного PDF, и это должно быть видно.
+                    "source_format": converted.source_format,
+                    "source_sha256": converted.source_sha256,
+                }
             except ValueError as exc:
                 rejected.append({"file_name": name, "reason": f"реестр: {exc}"})
                 continue

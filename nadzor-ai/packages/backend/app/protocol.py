@@ -241,6 +241,9 @@ def build(result: dict | None, snapshot: list[dict], *, run_status: str,
             "negative_verified": cards("NEGATIVE_VERIFIED"),
             "suspicions": cards("SUSPICION"),
         },
+        # Покрываемость распознавания по документам: доля и номера листов,
+        # которые машина не прочитала или прочитала плохо.
+        "ocr_quality": (result or {}).get("ocr_quality") or {},
         "missing_evidence": [item.get("finding_id") for item in findings
                              if item.get("completeness_status") == "MISSING_EVIDENCE"],
         "pending_candidates": pending_candidates(result),

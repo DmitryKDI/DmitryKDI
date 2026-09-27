@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from . import models, protocol
 from .db import SessionLocal, get_session
 from .llm import LlmConfig, local_config
-from .official_pipeline import run_official_analysis
+from .official_pipeline import run_official_analysis, select_current_documents
 from .parameter_catalog import CATALOG_VERSION, list_parameters
 
 router = APIRouter(prefix="/official", tags=["official"])
@@ -213,6 +213,38 @@ def save_metadata(document_id: int, body: MetadataInput, db: Session = Depends(g
     return _document_dict(document)
 
 
+def _selection(documents) -> dict[str, list[int]]:
+    selected, _ = select_current_documents(documents)
+    return {stage: sorted(doc.id for doc in docs) for stage, docs in selected.items()}
+
+
+def _reuse_previous(run: models.OfficialRun, documents) -> dict | None:
+    """Инкрементальное обновление при дозагрузке (ТЗ 9.2).
+
+    Каждый параметр матрицы читает все три стадии, поэтому затронутые
+    параметры определяются составом АКТУАЛЬНЫХ редакций: если дозагрузка его
+    не изменила (дубликат, заменённая или неутверждённая редакция), прежний
+    результат остаётся верным и пересчитывать нечего. Прежний прогон,
+    выполненный не полностью, не переиспользуется: неполноту нельзя
+    унаследовать как готовый ответ.
+    """
+    history = run.protocol_history or []
+    previous = history[-1].get("result") if history else None
+    if not previous:
+        return None
+    if (previous.get("coverage") or {}).get("not_run"):
+        return None
+    before = (previous.get("document_selection") or {}).get("selected") or {}
+    if {k: sorted(v) for k, v in before.items()} != _selection(documents):
+        return None
+    reused = copy.deepcopy(previous)
+    reused["incremental"] = {
+        "reused_from_version": history[-1].get("version"),
+        "reason": "дозагрузка не изменила состав актуальных редакций",
+    }
+    return reused
+
+
 def _execute(run_id: int) -> None:
     db = SessionLocal()
     try:
@@ -256,6 +288,13 @@ def _execute(run_id: int) -> None:
         config = _settings_config(db)
         run.model_version = config.resolved_model()
         db.commit()
+        reused = _reuse_previous(run, documents)
+        if reused is not None:
+            run.result = reused
+            run.completed = run.total = reused["coverage"]["total"]
+            run.status, run.stage = "completed", "Готово: актуальные редакции не изменились"
+            db.commit()
+            return
         result = None
         for attempt in range(EXECUTE_RETRIES + 1):
             try:
@@ -268,6 +307,12 @@ def _execute(run_id: int) -> None:
                 if attempt == EXECUTE_RETRIES or cancelled():
                     raise
         db.expire(run)
+        if run.protocol_history:
+            result["incremental"] = {
+                "recomputed": "all",
+                "reason": "изменился состав актуальных редакций; каждый параметр "
+                          "матрицы читает все три стадии, поэтому затронуты все",
+            }
         run.result = result
         run.completed = result["coverage"]["total"]
         run.total = result["coverage"]["total"]

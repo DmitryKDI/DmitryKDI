@@ -92,6 +92,28 @@ def _facts(document) -> list[dict]:
             for item in facts.text_facts if item.get("text")]
 
 
+def _ocr_quality(documents: list) -> dict[int, dict]:
+    """Покрываемость распознавания по документам (ТЗ 9.1, п.1).
+
+    Нечитаемые страницы не пропадают молча: доля и номера листов с
+    LOW_QUALITY и ABSTAIN попадают в протокол рядом с результатом.
+    """
+    summary = {}
+    for document in documents:
+        facts = facts_store.facts_for(document.file_path, document.name,
+                                      digest=document.digest)
+        quality = dict(getattr(facts, "ocr_quality", {}) or {})
+        low = sorted(page for page, value in quality.items() if value == "LOW_QUALITY")
+        abstain = sorted(page for page, value in quality.items() if value == "ABSTAIN")
+        pages = int(getattr(facts, "pages", 0) or 0)
+        summary[document.id] = {
+            "recognized_pages": len(quality), "low_quality_pages": low,
+            "abstain_pages": abstain,
+            "coverage": round(1 - len(abstain) / pages, 4) if pages else None,
+        }
+    return summary
+
+
 def _source_text(stage: str, document, facts: list[dict]) -> str:
     metadata = _metadata(document)
     pieces = []
@@ -138,7 +160,8 @@ def _compact_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def _verified_evidence(row: dict, selected: dict[str, list], fact_map: dict) -> list[dict]:
+def _verified_evidence(row: dict, selected: dict[str, list], fact_map: dict,
+                       ocr_map: dict | None = None) -> list[dict]:
     evidence = []
     for source in row.get("evidence") or []:
         if not isinstance(source, dict):
@@ -178,6 +201,9 @@ def _verified_evidence(row: dict, selected: dict[str, list], fact_map: dict) -> 
             "sha256": document.digest, "stage": stage, "page": page,
             "role": "expected" if stage == "PD" else "actual",
             "bbox": bbox, "quote": quote,
+            # Цитата со страницы, распознанной с низким качеством, остаётся
+            # доказательством, но инспектор видит, что её прочитала машина.
+            "ocr_quality": (ocr_map or {}).get((document.id, page)),
         })
     return evidence
 
@@ -368,6 +394,13 @@ def run_official_analysis(
     facts_by_document = {document.id: _facts(document) for document in selected_documents}
     fact_map = {(document_id, fact["page"]): fact["text"]
                 for document_id, facts in facts_by_document.items() for fact in facts}
+    ocr_summary = _ocr_quality(selected_documents)
+    ocr_map = {}
+    for document in selected_documents:
+        facts = facts_store.facts_for(document.file_path, document.name,
+                                      digest=document.digest)
+        for page, value in (getattr(facts, "ocr_quality", {}) or {}).items():
+            ocr_map[(document.id, int(page))] = value
     digest = hashlib.sha256(
         "|".join(f"{_metadata(document).get('stage')}:{document.digest}"
                  for document in selected_documents).encode()
@@ -451,7 +484,7 @@ NOT_APPLICABLE — только если документы прямо пока�
                                            batch_error or "модель не вернула параметр",
                                            "error"))
                 continue
-            evidence = _verified_evidence(row, selected, fact_map)
+            evidence = _verified_evidence(row, selected, fact_map, ocr_map)
             assessment = row.get("assessment")
             candidate = assessment == "CANDIDATE"
             stages = {item["stage"] for item in evidence if item.get("bbox") is not None}
@@ -531,6 +564,7 @@ NOT_APPLICABLE — только если документы прямо пока�
         progress("Формирование протокола", min(len(checks), total), total)
     result = _with_document_selection(_result(object_id, checks), selected, problems)
     result["graphic_analysis"] = graphic_analysis
+    result["ocr_quality"] = ocr_summary
     return result
 
 

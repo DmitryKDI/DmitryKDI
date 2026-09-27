@@ -45,7 +45,8 @@ from .local_ocr import is_configured as ocr_is_configured
 # 3 — распознавание перенесено на локальный движок и дополнено графическим
 # OCR чертёжных листов. Прежняя правка графического OCR версию не подняла,
 # и уже загруженные тома отдавались бы из памяти без него.
-FACTS_VERSION = 3
+# 4 — у распознанной страницы появилось качество (OK/LOW_QUALITY/ABSTAIN).
+FACTS_VERSION = 4
 
 STORE_PATH = Path(os.environ.get(
     "FACTS_STORE_DB",
@@ -134,6 +135,7 @@ def _to_payload(facts: DocumentFacts) -> str:
         "ocr_pages_done": facts.ocr_pages_done,
         "ocr_text_pages": facts.ocr_text_pages,
         "ocr_errors": facts.ocr_errors,
+        "ocr_quality": facts.ocr_quality,
     }, ensure_ascii=False)
 
 
@@ -157,6 +159,7 @@ def _from_payload(name: str, pages: int, payload: str) -> DocumentFacts:
         ocr_pages_done=[int(v) for v in raw.get("ocr_pages_done", [])],
         ocr_text_pages=[int(v) for v in raw.get("ocr_text_pages", [])],
         ocr_errors={int(k): str(v) for k, v in raw.get("ocr_errors", {}).items()},
+        ocr_quality={int(k): str(v) for k, v in raw.get("ocr_quality", {}).items()},
     )
 
 

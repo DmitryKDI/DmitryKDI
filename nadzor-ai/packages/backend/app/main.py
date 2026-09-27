@@ -270,7 +270,12 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
     # Читаем в память один раз: отпечаток, лимит и укладка в хранилище нужны
     # до того, как файл где-то окажется. Лимит проверяется по факту
     # прочитанного, а не по заголовку запроса — заголовок присылает клиент.
-    doc = ingest_pdf(db, file.file.read(), file.filename or "document.pdf", side,
+    from .document_convert import UnsupportedFormatError, to_pdf
+    try:
+        converted = to_pdf(file.file.read(), file.filename or "document")
+    except UnsupportedFormatError as exc:
+        raise HTTPException(415, str(exc)) from exc
+    doc = ingest_pdf(db, converted.pdf, file.filename or "document.pdf", side,
                      background_tasks)
     # Через `_document_out`, а не напрямую: число частей — вычисляемое поле,
     # и возврат ORM-объекта отдавал бы ноль частей у разрезанного тома.

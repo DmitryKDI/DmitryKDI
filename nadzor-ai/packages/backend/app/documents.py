@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from .balance_box import extract_balance_facts
 from .classification import PAGE_KIND_DRAWING, classify_page_kind, open_pdf
 from .equipment import extract_equipment_facts
-from .local_ocr import OcrConfig, load_config, recognize_page
+from .local_ocr import OcrConfig, load_config, quality, recognize_page
 from .material import non_project_reason
 from .rooms import extract_room_facts
 from .stamp import read_stamp
@@ -62,6 +62,8 @@ class DocumentFacts:
     ocr_pages_done: list[int] = field(default_factory=list)
     ocr_text_pages: list[int] = field(default_factory=list)
     ocr_errors: dict[int, str] = field(default_factory=dict)
+    # Качество каждой распознанной страницы: OK / LOW_QUALITY / ABSTAIN.
+    ocr_quality: dict[int, str] = field(default_factory=dict)
     # Чертёжные листы, которым нужен графический OCR: текст листа есть, но
     # сопоставлять по нему нечего. Список заполняется независимо от того,
     # настроен ли сервис, иначе «не настроено» и «не нужно» стали бы
@@ -110,6 +112,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
         ocr_pages_done = []
         ocr_text_pages = []
         ocr_errors = {}
+        ocr_quality: dict[int, str] = {}
         graphic_candidates: list[int] = []
         graphic_done: list[int] = []
         graphic_skipped: list[int] = []
@@ -123,6 +126,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                 ocr_pages_total += 1
                 if ocr_config is not None:
                     ocr = recognize_page(page, ocr_config)
+                    ocr_quality[page_no] = quality(ocr)
                     if ocr.error:
                         ocr_errors[page_no] = ocr.error
                     else:
@@ -166,6 +170,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                     graphic_skipped.append(page_no)
                 else:
                     ocr = recognize_page(page, ocr_config)
+                    ocr_quality[page_no] = quality(ocr)
                     if ocr.error:
                         ocr_errors[page_no] = ocr.error
                     elif ocr.text:
@@ -203,7 +208,7 @@ def extract_document_facts(pdf_path: str, name: str) -> DocumentFacts:
                               sheet_info=sheet_info, excluded=excluded,
                               ocr_status=ocr_status, ocr_pages_total=ocr_pages_total,
                               ocr_pages_done=ocr_pages_done, ocr_text_pages=ocr_text_pages,
-                              ocr_errors=ocr_errors,
+                              ocr_errors=ocr_errors, ocr_quality=ocr_quality,
                               ocr_graphic_candidates=graphic_candidates,
                               ocr_graphic_pages=graphic_done,
                               ocr_graphic_skipped=graphic_skipped)

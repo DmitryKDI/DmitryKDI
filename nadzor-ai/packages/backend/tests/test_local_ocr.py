@@ -120,3 +120,29 @@ def test_no_network_is_used():
     for forbidden in ("httpx", "requests", "urllib", "http://", "https://"):
         assert forbidden not in source, f"в локальном OCR найдено {forbidden!r}"
     print("OK: модуль распознавания не содержит сетевых вызовов")
+
+
+def test_quality_distinguishes_abstain_low_and_ok():
+    """ТЗ 9.1: нечитаемое — ABSTAIN или LOW_QUALITY, а не пустота."""
+    q = local_ocr.quality
+    assert q(local_ocr.OcrResult(text="", error="сбой")) == "ABSTAIN"
+    assert q(local_ocr.OcrResult(text="   ")) == "ABSTAIN"
+    assert q(local_ocr.OcrResult(text="|| -- ,. 1 2 ~~ a")) == "LOW_QUALITY"
+    assert q(local_ocr.OcrResult(text="Помещение 101")) == "OK"
+    assert q(local_ocr.OcrResult(text="Room 12")) == "OK"
+
+
+def test_failed_recognition_is_recorded_as_abstain(tmp_path, monkeypatch):
+    doc = pymupdf.open()
+    doc.new_page(width=300, height=200)
+    pdf = tmp_path / "скан.pdf"
+    doc.save(pdf)
+    doc.close()
+    monkeypatch.setattr(documents, "load_config", lambda: local_ocr.OcrConfig())
+    monkeypatch.setattr(documents, "recognize_page",
+                        lambda page, config: local_ocr.OcrResult(error="движок упал"))
+
+    facts = documents.extract_document_facts(str(pdf), "скан")
+
+    assert facts.ocr_quality == {1: "ABSTAIN"}
+    assert facts.ocr_status == "error"
