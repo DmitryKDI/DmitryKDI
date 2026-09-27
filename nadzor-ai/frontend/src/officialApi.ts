@@ -134,7 +134,7 @@ export interface DecisionInput {
 export interface ProviderSettings {
   provider: string
   model: string
-  api_key_set: boolean
+  base_url: string
 }
 
 export interface ProviderCheck {
@@ -145,7 +145,7 @@ export interface ProviderCheck {
   /** Какая модель выбрана сейчас. */
   model?: string
   /**
-   * Есть ли выбранная модель у аккаунта. Намеренно трёхзначно: null —
+   * Обслуживает ли сервер выбранную модель. Намеренно трёхзначно: null —
    * «перечень не получен», а не «модели нет»: сбой связи и недоступную
    * модель инспектор чинит по-разному.
    */

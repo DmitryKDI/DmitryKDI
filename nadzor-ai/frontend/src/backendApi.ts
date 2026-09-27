@@ -386,7 +386,7 @@ export interface LlmCheck {
 }
 
 export interface BackendSettings {
-  provider: 'anthropic' | 'gigachat'
+  provider: 'local'
   base_url: string
   model: string
   /** Сам ключ наружу не отдаётся — только факт, задан ли он (Г.112). */
