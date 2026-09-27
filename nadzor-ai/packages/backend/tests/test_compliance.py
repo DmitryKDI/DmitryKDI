@@ -48,7 +48,7 @@ def test_token_found_without_model_does_not_confirm_whole_requirement():
     assert len(result.items) == 1
     assert result.items[0].status == STATUS_NOT_CHECKED
     assert not result.items[0].evidence
-    assert not calls, "без ключа модель не вызывается"
+    assert not calls, "без модели вызова нет"
     print("OK: совпадение токена без модели не подтверждает требование")
 
 

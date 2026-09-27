@@ -1,4 +1,4 @@
-"""Stateful GigaChat investigator for full PD -> RD/ID comparison."""
+"""Stateful local-model investigator for full PD -> RD/ID comparison."""
 from __future__ import annotations
 
 import json

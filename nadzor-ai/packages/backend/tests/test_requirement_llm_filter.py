@@ -31,7 +31,7 @@ def _patch(module, name, fake):
 
 
 def _config():
-    return LlmConfig(provider="anthropic")
+    return LlmConfig()
 
 
 def req(page, sentence, rooms=None):
@@ -165,7 +165,7 @@ def test_classify_handles_missing_index_in_response_the_same_way():
 
 
 def test_classify_handles_string_typed_booleans_from_provider():
-    """Реальный найденный баг (Г.74): GigaChat не даёт строгой JSON-схемы
+    """Реальный найденный баг (Г.74): модель без строгой JSON-схемы
     (Г.39 — response_format:{"type":"json_object"} отклоняется, JSON
     запрашивается текстом промпта), и на реальном прогоне (347 кандидатов,
     4 раздела) НИ ОДИН не был отсеян — подозрение пало на промпт/модель,
@@ -199,7 +199,7 @@ def test_classify_handles_string_typed_booleans_from_provider():
 
 def test_on_batch_error_callback_fires_and_render_shows_no_verdict_warning():
     """Г.77 — реальный найденный пробел: сбой ВСЕХ пачек (реально
-    наблюдалось: системная SSL-ошибка сертификата GigaChat) давал каждому
+    наблюдалось: системная ошибка связи с моделью) давал каждому
     кандидату честный, но НЕВИДИМЫЙ фолбэк (is_requirement=True) —
     невидимый потому что render печатает reasoning только для отсеянных, а
     этот фолбэк всегда "оставлено". Снаружи 100% сбоев выглядело

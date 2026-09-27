@@ -43,10 +43,9 @@ class _FakeResponse:
 
 
 def fake_llm_post(url, json=None, headers=None, timeout=None):
-    # Г.71 — дефолтный провайдер бэкенда теперь anthropic: системный промпт
-    # приходит отдельным полем "system" (не messages[0]), ответ — content-
-    # блоками {"content": [{"text": ...}]}, не Ollama-стилем {"message": ...}.
-    system = json["system"]
+    # Протокол локального сервера модели (OpenAI-совместимый): системный
+    # промпт — первое сообщение, ответ — choices[0].message.content.
+    system = json["messages"][0]["content"]
     if "штамп" in system:
         content = '{"discipline_code": "ОВ", "sheet_name": "План этажа"}'
     else:
@@ -54,7 +53,8 @@ def fake_llm_post(url, json=None, headers=None, timeout=None):
             '{"significant": [{"label": "H-1", "change": "Изменена конфигурация воздуховода"}],'
             ' "noise_note": "", "checked_total": 1, "significant_total": 1}'
         )
-    return _FakeResponse({"content": [{"text": content}]})
+    return _FakeResponse({"choices": [{"message": {"content": content},
+                                       "finish_reason": "stop"}]})
 
 
 def upload(side: str, path: Path):
@@ -73,13 +73,10 @@ def upload(side: str, path: Path):
 
 
 def _use_mocked_provider() -> None:
-    """Тест мокает транспорт на уровне httpx, поэтому провайдер и ключ
-    должны быть заданы явно. Раньше тест опирался на то, что провайдером по
-    умолчанию был anthropic; после Г.94 умолчание — gigachat, и неявное
-    допущение стало видно отказом. Задавать явно правильнее в любом случае:
-    тест не должен молча зависеть от того, какое умолчание сегодня."""
-    client.put("/settings", json={"provider": "anthropic", "base_url": "",
-                                  "model": "test-model", "api_key": "тестовый-ключ"})
+    """Тест мокает транспорт на уровне httpx. Модель выбирает окружение, а
+    не настройки базы, поэтому достаточно вернуть настройки к локальным:
+    соседние тесты в том же процессе могли записать туда что угодно."""
+    client.put("/settings", json={"provider": "local", "base_url": "", "model": ""})
 
 
 def test_full_pipeline_upload_analyze_findings():
@@ -212,7 +209,7 @@ def test_settings_show_the_model_that_actually_runs():
     локальная модель, что бы ни было записано."""
     from app.llm import local_config
     try:
-        resp = client.put("/settings", json={"provider": "gigachat", "base_url": "",
+        resp = client.put("/settings", json={"provider": "external", "base_url": "",
                                              "model": "cloud-model"})
         assert resp.status_code == 200
         got = client.get("/settings").json()

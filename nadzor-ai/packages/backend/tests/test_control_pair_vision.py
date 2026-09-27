@@ -50,7 +50,7 @@ def test_weak_raster_does_not_block_focused_vision(monkeypatch):
     after = [_doc("rd.pdf", ["101"], "101 вентиляция")]
     signals, diagnostics = runtime.run_targeted_pair_vision(
         before, after, ["pd.pdf"], ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"), max_pairs=1,
+        LlmConfig(), max_pairs=1,
     )
     assert calls["focused"] == 1
     assert any(s.source == "vision_pair" for s in signals)
@@ -67,7 +67,7 @@ def test_strong_raster_is_preserved_as_hint(monkeypatch):
     after = [_doc("rd.pdf", ["101"], "101 вентиляция")]
     signals, _ = runtime.run_targeted_pair_vision(
         before, after, ["pd.pdf"], ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"), max_pairs=1,
+        LlmConfig(), max_pairs=1,
     )
     assert any(s.source == "raster_diff" for s in signals)
 
@@ -91,7 +91,7 @@ def test_whole_page_fallback_runs_even_with_weak_raster(monkeypatch):
     after = [_doc("rd.pdf", ["101"], "101 вентиляция")]
     signals, _ = runtime.run_targeted_pair_vision(
         before, after, ["pd.pdf"], ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"), max_pairs=1,
+        LlmConfig(), max_pairs=1,
     )
     assert seen["whole"] == 1
     assert any(s.domain == "room" and s.key == "101" for s in signals)
@@ -120,6 +120,6 @@ def test_ungrounded_room_number_never_becomes_room_signal(monkeypatch):
     after = [_doc("rd.pdf", ["101"], "101 вентиляция")]
     signals, _ = runtime.run_targeted_pair_vision(
         before, after, ["pd.pdf"], ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"), max_pairs=1,
+        LlmConfig(), max_pairs=1,
     )
     assert not any(s.domain == "room" for s in signals)

@@ -1,6 +1,6 @@
 # CURRENT-TASK.md
 
-Текущая задача: устойчивый полный blind-прогон ПД -> РД/ИД через stateful GigaChat investigator.
+Текущая задача: устойчивый полный blind-прогон ПД -> РД/ИД через stateful local-model investigator.
 
 ## Active runtime
 

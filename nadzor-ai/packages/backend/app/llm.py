@@ -90,7 +90,6 @@ _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 @dataclass
 class LlmConfig:
     provider: str = PROVIDER_LOCAL
-    api_key: str = ""
     base_url: str = ""
     model: str = ""
 

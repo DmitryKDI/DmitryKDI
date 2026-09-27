@@ -1,10 +1,10 @@
-"""Обновление инструмента не должно стирать введённый ключ и разобранные тома.
+"""Обновление инструмента не должно стирать настройки и разобранные тома.
 
 Г.113. База от прошлой версии пересобиралась целиком при любом расхождении
 схемы. Обновление добавило несколько колонок — и вместе с историей прогонов
-исчез ключ провайдера, введённый руками. На экране это выглядело как «ключ
-ЛЛМ не задан»: причина (обновление снесло базу) в интерфейсе не видна вовсе,
-а сообщение о пересборке уходило в консоль сервера, которую никто не читает.
+исчезли настройки, введённые руками: причина (обновление снесло базу) в
+интерфейсе не видна вовсе, а сообщение о пересборке уходило в консоль
+сервера, которую никто не читает.
 """
 from __future__ import annotations
 
@@ -24,20 +24,21 @@ def _engine(tmp_path: Path):
     return create_engine(f"sqlite:///{tmp_path / 'old.db'}")
 
 
-def _old_settings_table(engine, key: str) -> None:
-    """База прошлой версии: настройки без колонок лимитов."""
+def _old_settings_table(engine, model: str) -> None:
+    """База прошлой версии: настройки без колонок лимитов и с колонкой
+    ключа облачного провайдера, которой в схеме больше нет."""
     with engine.begin() as conn:
         conn.execute(text(
             "CREATE TABLE settings (id INTEGER PRIMARY KEY, provider VARCHAR, "
             "base_url VARCHAR, model VARCHAR, api_key VARCHAR)"))
         conn.execute(text(
             "INSERT INTO settings (id, provider, base_url, model, api_key) "
-            "VALUES (1, 'gigachat', '', '', :key)"), {"key": key})
+            "VALUES (1, 'local', '', :model, 'старый-ключ')"), {"model": model})
 
 
-def test_added_column_keeps_the_key_and_the_rows(tmp_path):
+def test_added_column_keeps_the_settings_and_the_rows(tmp_path):
     engine = _engine(tmp_path)
-    _old_settings_table(engine, "ключ-из-личного-кабинета")
+    _old_settings_table(engine, "модель-из-настроек")
 
     with patch.object(db_module, "engine", engine):
         assert db_module._schema_is_stale() is True
@@ -46,12 +47,12 @@ def test_added_column_keeps_the_key_and_the_rows(tmp_path):
 
         with engine.begin() as conn:
             row = conn.execute(text(
-                "SELECT api_key, retention_days, max_pages FROM settings")).mappings().one()
+                "SELECT model, retention_days, max_pages FROM settings")).mappings().one()
 
-    assert row["api_key"] == "ключ-из-личного-кабинета", "ключ стёрт обновлением"
+    assert row["model"] == "модель-из-настроек", "настройки стёрты обновлением"
     assert row["retention_days"] == 90, "новая колонка без значения по умолчанию"
     assert row["max_pages"] == 5000, row
-    print("OK: новая колонка дописывается, ключ и строки настроек остаются")
+    print("OK: новая колонка дописывается, строки настроек остаются")
 
 
 def test_documents_survive_a_new_column(tmp_path):
@@ -83,20 +84,22 @@ def test_documents_survive_a_new_column(tmp_path):
 def test_rebuild_still_carries_the_settings_over(tmp_path):
     """Запасной путь: колонку дописать нельзя, схема пересобирается.
 
-    Прогоны при этом теряются — они пересчитываются, — но ключ вводится
-    руками, и терять его нельзя даже здесь.
+    Прогоны при этом теряются — они пересчитываются, — но настройки вводятся
+    руками, и терять их нельзя даже здесь. Колонка ключа облачного
+    провайдера из схемы убрана и при пересборке не переносится.
     """
     engine = _engine(tmp_path)
-    _old_settings_table(engine, "ключ-остаётся")
+    _old_settings_table(engine, "модель-остаётся")
 
     with patch.object(db_module, "engine", engine), \
             patch.object(db_module, "_add_column_sql", return_value=None):
         init_db()
 
     with engine.begin() as conn:
-        row = conn.execute(text("SELECT api_key, provider FROM settings")).mappings().one()
-    assert row["api_key"] == "ключ-остаётся", "ключ потерян при пересборке схемы"
-    assert row["provider"] == "gigachat", row
+        row = conn.execute(text("SELECT * FROM settings")).mappings().one()
+    assert row["model"] == "модель-остаётся", "настройки потеряны при пересборке схемы"
+    assert row["provider"] == "local", row
+    assert "api_key" not in row, "ключ облачного провайдера перенесён в новую схему"
     print("OK: пересборка схемы переносит настройки, а не начинает с пустых")
 
 

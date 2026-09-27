@@ -1,7 +1,7 @@
 # Synthetic training workflow
 
 This is a benchmark-safe curriculum for the simple competition comparator.
-It does **not** fine-tune GigaChat weights. It evaluates synthetic PD/RD pairs and stores only generalized investigation lessons in local inspector memory.
+It does **not** fine-tune model weights. It evaluates synthetic PD/RD pairs and stores only generalized investigation lessons in local inspector memory.
 
 ## 1. Generate 30 synthetic PD/RD pairs
 

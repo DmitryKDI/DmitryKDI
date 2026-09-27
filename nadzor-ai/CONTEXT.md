@@ -9,7 +9,7 @@
 ## Главное архитектурное решение
 
 Прежний lean runtime был формально проще Python-кодом, но фактически заставлял
-GigaChat решать слишком много маленьких задач без общей памяти: scope,
+модель решать слишком много маленьких задач без общей памяти: scope,
 inventory, region discovery, bbox, finding contract и verification шли
 раздельными вызовами.
 
@@ -17,7 +17,7 @@ inventory, region discovery, bbox, finding contract и verification шли
 
 ```text
 requirements + document map
--> stateful GigaChat investigator
+-> stateful local-model investigator
 -> search/open/zoom tools
 -> self-review
 -> independent verifier
@@ -32,7 +32,7 @@ requirements + document map
 - 214 requests / 214 responses;
 - 0 provider errors;
 - 0 semantic cache hits;
-- но GigaChat review всё равно оценивал local coverage как недостаточное,
+- но внешний review всё равно оценивал local coverage как недостаточное,
   no-candidate trust как low и absence risk как high.
 
 Следовательно, главным ограничением была уже не сеть/кэш, а механика
@@ -67,7 +67,6 @@ blind 3/3.
 - `packages/backend/app/conversation_llm.py`
 - `packages/backend/app/inspector_memory.py`
 - `packages/backend/app/lean_analysis_runtime.py`
-- `scripts/gigachat_current_review.py`
 - `scripts/teach_investigator.py`
 - `scripts/autoloop.py`
 

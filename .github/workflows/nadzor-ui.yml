@@ -9,8 +9,6 @@ on:
       - 'nadzor-ai/frontend/**'
       - 'nadzor-ai/packages/backend/app/**'
       - 'nadzor-ai/packages/backend/tests/**'
-      - 'nadzor-ai/scripts/gigachat_peer_review.py'
-      - 'nadzor-ai/scripts/gigachat_current_review.py'
       - 'nadzor-ai/scripts/teach_investigator.py'
       - 'nadzor-ai/scripts/autoloop.py'
       - 'nadzor-ai/scripts/generate_synthetic_corpus.py'
@@ -28,7 +26,6 @@ on:
       - 'nadzor-ai/data/known_violations.json'
       - 'nadzor-ai/CONTEXT.md'
       - 'nadzor-ai/CURRENT-TASK.md'
-      - 'nadzor-ai/GIGACODE.md'
       - 'nadzor-ai/AUTOMATION-WISHES.md'
       - '.claude/PROJECT-NADZOR.md'
       - '.github/workflows/nadzor-ui.yml'
@@ -64,7 +61,10 @@ jobs:
           cache: pip
           cache-dependency-path: nadzor-ai/packages/backend/requirements.txt
       - name: Install focused test dependencies
+        # Tesseract с русским словарём: тест распознавания должен реально
+        # читать страницу, а не пропускаться из-за отсутствия движка.
         run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
       - name: Compile active runtime modules
@@ -78,9 +78,8 @@ jobs:
           python -m py_compile app/facts_store.py
           python -m py_compile app/llm.py
           python -m py_compile app/llm_runtime.py
+          python -m py_compile app/local_ocr.py
           python -m py_compile app/run_logger.py
-          python -m py_compile ../../scripts/gigachat_peer_review.py
-          python -m py_compile ../../scripts/gigachat_current_review.py
           python -m py_compile ../../scripts/teach_investigator.py
           python -m py_compile ../../scripts/autoloop.py
           python -m py_compile ../../scripts/generate_synthetic_corpus.py
@@ -122,3 +121,9 @@ jobs:
           tests/test_matching_confidence.py
           tests/test_vision_grounding.py
           tests/test_blind_runtime.py
+          tests/test_llm.py
+          tests/test_model_availability.py
+          tests/test_local_ocr.py
+          tests/test_graphic_ocr_pipeline.py
+          tests/test_official_pipeline.py
+          tests/test_process_contract.py

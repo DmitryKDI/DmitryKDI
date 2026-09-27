@@ -5,7 +5,7 @@
 ## Что уже сделано
 
 - Backend и frontend запускались локально на `127.0.0.1:8010` и `localhost:5173`.
-- Модель провайдера переключена на `GigaChat-3-Ultra`.
+- Модель только локальная (`Qwen/Qwen2.5-VL-7B-Instruct` через vLLM), облачных провайдеров нет.
 - Исправлена проблема `sqlite3.OperationalError: database is locked` в `packages/backend/app/file_store.py`.
 - Для `file_store` добавлены `busy_timeout` и `WAL`, а также тестовая проверка этих настроек.
 - `START-NADZOR.bat` обновлён и снова запускает и backend, и frontend через `scripts/start-all.sh`.

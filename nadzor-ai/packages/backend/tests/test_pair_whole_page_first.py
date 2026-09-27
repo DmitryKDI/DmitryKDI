@@ -21,7 +21,7 @@ from app.control_pair_candidates import ControlPair  # noqa: E402
 from app.llm import LlmConfig  # noqa: E402
 from app.matching import DocumentInput  # noqa: E402
 
-CONFIG = LlmConfig(provider="anthropic", api_key="fake")
+CONFIG = LlmConfig()
 
 
 def _doc(name, rooms, text, pages=1, discipline="ОВ"):

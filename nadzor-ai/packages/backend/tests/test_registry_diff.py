@@ -125,7 +125,7 @@ def test_run_triangulated_wires_room_and_equipment_cross_checks_into_escalation(
 def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_not_given(
     tmp_path, monkeypatch, capsys,
 ):
-    """Комплексный прогон с ключом ИИ (Г.50): без явного --rooms граф
+    """Комплексный прогон с моделью ИИ (Г.50): без явного --rooms граф
     маршрутизации раньше просто пропускался, даже когда ключ есть, — прямая
     претензия пользователя («система должна работать комплексно», не
     только по тексту). Без --rooms, но С ключом, routing_diff должен
@@ -167,7 +167,7 @@ def test_run_triangulated_auto_selects_routing_rooms_when_key_present_and_rooms_
     monkeypatch.setattr(registry_diff, "check_visual_candidates", lambda *a, **kw: [])
     monkeypatch.setattr(registry_diff, "verify_general_requirements_llm", lambda *a, **kw: [])
 
-    fake_config = LlmConfig(provider="gigachat", api_key="fake", base_url="", model="")
+    fake_config = LlmConfig()
     registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[],
                                     requirements_llm_config=fake_config)
 
@@ -255,7 +255,7 @@ def test_run_triangulated_auto_wires_mo_signals_when_routing_rooms_selected(tmp_
     monkeypatch.setattr(registry_diff, "verify_general_requirements_llm", lambda *a, **kw: [])
     monkeypatch.setattr(registry_diff, "_run_mo_cross_check", fake_run_mo_cross_check)
 
-    fake_config = LlmConfig(provider="gigachat", api_key="fake", base_url="", model="")
+    fake_config = LlmConfig()
     registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[],
                                     requirements_llm_config=fake_config)
 
@@ -308,7 +308,7 @@ def test_run_triangulated_escalates_confirmed_keys_downgraded_by_synthesis(tmp_p
     monkeypatch.setattr(registry_diff, "verify_general_requirements_llm", lambda *a, **kw: [])
     monkeypatch.setattr("app.verdict_synthesis.call_llm_json", fake_synth)
 
-    fake_config = LlmConfig(provider="gigachat", api_key="fake", base_url="", model="")
+    fake_config = LlmConfig()
     registry_diff.run_triangulated([str(pd_path)], [str(rd_path)], room_keys=[],
                                     requirements_llm_config=fake_config)
 
@@ -549,7 +549,7 @@ def test_main_cli_kind_mo_does_not_crash(tmp_path, monkeypatch, capsys):
 # --------------------------------------------------------------------------
 # Г.69 — ЛЛМ-фильтр каталога формы 3 подключён в общую точку
 # `_emit_general_requirements`, а не по отдельности в run_triangulated/
-# run_requirements: без ключа печатается сырой regex-каталог как раньше,
+# run_requirements: без модели печатается сырой regex-каталог как раньше,
 # с ключом — через requirement_llm_filter.classify_general_requirements.
 # --------------------------------------------------------------------------
 
@@ -560,7 +560,7 @@ def test_emit_general_requirements_uses_raw_catalog_without_llm_config():
     text = "\n".join(lines)
     assert "Общие требования ПД (Г.47" in text
     assert "ЛЛМ-фильтра" not in text
-    print("OK: без ключа провайдера печатается сырой regex-каталог формы 3, как раньше")
+    print("OK: без модели печатается сырой regex-каталог формы 3, как раньше")
 
 
 def test_emit_general_requirements_uses_llm_filter_when_config_present(monkeypatch):
@@ -575,12 +575,12 @@ def test_emit_general_requirements_uses_llm_filter_when_config_present(monkeypat
 
     monkeypatch.setattr(registry_diff, "classify_general_requirements", fake_classify)
     lines: list[str] = []
-    _emit_general_requirements(reqs, LlmConfig(provider="anthropic"), lines.append)
+    _emit_general_requirements(reqs, LlmConfig(), lines.append)
     text = "\n".join(lines)
     assert "ЛЛМ-фильтра (Г.69" in text
     assert "оставлено: 1, отсеяно как шум: 1" in text
     assert "голая ссылка на норму" in text
-    print("OK: с ключом провайдера каталог формы 3 идёт через ЛЛМ-фильтр (Г.69)")
+    print("OK: с моделью каталог формы 3 идёт через ЛЛМ-фильтр (Г.69)")
 
 
 def test_emit_general_requirements_wires_on_batch_error(monkeypatch):
@@ -597,7 +597,7 @@ def test_emit_general_requirements_wires_on_batch_error(monkeypatch):
 
     monkeypatch.setattr(registry_diff, "classify_general_requirements", fake_classify)
     lines: list[str] = []
-    _emit_general_requirements(reqs, LlmConfig(provider="anthropic"), lines.append)
+    _emit_general_requirements(reqs, LlmConfig(), lines.append)
     text = "\n".join(lines)
     assert "сбой пачки ЛЛМ-фильтра формы 3, стр.5" in text
     assert "сеть недоступна" in text

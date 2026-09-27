@@ -115,14 +115,14 @@ def test_truncated_answer_is_an_error_not_an_empty_result(monkeypatch):
     print("OK: обрезанный ответ даёт ошибку, а не пустой результат")
 
 
-def test_cloud_provider_setting_cannot_reach_the_network(monkeypatch):
-    """Старая облачная настройка не превращается ни в вызов, ни в пустой ответ."""
+def test_non_local_provider_setting_cannot_reach_the_network(monkeypatch):
+    """Нелокальная настройка провайдера не превращается ни в вызов, ни в пустой ответ."""
     monkeypatch.setattr(llm_module.httpx, "post",
                         lambda *a, **kw: pytest.fail("вызов не должен был состояться"))
 
     with pytest.raises(ValueError, match="только с локальной моделью"):
-        call_llm_json(LlmConfig(provider="gigachat"), "правила", "текст", use_cache=False)
-    print("OK: облачный провайдер отклоняется до сетевого вызова")
+        call_llm_json(LlmConfig(provider="external"), "правила", "текст", use_cache=False)
+    print("OK: нелокальный провайдер отклоняется до сетевого вызова")
 
 
 @pytest.mark.parametrize("url", [
@@ -226,8 +226,8 @@ def test_json_mode_can_be_switched_off_for_a_server_without_it(monkeypatch):
 
 
 def test_model_configured_answers_the_real_question():
-    """«Есть ли модель», а не «есть ли облачный ключ» (у локальной ключа нет)."""
+    """«Есть ли модель», а не «задан ли ключ»: у локальной модели ключа нет."""
     assert llm_module.model_configured(LlmConfig())
     assert not llm_module.model_configured(None)
-    assert not llm_module.model_configured(LlmConfig(provider="gigachat"))
+    assert not llm_module.model_configured(LlmConfig(provider="external"))
     print("OK: локальная модель считается подключённой без всякого ключа")

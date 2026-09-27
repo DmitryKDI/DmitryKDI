@@ -97,7 +97,7 @@ def test_pass1_sends_four_separate_images(monkeypatch):
         "pd_text": "",
         "rd_text": "",
     }
-    calls.call_high_recall(view, LlmConfig(provider="anthropic", api_key="fake"), "ОВ")
+    calls.call_high_recall(view, LlmConfig(), "ОВ")
     assert len(seen["images"]) == 4
     assert len(set(seen["images"])) == 4
 
@@ -127,7 +127,7 @@ def test_orchestrator_runs_verifier_and_keeps_unclear_candidate(monkeypatch):
     })
     findings, diagnostics, used = orchestrator.compare_shared_rooms_focused(
         "pd.pdf", 1, "rd.pdf", 1, ["101"],
-        LlmConfig(provider="anthropic", api_key="fake"), max_calls=2, discipline="ОВ",
+        LlmConfig(), max_calls=2, discipline="ОВ",
     )
     assert used == 2
     assert len(findings) == 1
@@ -162,7 +162,7 @@ def test_rejected_candidate_requires_high_comparability(monkeypatch):
     })
     findings, _, used = orchestrator.compare_shared_rooms_focused(
         "pd.pdf", 1, "rd.pdf", 1, ["101"],
-        LlmConfig(provider="anthropic", api_key="fake"), max_calls=2,
+        LlmConfig(), max_calls=2,
     )
     assert used == 2
     assert findings == []

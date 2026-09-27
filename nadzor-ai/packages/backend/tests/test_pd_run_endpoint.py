@@ -366,7 +366,7 @@ def test_composition_is_produced_even_when_llm_is_unavailable(tmp_path, monkeypa
     извлекались."""
     doc_id = _upload(tmp_path)
     monkeypatch.setattr(main_module, "check_llm_reachable",
-                        lambda cfg: (False, "ключ ЛЛМ не задан — проверять нечего"))
+                        lambda cfg: (False, "локальная модель не задана — проверять нечего"))
 
     body = _wait(client.post("/pd-runs", json={"document_ids": [doc_id]}).json()["id"])
 

@@ -76,7 +76,7 @@ def test_run_records_extractor_and_prompt_version(store):
     регулярки и разные версии промпта — фильтровать его будет нечем."""
     store.save_run([_req(1, "x")], documents=["А.pdf"], extractor="regex")
     store.save_run([_req(1, "y")], documents=["А.pdf"], extractor="llm",
-                   provider="gigachat", model="GigaChat-2", failed_chunks=3)
+                   provider="local", model="test-model", failed_chunks=3)
     runs = store.list_runs()
 
     assert runs[0]["extractor"] == "llm" and runs[0]["failed_chunks"] == 3
@@ -90,7 +90,7 @@ def test_export_dataset_writes_jsonl_with_context(store, tmp_path):
     нельзя будет отделить надёжные строки от сомнительных."""
     store.save_run([_req(7, "Шумозащитные экраны предусмотрены.")],
                    documents=["Том ООС8.1.pdf"], extractor="llm",
-                   provider="gigachat", model="GigaChat-2")
+                   provider="local", model="test-model")
     out = tmp_path / "dataset.jsonl"
     count = store.export_dataset(str(out))
 
@@ -98,7 +98,7 @@ def test_export_dataset_writes_jsonl_with_context(store, tmp_path):
     row = json.loads(out.read_text(encoding="utf-8").strip())
     assert row["sentence"] == "Шумозащитные экраны предусмотрены."
     assert row["section"] == "ООС" and row["page"] == 7
-    assert row["extractor"] == "llm" and row["provider"] == "gigachat"
+    assert row["extractor"] == "llm" and row["provider"] == "local"
     assert row["prompt_version"] == store.PROMPT_VERSION
     print("OK: выгрузка датасета несёт текст и условия его получения")
 

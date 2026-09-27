@@ -30,7 +30,7 @@ def test_distribution_assignment_can_confirm_room_entity_mismatch(monkeypatch):
 
     signals, diagnostics = run_room_entity_controls(
         before, after, ["pd.pdf"], ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"),
+        LlmConfig(),
     )
 
     assert len(signals) == 1
@@ -59,7 +59,7 @@ def test_entity_control_does_not_inspect_random_rd_pages(monkeypatch):
     monkeypatch.setattr(entity_control, "extract_plan_entities", unexpected_plan)
     signals, diagnostics = run_room_entity_controls(
         before, after, ["pd.pdf"], ["rd.pdf"],
-        LlmConfig(provider="anthropic", api_key="fake"),
+        LlmConfig(),
     )
 
     assert signals == []

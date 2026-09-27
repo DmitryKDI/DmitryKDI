@@ -181,7 +181,7 @@ export interface TriangulatedResult {
   documents?: { before: string[]; after: string[] }
   skipped_files: string[]
   llm?: { used: boolean; provider: string | null }
-  /** Что реально НЕ проверялось в этом прогоне и почему (нет ключа ИИ и
+  /** Что реально НЕ проверялось в этом прогоне и почему (модель не подключена и
    *  т.п.) — видимое состояние, а не молчаливый пропуск (Г.10). */
   not_run?: string[]
   rooms?: { total_pd: number; total_rd: number; matched: number; unmatched: number; findings: RoomFinding[] }
@@ -378,7 +378,7 @@ export const CORRECTION_KINDS = [
 
 /** Предполётная проверка связи (Г.91): узнать о проблеме ДО разбора. */
 export interface LlmCheck {
-  /** Чем проверяется TLS: системный набор, файл из certs/ или «отключена». */
+  /** Транспорт до модели: внутренняя сеть контура, внешних соединений нет. */
   tls?: string
   reachable: boolean
   provider: string
@@ -389,10 +389,6 @@ export interface BackendSettings {
   provider: 'local'
   base_url: string
   model: string
-  /** Сам ключ наружу не отдаётся — только факт, задан ли он (Г.112). */
-  api_key_set?: boolean
-  /** Отправляется только администратором; интерфейс инспектора не шлёт. */
-  api_key?: string
   retention_days?: number
   max_upload_kb?: number
   max_pages?: number

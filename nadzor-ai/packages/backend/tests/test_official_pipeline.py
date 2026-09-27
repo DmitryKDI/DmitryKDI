@@ -81,16 +81,17 @@ def test_missing_model_is_reported_for_every_parameter_and_not_as_clean_result(m
     print("OK: неподключённая модель явно оставляет все параметры невыполненными")
 
 
-def test_official_flow_rejects_a_cloud_model_provider():
+def test_official_flow_rejects_a_non_local_model_provider():
+    """Любой провайдер, кроме локального, в официальном сценарии не работает."""
     result = official_pipeline.run_official_analysis(
         [document(1, "PD"), document(2, "RD")],
-        LlmConfig(provider="anthropic", api_key="synthetic", base_url="", model=""),
+        LlmConfig(provider="external"),
     )
     assert result["coverage"]["completed"] == 0
     assert all(item["completeness_status"] == "CLARIFICATION_REQUIRED"
                for item in result["checks"])
     assert all("локальная модель" in item["explanation"] for item in result["checks"])
-    print("OK: официальный сценарий не уходит к облачному провайдеру")
+    print("OK: официальный сценарий не уходит к внешнему провайдеру")
 
 
 def test_candidate_needs_verified_quotes_and_boxes_from_both_sides(tmp_path, monkeypatch):

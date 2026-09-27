@@ -3,7 +3,7 @@
 The historical endpoint/function name remains stable, but active execution is:
 
     document map + PD requirements
-        -> stateful GigaChat investigator
+        -> stateful local-model investigator
         -> Python search/open/zoom tools
         -> self-review
         -> independent verifier.

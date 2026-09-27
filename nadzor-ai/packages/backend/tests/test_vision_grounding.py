@@ -22,7 +22,7 @@ def test_composite_rooms_are_checked_separately(monkeypatch):
 
     monkeypatch.setattr(vision_checks, "check_requirement_on_page", fake_check)
     results = vision_checks.check_visual_candidates(
-        [finding], room_index, LlmConfig(provider="anthropic", api_key="fake"),
+        [finding], room_index, LlmConfig(),
         max_pages_per_finding=1,
     )
     assert calls == [(1, ("101",), None), (2, ("102",), None)]
@@ -43,7 +43,7 @@ def test_no_grounded_page_means_no_vision_call(monkeypatch):
 
     monkeypatch.setattr(vision_checks, "check_requirement_on_page", fail_if_called)
     results = vision_checks.check_visual_candidates(
-        [finding], {}, LlmConfig(provider="anthropic", api_key="fake")
+        [finding], {}, LlmConfig()
     )
     assert calls["count"] == 0
     assert results[0]["verdict"] == "unclear"
@@ -71,7 +71,7 @@ def test_unclear_whole_page_retries_only_grounded_room_crops(monkeypatch):
 
     monkeypatch.setattr(vision_checks, "check_requirement_on_page", fake_check)
     results = vision_checks.check_visual_candidates(
-        [finding], room_index, LlmConfig(provider="anthropic", api_key="fake"),
+        [finding], room_index, LlmConfig(),
         max_pages_per_finding=1,
     )
     assert calls == [None, crop]

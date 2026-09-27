@@ -1,4 +1,4 @@
-name: NADZOR GigaChat handoff notification
+name: NADZOR handoff notification
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
             const h = JSON.parse(fs.readFileSync(path, 'utf8'));
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const title = 'NADZOR · GigaChat review updates';
+            const title = 'NADZOR · runtime review updates';
             const freshness = h.runtime_review?.freshness?.classification ?? 'unknown';
             const execution = h.runtime_review?.investigator_execution ?? h.runtime_review?.execution ?? {};
             const technical = execution?.technical_gaps?.length ?? 0;
@@ -34,7 +34,7 @@ jobs:
             const unresolved = verifier?.unresolved ?? 'n/a';
             const link = `https://github.com/${owner}/${repo}/blob/${context.sha}/${path}`;
             const body = [
-              `@${owner} новый GigaChat review готов.`,
+              `@${owner} новый review прогона готов.`,
               '',
               `- source commit: \`${h.source_git_sha ?? 'unknown'}\``,
               `- freshness: **${freshness}**`,

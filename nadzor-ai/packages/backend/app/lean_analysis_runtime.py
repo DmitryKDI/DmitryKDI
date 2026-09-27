@@ -299,7 +299,7 @@ def run_lean_analysis(
             "provider": llm_config.provider if llm_config else None,
             "call_failures": call_failures,
         },
-        "not_run": (["stateful semantic investigation: нет ключа ИИ"] if not use_llm else []),
+        "not_run": (["stateful semantic investigation: модель не подключена"] if not use_llm else []),
         "performance": {"duration_seconds": timings["total"], "stages_seconds": timings},
         "active_architecture": (
             "PD document map + requirements -> stateful local-model investigator "

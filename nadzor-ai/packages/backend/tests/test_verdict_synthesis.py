@@ -100,12 +100,12 @@ def test_synthesize_verdict_rejects_invalid_verdict_value():
 
 def test_synthesize_verdict_survives_call_exception():
     """Реальный случай (обнаружен на существующем тесте registry_diff при
-    подключении свода к run_triangulated): битый api_key поднимает
+    подключении свода к run_triangulated): сбой вызова модели поднимает
     исключение ИЗ call_llm_json (не возвращает None) — как и у всех
     остальных вызывающих мест этой функции в проекте (Г.33/Г.36 и др.),
     сбой одного ключа не должен ронять весь прогон."""
     def fake_call_llm_json(config, system_prompt, user_text, images=None, timeout=60.0):
-        raise ValueError("не удалось разобрать api_key")
+        raise ValueError("сервер модели вернул некорректный ответ")
     orig = _patch(verdict_synthesis, "call_llm_json", fake_call_llm_json)
     try:
         signals = [Signal(source="room_registry", domain="room", key="140", detail="х")]
@@ -113,7 +113,7 @@ def test_synthesize_verdict_survives_call_exception():
     finally:
         verdict_synthesis.call_llm_json = orig
     assert verdict.verdict == "недостаточно_данных"
-    assert "api_key" in verdict.reasoning
+    assert "некорректный ответ" in verdict.reasoning
     print("OK: исключение из call_llm_json даёт вердикт «недостаточно_данных», не падает")
 
 

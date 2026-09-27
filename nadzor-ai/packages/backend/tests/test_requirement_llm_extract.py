@@ -212,7 +212,7 @@ def test_extract_one_chunk_failure_does_not_lose_other_chunks():
 
 def test_on_chunk_error_callback_fires_with_page_and_exception():
     """Г.77 — реальный найденный пробел: до этого колбэка сбой ВСЕХ пачек
-    (например, системная SSL-ошибка сертификата GigaChat, реально
+    (например, системная ошибка связи с моделью, реально
     наблюдённая на живом прогоне) давал честный, но НЕВИДИМЫЙ пустой
     список — снаружи неотличимо от «в документе действительно нет
     требований». Колбэк даёт вызывающему коду шанс показать это явно."""
@@ -379,7 +379,7 @@ def test_unparseable_response_marks_chunk_as_failed(monkeypatch):
     errors = []
     result = module.extract_requirements_llm(
         [{"page": 1, "text": "Проектом задано проверяемое условие."}],
-        config=module.LlmConfig(provider="gigachat", api_key="test"),
+        config=module.LlmConfig(),
         on_chunk_error=lambda page, exc: errors.append((page, str(exc))),
     )
     assert result == []
@@ -397,7 +397,7 @@ def test_valid_empty_requirements_is_successful_empty_chunk(monkeypatch):
     errors = []
     result = module.extract_requirements_llm(
         [{"page": 1, "text": "Служебный текст без требований."}],
-        config=module.LlmConfig(provider="gigachat", api_key="test"),
+        config=module.LlmConfig(),
         on_chunk_error=lambda page, exc: errors.append((page, str(exc))),
     )
     assert result == []

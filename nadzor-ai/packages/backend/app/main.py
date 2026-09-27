@@ -96,10 +96,9 @@ def _ensure_schema_and_defaults() -> None:
     db = next(get_session())
     try:
         if db.query(models.Settings).count() == 0:
-            # Г.94 — по умолчанию GigaChat: инструмент делается под него, и
-            # инспектор ничего не выбирает. Ключ подхватывается из
-            # GIGACHAT_CREDENTIALS, если не задан в настройках (см. _llm_config).
-            db.add(models.Settings(id=1, provider="local", base_url="", model="", api_key=""))
+            # Модель только локальная, инспектор ничего не выбирает: адрес и
+            # имя модели задаются окружением развёртывания (local_config).
+            db.add(models.Settings(id=1, provider="local", base_url="", model=""))
             db.commit()
     finally:
         db.close()
@@ -795,7 +794,7 @@ def _run_pd(run_id: int) -> None:
 
         # Г.95/Г.98 — состав считается ПЕРВЫМ и БЕЗ УСЛОВИЙ, до проверки
         # связи: он детерминированный, модели не требует и полезен сам по
-        # себе. Раньше он стоял после проверки, и прогон без ключа возвращал
+        # себе. Раньше он стоял после проверки, и прогон без модели возвращал
         # инспектору ноль — хотя перечень листов, таблиц и графики можно
         # было отдать. Найдено прогоном «как инспектор» на реальном
         # комплекте: обе кнопки вернули только ошибку.
@@ -1375,7 +1374,7 @@ def add_review_message(run_id: int, body: schemas.ReviewMessageCreate,
 
     Порядок операций здесь — не деталь реализации, а само правило:
     **реплика сохраняется ДО обращения к модели**. Инспектор, разобравший
-    том без ключа или при оборванной связи, не должен терять свою работу —
+    том без модели или при оборванной связи, не должен терять свою работу —
     тот же принцип, по которому состав тома считается до проверки связи
     (Г.98). Поэтому ответ возвращается парой сообщений, и отсутствие второго
     объяснено словами, а не пустотой (Г.10).
@@ -1606,9 +1605,6 @@ def _settings_out(row: "models.Settings", db: Session) -> schemas.SettingsOut:
     out.provider = effective.provider
     out.model = effective.resolved_model()
     out.base_url = effective.resolved_base_url()
-    # Локальной модели ключ не нужен. Поле оставлено в контракте, чтобы
-    # старый интерфейс не падал, а значение говорит правду: ключа нет.
-    out.api_key_set = False
     return out
 
 
@@ -1618,8 +1614,6 @@ def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_sess
     s.provider = body.provider
     s.base_url = body.base_url
     s.model = body.model
-    if body.api_key is not None:
-        s.api_key = body.api_key
     # Сроки и лимиты необязательны: интерфейс может прислать только настройки
     # провайдера, и тогда прежние значения сохраняются, а не обнуляются.
     for field in ("retention_days", "max_upload_kb", "max_pages", "part_kb"):

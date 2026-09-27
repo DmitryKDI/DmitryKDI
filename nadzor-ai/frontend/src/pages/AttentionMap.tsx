@@ -162,7 +162,7 @@ export default function AttentionMap() {
           <>
             {(result.not_run?.length ?? 0) > 0 && (
               <p className="no-print mb-3 rounded-md border border-major/40 bg-major-soft p-2 text-xs text-major">
-                Без ключа ИИ в этом прогоне не проверялось: {result.not_run!.map((r) => r.split(':')[0]).join('; ')}.
+                Без модели ИИ в этом прогоне не проверялось: {result.not_run!.map((r) => r.split(':')[0]).join('; ')}.
                 {result.llm?.used === false && ' Реестры, комплектность и текстовая сверка требований — посчитаны полностью.'}
               </p>
             )}
@@ -213,7 +213,7 @@ export default function AttentionMap() {
 
             <p className="mt-4 text-xs text-ink-faint">
               Прогон #{runId} от {new Date(runStatus!.created_at).toLocaleString('ru-RU')}
-              {result.llm?.used ? ` · ИИ: ${result.llm.provider}` : ' · без ключа ИИ (только детерминированная сверка)'}.
+              {result.llm?.used ? ` · ИИ: ${result.llm.provider}` : ' · без модели ИИ (только детерминированная сверка)'}.
               Выводы носят характер гипотез и подлежат проверке на объекте.
             </p>
           </>
@@ -229,7 +229,7 @@ function TicketGroup({ domain, items, checked, onToggle, pushToast }: {
   pushToast: (text: string, kind?: 'ok' | 'error', undo?: () => void) => void
 }) {
   // Свёрнуто по умолчанию для всех групп, включая «Помещение» — на реальном
-  // комплекте это может быть сотни пунктов сразу (нет ключа ИИ — второй
+  // комплекте это может быть сотни пунктов сразу (модель не подключена — второй
   // источник не подтверждает ни одного расхождения, все уходят в очередь
   // эскалации), и открытая по умолчанию группа делает страницу нечитаемой
   // длинной простынёй вместо короткого списка «куда идти».

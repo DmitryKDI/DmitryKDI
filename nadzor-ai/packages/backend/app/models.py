@@ -367,12 +367,11 @@ class Settings(Base):
     __tablename__ = "settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    # Г.94 — инструмент делается под GigaChat: провайдер по умолчанию он,
-    # а не тот, что оставался от разработки. Инспектор ничего не выбирает.
+    # Модель только локальная; строка сохраняется для совместимости схемы,
+    # но модель выбирает окружение развёртывания (local_config).
     provider: Mapped[str] = mapped_column(String, default="local")
     base_url: Mapped[str] = mapped_column(String, default="")
     model: Mapped[str] = mapped_column(String, default="")
-    api_key: Mapped[str] = mapped_column(String, default="")
     # Сроки и лимиты хранения (Б.4/Б.5). Значения по умолчанию — бюджеты, а
     # не пороги истины: их меняет администратор под свой стенд, и от них не
     # зависит правильность разбора, только сколько места и времени он берёт.

@@ -5,7 +5,7 @@
 
 ## Роль
 
-Главная ценность локальной сессии — реальные GigaChat credentials, реальные
+Главная ценность локальной сессии — запущенная локальная модель, реальные
 документы и фактические прогоны. Не угадывай результат модели.
 
 Если пользователь прямо не просил редактировать код, диагностируй и сохраняй
@@ -35,16 +35,6 @@ document map + PD requirements
 1. Тишина != чисто.
 2. Не знаешь — смотри реальный log/output.
 3. Реальные документы, имена объекта и сырые findings не пушить в git.
-
-## GigaChat peer review
-
-После fresh run:
-
-```bash
-python scripts/gigachat_current_review.py
-```
-
-Он должен ревьюить именно stateful architecture и actual investigator metrics.
 
 ## Learning from mistakes
 

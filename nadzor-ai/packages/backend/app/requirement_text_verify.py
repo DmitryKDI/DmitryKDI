@@ -270,7 +270,7 @@ def verify_general_requirements_llm(
     # Пачки РД независимы: итог собирается после всех ответов, поэтому
     # параллельное выполнение не меняет правило, что поздний фрагмент может
     # добавить противоречие. `parallel_map` сохраняет порядок, а ограничитель
-    # GigaChat не позволяет превысить заданную параллельность.
+    # модели не позволяет превысить заданную параллельность.
     for chunk, result, error in parallel_map(_verify_chunk, prepared):
         if error is not None:
             for idx in requirements:
