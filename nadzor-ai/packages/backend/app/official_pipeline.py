@@ -169,6 +169,39 @@ def _relevant_facts(parameters: list[dict], facts_by_document: dict[int, list[di
     return selected
 
 
+def _name_terms(parameter: dict) -> set[str]:
+    # Значимое слово — от 4 букв, как и при ранжировании страниц выше.
+    return {word for word in re.findall(r"[а-яёa-z0-9]+",
+                                        str(parameter.get("name") or "").casefold())
+            if len(word) >= 4}
+
+
+def parameters_with_new_data(parameters: list[dict], documents: Sequence) -> set[str]:
+    """Коды параметров, для которых в новых документах есть данные (ТЗ 9.2).
+
+    Параметр затронут, если на странице нового документа сработал его шаблон
+    разбора (regex_pattern) или встретилось слово его наименования. Ошибка в
+    сторону лишнего пересчёта безопасна, в сторону пропуска — нет, поэтому
+    правило намеренно широкое.
+    """
+    pages = [fact["text"] for document in documents for fact in _facts(document)]
+    lowered = [text.casefold() for text in pages]
+    touched = set()
+    for parameter in parameters:
+        pattern = None
+        raw = str(parameter.get("regex_pattern") or "").strip()
+        if raw:
+            try:
+                pattern = re.compile(raw, re.IGNORECASE)
+            except re.error:
+                pattern = None
+        terms = _name_terms(parameter)
+        if (pattern is not None and any(pattern.search(text) for text in pages)) or any(
+                term in text for text in lowered for term in terms):
+            touched.add(parameter["code"])
+    return touched
+
+
 def _compact_text(text: str) -> str:
     return " ".join(text.split())
 
@@ -416,6 +449,7 @@ def run_official_analysis(
     progress: Callable[[str, int, int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
     graphic_runner: Callable[..., dict] | None = run_lean_analysis,
+    codes: set[str] | None = None,
 ) -> dict:
     """Возвращает результат по каждому параметру; сбой пачки виден отдельно.
 
@@ -425,6 +459,9 @@ def run_official_analysis(
     оставлен для совместимости вызова и на состав проверки не влияет.
     """
     parameters = list_parameters()
+    if codes is not None:
+        # Инкрементальное обновление: только параметры с новыми данными.
+        parameters = [item for item in parameters if item["code"] in codes]
     total = len(parameters)
     selected, problems = select_current_documents(documents)
     object_id = str(_metadata(documents[0]).get("object_id") or "") if documents else ""

@@ -1,8 +1,8 @@
 """Инкрементальное обновление при дозагрузке (ТЗ 9.2).
 
-Каждый параметр матрицы читает все три стадии, поэтому затронутые параметры
-определяются составом актуальных редакций. Дозагрузка, которая его не
-меняет, не должна снова гонять модель; которая меняет — пересчитывает всё.
+Дозагрузка, которая не меняет состав актуальных редакций, не гоняет модель.
+Которая меняет — пересчитывает только параметры, для которых появились новые
+данные (и неполные); остальные результаты и решения инспектора переносятся.
 """
 import json
 import sys
@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import models, official_api  # noqa: E402
 from app.db import get_session  # noqa: E402
 from app.main import app  # noqa: E402
+from app.parameter_catalog import current_matrix_version, list_parameters  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(app)
@@ -46,7 +47,7 @@ def _complete_with_current_selection(process_id: int) -> None:
         run = db.get(models.OfficialRun, process_id)
         ids = [item["id"] for item in run.input_snapshot]
         run.status = "completed"
-        run.result = {"matrix_version": "1.1", "checks": [],
+        run.result = {"matrix_version": current_matrix_version(), "checks": [],
                       "coverage": {"total": 0, "completed": 0, "not_run": 0},
                       "graphic_analysis": {"status": "not_run", "candidates": []},
                       "document_selection": {"selected": {"PD": ids}, "problems": {}}}
@@ -139,3 +140,73 @@ def test_cancel_checks_from_worker_threads_do_not_break_the_run(deferred, monkey
     monkeypatch.setattr(official_api, "run_official_analysis", fake)
     deferred(pid)
     assert client.get(f"/api/v1/processes/{pid}").json()["run_state"] == "completed"
+
+
+def _complete_check(parameter: dict, document_id: int) -> dict:
+    return {"finding_id": f"{parameter['code']}:matrix", "parameter_code": parameter["code"],
+            "parameter_name": parameter["name"], "technical_status": "completed",
+            "completeness_status": "COMPLETE", "finding_status": "CANDIDATE",
+            "evidence": [{"stage": "PD", "document_id": document_id, "page": 1,
+                          "bbox": [0, 0, 1, 1]}]}
+
+
+def test_reload_recomputes_only_parameters_with_new_data(deferred, monkeypatch):
+    parameters = list_parameters()
+    target = parameters[4]
+    word = max((w for w in target["name"].split() if len(w) >= 4), key=len)
+    pid = _upload("pd4.pdf", "PD", "APPROVED")["process_id"]
+    db = next(get_session())
+    try:
+        run = db.get(models.OfficialRun, pid)
+        pd_id = run.input_snapshot[0]["id"]
+        run.status = "completed"
+        run.result = {"matrix_version": current_matrix_version(),
+                      "checks": [_complete_check(item, pd_id) for item in parameters],
+                      "coverage": {"total": len(parameters), "completed": len(parameters),
+                                   "not_run": 0},
+                      "graphic_analysis": {"status": "not_run", "candidates": []},
+                      "document_selection": {"selected": {"PD": [pd_id]}, "problems": {}}}
+        db.commit()
+    finally:
+        db.close()
+    untouched = next(item for item in parameters
+                     if not any(len(w) >= 4 and w.casefold() in word.casefold()
+                                for w in item["name"].split()))
+    for finding in (f"{target['code']}:matrix", f"{untouched['code']}:matrix"):
+        version = client.get(f"/api/v1/processes/{pid}").json()["version"]
+        client.post(f"/official/runs/{pid}/decisions", json={
+            "finding_id": finding, "status": "CONFIRMED_VIOLATION", "reason": "да",
+            "expected_version": version})
+
+    # Новый документ содержит слово из наименования только одного параметра.
+    # Текст страницы подставляется напрямую: встроенный шрифт PDF не пишет
+    # кириллицу, а проверяется здесь выбор параметров, а не распознавание.
+    _upload("rd4.pdf", "RD", "APPROVED", process_id=pid)
+    from app import official_pipeline
+    monkeypatch.setattr(official_pipeline, "_facts", lambda document: [
+        {"page": 1, "text": f"Таблица: {word} 12"}])
+    seen = {}
+
+    def fake(documents, config, *, codes=None, **kwargs):
+        seen["codes"] = set(codes)
+        return {"matrix_version": current_matrix_version(),
+                "checks": [{**_complete_check(item, pd_id), "explanation": "новый"}
+                           for item in parameters if item["code"] in codes],
+                "coverage": {}, "graphic_analysis": {"status": "not_run", "candidates": []},
+                "document_selection": {"selected": {}, "problems": {}}}
+
+    monkeypatch.setattr(official_api, "run_official_analysis", fake)
+    deferred(pid)
+
+    body = client.get(f"/api/v1/processes/{pid}").json()
+    assert target["code"] in seen["codes"]
+    assert untouched["code"] not in seen["codes"]
+    assert len(seen["codes"]) < len(parameters)
+    checks = {item["parameter_code"]: item for item in body["result"]["checks"]}
+    assert len(checks) == len(parameters)
+    assert checks[untouched["code"]]["finding_status"] == "CONFIRMED_VIOLATION", \
+        "решение по незатронутому параметру потеряно"
+    assert checks[target["code"]]["finding_status"] == "CANDIDATE", \
+        "решение по прежнему результату перенесено на новый"
+    assert body["result"]["incremental"]["recomputed"] == sorted(seen["codes"])
+    print("OK: пересчитаны только параметры с новыми данными; прочие решения сохранены")

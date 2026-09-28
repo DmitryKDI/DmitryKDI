@@ -16,7 +16,11 @@ from sqlalchemy.orm import Session
 from . import auth, free_search, models, protocol
 from .db import SessionLocal, get_session
 from .llm import LlmConfig, local_config
-from .official_pipeline import run_official_analysis, select_current_documents
+from .official_pipeline import (
+    parameters_with_new_data,
+    run_official_analysis,
+    select_current_documents,
+)
 from .parameter_catalog import current_matrix_version, list_parameters
 
 router = APIRouter(prefix="/official", tags=["official"])
@@ -142,7 +146,7 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
         checks = {item["finding_id"]: item for item in _result_checks(result)}
         for decision in decisions:
             check = checks.get(decision.finding_id)
-            if check is None:
+            if check is None or decision.version <= check.get("decisions_after_version", 0):
                 continue
             history = check.setdefault("review_history", [])
             history.append({
@@ -267,6 +271,67 @@ def _reuse_previous(run: models.OfficialRun, documents) -> dict | None:
     return reused
 
 
+def _affected_codes(run: models.OfficialRun, documents) -> tuple[set[str] | None, dict | None]:
+    """Параметры, которые надо пересчитать после дозагрузки (ТЗ 9.2).
+
+    Возвращает (коды, прежний результат) или (None, None) — пересчитать всё.
+    Пересчитываются параметры, для которых в новых документах есть данные, а
+    также те, чья прежняя проверка неполна или ссылается на редакцию, которая
+    перестала быть актуальной. Остальные результаты и решения инспектора по
+    ним переносятся без изменений.
+    """
+    history = run.protocol_history or []
+    previous = history[-1].get("result") if history else None
+    if not previous or (previous.get("coverage") or {}).get("not_run"):
+        return None, None
+    if previous.get("matrix_version") != current_matrix_version():
+        return None, None  # матрица изменилась — прежние результаты не по той редакции
+    before = {int(i) for ids in ((previous.get("document_selection") or {})
+                                 .get("selected") or {}).values() for i in ids}
+    after = {i for ids in _selection(documents).values() for i in ids}
+    removed = before - after
+    added = [document for document in documents if document.id in after - before]
+    parameters = list_parameters()
+    previous_checks = {item.get("parameter_code"): item for item in previous.get("checks") or []}
+    codes = parameters_with_new_data(parameters, added)
+    for parameter in parameters:
+        check = previous_checks.get(parameter["code"])
+        if (check is None or check.get("technical_status") != "completed"
+                or check.get("completeness_status") not in {"COMPLETE", "NOT_APPLICABLE"}
+                or any(item.get("document_id") in removed
+                       for item in check.get("evidence") or [])):
+            codes.add(parameter["code"])
+    if len(codes) >= len(parameters):
+        return None, None
+    return codes, previous
+
+
+def _merge_incremental(result: dict, previous: dict, codes: set[str],
+                       decision_version: int) -> dict:
+    """Новые результаты по затронутым параметрам, прежние — по остальным."""
+    fresh = {item["parameter_code"]: item for item in result.get("checks") or []}
+    kept = {item.get("parameter_code"): item for item in previous.get("checks") or []}
+    checks = []
+    for parameter in list_parameters():
+        code = parameter["code"]
+        if code in codes and code in fresh:
+            # Решения, принятые по прежнему результату, к новому не относятся.
+            checks.append({**fresh[code], "decisions_after_version": decision_version})
+        elif code in kept:
+            checks.append(kept[code])
+    completed = sum(item.get("technical_status") == "completed" for item in checks)
+    result["checks"] = checks
+    result["coverage"] = {"total": len(checks), "completed": completed,
+                          "not_run": len(checks) - completed}
+    result["incremental"] = {
+        "recomputed": sorted(codes), "kept": len(checks) - len(codes & fresh.keys()),
+        "reason": "пересчитаны параметры, для которых появились новые данные, и "
+                  "параметры с неполной прежней проверкой; остальные перенесены "
+                  "вместе с решениями инспектора",
+    }
+    return result
+
+
 def _execute(run_id: int) -> None:
     db = SessionLocal()
     try:
@@ -326,23 +391,26 @@ def _execute(run_id: int) -> None:
             run.status, run.stage = "completed", "Готово: актуальные редакции не изменились"
             db.commit()
             return
+        codes, previous = _affected_codes(run, documents)
         result = None
         for attempt in range(EXECUTE_RETRIES + 1):
             try:
                 result = run_official_analysis(
                     documents, config, include_medium=run.include_medium,
-                    progress=progress, cancelled=cancelled,
+                    progress=progress, cancelled=cancelled, codes=codes,
                 )
                 break
             except Exception:  # noqa: BLE001 — после повторов сбой уйдёт в статус error
                 if attempt == EXECUTE_RETRIES or cancelled():
                     raise
         db.expire(run)
-        if run.protocol_history:
+        if codes is not None:
+            result = _merge_incremental(result, previous, codes, _version(db, run_id))
+        elif run.protocol_history:
             result["incremental"] = {
                 "recomputed": "all",
-                "reason": "изменился состав актуальных редакций; каждый параметр "
-                          "матрицы читает все три стадии, поэтому затронуты все",
+                "reason": "прежний результат неполон или матрица изменилась — "
+                          "пересчитаны все параметры",
             }
         # Свободный поиск гипотез вне матрицы (ТЗ 9.5) — по тем же редакциям.
         result["free_search"] = free_search.run(db, run, documents, result)
