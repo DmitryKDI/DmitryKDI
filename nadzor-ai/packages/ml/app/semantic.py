@@ -4,7 +4,8 @@
 русском, поэтому по умолчанию — многоязычный аналог той же архитектуры
 (MiniLM, 384 измерения, mean pooling), выгруженный в ONNX: модель работает
 в контуре без PyTorch и без сети. Каталог модели задаёт
-`INSPECTOR_EMBEDDING_MODEL_DIR` (файлы `model.onnx` и `tokenizer.json`);
+`INSPECTOR_EMBEDDING_MODEL_DIR` (`tokenizer.json` и `model.onnx` — в корне
+каталога или в `onnx/`, как раскладывает выгрузка Hugging Face);
 его готовит офлайн-комплект (`scripts/offline/prepare_bundle.sh`).
 
 Без модели ранжирование остаётся лексическим (слова матрицы и regex_pattern),
@@ -39,18 +40,33 @@ class Status:
     reason: str
 
 
+def model_files(folder: Path) -> tuple[Path, Path] | None:
+    """Пути к ONNX-модели и токенизатору или None, если чего-то нет."""
+    tokenizer = folder / "tokenizer.json"
+    if not tokenizer.is_file():
+        return None
+    for onnx in (folder / "model.onnx", folder / "onnx" / "model.onnx"):
+        if onnx.is_file():
+            return onnx, tokenizer
+    return None
+
+
 class Encoder:
     def __init__(self, folder: Path) -> None:
         import onnxruntime
         from tokenizers import Tokenizer
 
+        files = model_files(folder)
+        if files is None:
+            raise FileNotFoundError(f"model.onnx или tokenizer.json не найдены в {folder}")
+        onnx, tokenizer = files
         self.folder = folder
         self.name = folder.name
-        self.tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
+        self.tokenizer = Tokenizer.from_file(str(tokenizer))
         self.tokenizer.enable_truncation(MAX_TOKENS)
         self.tokenizer.enable_padding()
         self.session = onnxruntime.InferenceSession(
-            str(folder / "model.onnx"), providers=["CPUExecutionProvider"]
+            str(onnx), providers=["CPUExecutionProvider"]
         )
         self.inputs = {item.name for item in self.session.get_inputs()}
 
@@ -96,7 +112,7 @@ def encoder() -> Encoder | None:
         if _STATUS is not None:
             return _ENCODER
         folder = _folder()
-        if not (folder / "model.onnx").is_file() or not (folder / "tokenizer.json").is_file():
+        if model_files(folder) is None:
             _STATUS = Status(False, folder.name, f"модель Sentence-BERT не найдена в {folder}")
             return None
         try:
