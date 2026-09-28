@@ -150,7 +150,8 @@ def _linked(group: dict, selected: list[dict]) -> bool:
         if not code:
             continue
         if not any(_normalize(meta.get("document_code")) == _normalize(code)
-                   and (revision is None or _normalize(meta.get("revision")) == _normalize(revision))
+                   and (revision is None
+                        or _normalize(meta.get("revision")) == _normalize(revision))
                    for meta in selected):
             return False
     return True
