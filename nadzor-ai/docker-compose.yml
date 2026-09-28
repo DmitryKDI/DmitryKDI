@@ -204,7 +204,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.2-alpine
     command: ["redis-server", "--requirepass", "${INSPECTOR_REDIS_PASSWORD:?запустите scripts/make-secrets.sh}",
               "--maxmemory", "24gb", "--maxmemory-policy", "allkeys-lru"]
     volumes:

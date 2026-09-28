@@ -25,7 +25,7 @@ EMBED_DIR="paraphrase-multilingual-MiniLM-L12-v2"
 # Ревизия весов фиксируется коммитом репозитория модели. Пусто — берётся
 # текущая, и её коммит записывается в манифест.
 MODEL_REVISION="${INSPECTOR_MODEL_REVISION:-}"
-THIRD_PARTY=(rabbitmq:4.1-management-alpine redis:7.4-alpine clamav/clamav:1.4
+THIRD_PARTY=(rabbitmq:4.1-management-alpine redis:7.2-alpine clamav/clamav:1.4
   prom/prometheus:v3.5.0 prom/alertmanager:v0.28.1 grafana/grafana:12.1.0
   elasticsearch:8.18.2 logstash:8.18.2 kibana:8.18.2 nginx:1.27-alpine)
 OWN=(inspector-ai/server:local inspector-ai/ml:local inspector-ai/frontend:local)

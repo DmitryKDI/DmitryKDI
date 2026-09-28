@@ -162,7 +162,8 @@ export function mlRoutes(app: FastifyInstance, ctx: Context): void {
       return { id: proc.id, object_id: proc.object_id, run_state: proc.run_state, input_snapshot: proc.input_snapshot,
         result: processes.view(ctx, proc).result }
     })
-    return ctx.ml.evaluate({ reference: body.reference, processes: runs })
+    // Матрица — для разбивки метрик по разделам (ML-модули своей матрицы не хранят).
+    return ctx.ml.evaluate({ reference: body.reference, processes: runs, parameters: listParameters(ctx) })
   })
 
   app.get('/api/v1/ml/rejections', { ...read, schema: { tags: ['ml'], summary: 'Лог отклонений' } },

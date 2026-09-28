@@ -1,15 +1,11 @@
-name: Nadzor UI and runtime
+name: Inspector AI
 
 on:
   push:
     branches:
       - 'claude/**'
     paths:
-      - 'nadzor-ai/frontend/**'
-      - 'nadzor-ai/packages/backend/app/**'
-      - 'nadzor-ai/packages/backend/tests/**'
-      - 'nadzor-ai/data/known_violations.json'
-      - 'nadzor-ai/CONTEXT.md'
+      - 'nadzor-ai/**'
       - '.github/workflows/nadzor-ui.yml'
   workflow_dispatch:
 
@@ -30,26 +26,43 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  backend-llm:
+  server:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: nadzor-ai/packages/backend
+        working-directory: nadzor-ai/packages/server
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nadzor-ai/packages/server/package-lock.json
+      - name: Шрифт с кириллицей для выгрузки PDF
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+
+  ml:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: pip
-          cache-dependency-path: nadzor-ai/packages/backend/requirements.txt
-      - name: Install focused test dependencies
-        # Tesseract с русским словарём: тест распознавания должен реально
-        # читать страницу, а не пропускаться из-за отсутствия движка.
+          cache-dependency-path: nadzor-ai/requirements-dev.txt
+      - name: Tesseract с русским словарём и шрифт
+        # Тест распознавания должен реально читать страницу, а не
+        # пропускаться из-за отсутствия движка.
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng fonts-dejavu-core
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
-      - name: Compile backend modules
-        run: python -m compileall -q app
-      - name: Run backend tests
-        run: pytest -q tests
+          pip install -r requirements-dev.txt
+      - run: ruff check packages/ml/app/worker.py packages/ml/app/service.py packages/ml/app/kv.py packages/ml/app/cad.py packages/ml/app/cv.py packages/ml/app/semantic.py packages/ml/app/sources.py
+      - run: PYTHONPATH=packages/ml pytest -q packages/ml/tests

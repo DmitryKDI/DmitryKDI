@@ -1,85 +1,90 @@
 # Модель угроз
 
-Документ перечисляет угрозы, меры, реализованные в коде, и тесты, которые их
-проверяют. Меры, которые решение не реализует, названы отдельно — выдавать их
-за сделанное нельзя.
-
-## Общие положения
+Угрозы, меры в коде и тесты, которые их проверяют. Меры, которых решение не
+реализует, названы отдельно: выдавать их за сделанное нельзя.
 
 Документы предоставляет поднадзорное лицо — сторона, заинтересованная в
-сокрытии нарушений. Поэтому входные данные считаются недоверенными по
-умолчанию, а вывод системы — гипотезой для инспектора, а не заключением.
+сокрытии нарушений. Поэтому входные данные недоверенные по умолчанию, а вывод
+системы — гипотеза для инспектора, а не заключение.
+
+Тесты сервера — `packages/server/test/*.test.ts` (vitest), ML-модулей —
+`packages/ml/tests/` (pytest).
 
 ## У-1. Инъекция инструкций через проверяемый документ
 
 | Мера | Реализация | Проверка |
 |---|---|---|
-| Текст документа — данные, а не инструкции | `UNTRUSTED_INPUT_RULE` в каждом промпте (`app/vision.py`, `app/official_pipeline.py`) | `test_official_pipeline.py::test_document_text_is_sent_as_untrusted_data` |
-| Только структурированный ответ | ответ модели разбирается как JSON; неразобранный ответ — техническая ошибка параметра, а не «нарушений нет» | `test_official_pipeline.py::test_missing_model_is_reported_for_every_parameter_and_not_as_clean_result` |
-| Цитата обязана существовать на указанном листе | код ищет цитату в тексте страницы и строит bbox по найденному месту; непроверенная цитата не становится доказательством | `test_extraction_evidence.py`, `test_official_pipeline.py::test_candidate_needs_verified_quotes_and_boxes_from_both_sides` |
-| У модели нет инструментов, базы и сети | модель получает текст и изображения страниц и возвращает JSON | устройство `app/llm.py` |
-| Решение принимает человек | `CONFIRMED_VIOLATION` ставит только инспектор; финализация — только когда у всех кандидатов есть решение | `test_official_api.py`, `test_api_v1.py` |
+| Текст документа — данные, а не инструкции | `UNTRUSTED_INPUT_RULE` в каждом промпте (`ml/app/vision.py`, `official_pipeline.py`) | `test_official_pipeline.py::test_document_text_is_sent_as_untrusted_data` |
+| Только структурированный ответ; неразобранный — техническая ошибка | `ml/app/llm.py`, `official_pipeline.py` | `test_official_pipeline.py::test_missing_model_is_reported_for_every_parameter_and_not_as_clean_result`, `test_llm.py::test_truncated_answer_is_an_error_not_an_empty_result` |
+| Цитата обязана существовать на указанном листе | код ищет цитату на странице и строит bbox сам | `test_official_pipeline.py::test_candidate_needs_verified_quotes_and_boxes_from_both_sides` |
+| Решение принимает человек | `CONFIRMED_VIOLATION` — только инспектор; финализация — когда все кандидаты решены | `process.test.ts` «решения: кодированная причина…», `protocol.test.ts` «в кандидаты — только с координатами…» |
 
 ## У-2. Утечка документов за пределы контура
 
 | Мера | Реализация | Проверка |
 |---|---|---|
-| Модель только локальная | `app/llm.py`: адрес вне контура отклоняется до отправки запроса | `test_llm.py::test_external_address_is_refused_before_sending` |
-| Перечень моделей тоже не запрашивается наружу | `llm.available_models` | `test_model_availability.py::test_external_server_address_is_refused` |
-| Сеть модели без выхода наружу | сеть `contour` в `docker-compose.yml` объявлена `internal` | проверено запуском состава |
-| Распознавание сканов локально | Tesseract в образе backend | `test_local_ocr.py` |
+| Модель только локальная; адрес вне контура отклоняется до запроса | `ml/app/llm.py` | `test_llm.py::test_external_address_is_refused_before_sending`, `test_model_availability.py::test_external_server_address_is_refused` |
+| Адрес ИАИС «РиН» вне контура отклоняется | `server/src/domain/rin.ts` | `process.test.ts` «адрес РиН вне контура отклоняется до отправки» |
+| Сеть сервисов без выхода наружу | сеть `contour` объявлена `internal` в `docker-compose.yml` | проверено запуском состава |
+| Внутренний REST ML только со служебным токеном | `ml/app/service.py`, `server /internal/files` | `test_model_availability.py::test_internal_api_requires_the_contour_token` |
+| Расшифрованные файлы живут только на время задачи | временный каталог задачи в tmpfs | `test_worker.py::test_workspace_is_removed_after_task` |
 
-## У-3. Подмена документа или редакции
-
-| Мера | Реализация | Проверка |
-|---|---|---|
-| Отпечаток SHA-256 каждого файла | хранилище оригиналов по отпечатку (`app/file_store.py`); SHA-256 из реестра сверяется с полученным файлом | `test_api_v1.py` |
-| Актуальная редакция по цепочке замены | `select_current_documents`: неоднозначная цепочка даёт `CLARIFICATION_REQUIRED` | `test_official_pipeline.py::test_current_revision_requires_an_unambiguous_replacement_chain` |
-| Цепочка предшественников без циклов | проверка при сохранении метаданных | `test_official_api.py::test_revision_predecessor_cannot_form_a_cycle` |
-| Документ из протокола не удаляется | удаление отклоняется | `test_official_api.py::test_document_used_by_an_official_protocol_cannot_be_deleted` |
-| Воспроизводимость | в протоколе `input_manifest_hash`, версии матрицы, модели и набора данных | `test_protocol.py` |
-
-## У-4. Отказ в обслуживании и вредоносные файлы
+## У-3. Раскрытие данных «в покое»
 
 | Мера | Реализация | Проверка |
 |---|---|---|
-| Тип по содержимому, а не по расширению | `app/document_convert.py`, проверка сигнатуры PDF | `test_upload_storage.py::test_not_a_pdf_is_refused_by_signature_not_by_extension` |
-| XML с DTD и сущностями отклоняется (XXE) | `document_convert` до разбора XML | `test_document_convert.py::test_xml_with_dtd_is_refused` |
-| Лимиты: 50 МБ на файл, 200 МБ на пакет, число страниц | `app/api_v1.py`, `app/main.py` | `test_api_v1.py::test_package_limit_rejects_the_whole_package`, `test_upload_storage.py` |
-| Имя файла не участвует в пути | файл хранится под отпечатком | `test_upload_storage.py::test_file_name_never_becomes_the_path` |
-| Тяжёлый том режется на части по весу | `app/document_split.py`, нумерация листов сохраняется | `test_upload_storage.py::test_heavy_volume_is_split_into_parts_covering_every_page` |
+| База зашифрована | SQLCipher, ключ — Docker secret (`server/src/db/database.ts`) | `process.test.ts` (база стенда тестов зашифрована) |
+| Оригиналы зашифрованы | AES-256-GCM, SHA-256 как AAD (`server/src/storage/fileStore.ts`) | проверка целостности `admin.test.ts` |
+| Кэш ML в Redis зашифрован и привязан к ключу | AES-256-GCM, имя ключа как AAD (`ml/app/kv.py`) | `test_kv.py::test_values_in_redis_are_encrypted_and_bound_to_the_key` |
+| Резервные копии сохраняют шифрование | `VACUUM INTO` той же зашифрованной базы | `server/src/domain/backup.ts` |
+| Канал | TLS 1.3 на nginx (порт 5443), к РиН — TLS 1.3 с клиентским сертификатом | конфигурация `docker/nginx-tls.conf`, `rin.ts` |
 
-## У-5. Компрометация цепочки поставки
+## У-4. Подмена документа или редакции
+
+| Мера | Реализация | Проверка |
+|---|---|---|
+| SHA-256 каждого файла; значение из реестра сверяется | `server/src/domain/intake.ts` | `process.test.ts` «запрещает перезапись file_id…» |
+| Файл, полученный ML, сверяется с отпечатком | `ml/app/sources.py::fetch` | устройство функции |
+| Актуальная редакция по цепочке замены; неоднозначность — `CLARIFICATION_REQUIRED` | `official_pipeline.select_current_documents` | `test_official_pipeline.py::test_current_revision_requires_an_unambiguous_replacement_chain` |
+| Воспроизводимость | `input_manifest_hash`, версии матрицы, модели, набора данных | `protocol.test.ts` «пять таблиц, карточки источников и версии» |
+
+## У-5. Отказ в обслуживании и вредоносные файлы
+
+| Мера | Реализация | Проверка |
+|---|---|---|
+| Антивирус до сохранения; недоступен — отказ, а не пропуск | `server/src/domain/antivirus.ts` (протокол clamd) | проверено запуском с ClamAV-совместимым сервисом |
+| Тип по содержимому; повреждённый файл — отказ с причиной | `server/src/domain/formats.ts` | `process.test.ts` «отклоняет неподдерживаемый и повреждённый файл…», `cad.test.ts` |
+| XML с DTD отклоняется (XXE) | `formats.ts`, `ml/app/document_convert.py` | `test_document_convert.py::test_xml_with_dtd_is_refused` |
+| Лимиты: 50 МБ на файл, 200 МБ на пакет, число страниц | настройки сервера, nginx `client_max_body_size` | `routes/system.ts` (пределы ТЗ 9.1 в схеме) |
+| Чтение чертежа — в отдельном потоке с лимитом 30 с | `server/src/domain/cad.ts` | `cad.test.ts` |
+| Зависшая задача — повтор, затем `ERROR` и уведомление | `server/src/domain/pipeline.ts` | `process.test.ts` «таймаут обработки файла…» |
+| Лимиты CPU и памяти контейнеров | `docker-compose.yml` | — |
+
+## У-6. Компрометация цепочки поставки
 
 | Мера | Реализация |
 |---|---|
-| Версии зависимостей закреплены | `requirements.txt`, `package-lock.json` |
-| Образ сервера модели закреплён дайджестом | `docker-compose.yml`, `scripts/offline/prepare_bundle.sh` |
-| Офлайн-комплект сверяется с манифестом | `scripts/offline/load_bundle.sh` сравнивает ID образов с `bundle/MANIFEST.txt` |
-| Непривилегированный пользователь в образе | `docker/backend.Dockerfile` (uid 10001) |
+| Версии зависимостей закреплены | `packages/ml/requirements.txt`, `package-lock.json` |
+| Образ сервера модели — по дайджесту | `scripts/offline/prepare_bundle.sh` |
+| Офлайн-комплект сверяется с манифестом | `scripts/offline/load_bundle.sh` |
+| Непривилегированный пользователь в образах | `docker/server.Dockerfile`, `docker/ml.Dockerfile` (uid 10001) |
+| Скрипты установки npm в образе не выполняются | `npm ci --ignore-scripts` |
 
-## У-6. Несанкционированный доступ и отрицание действий
+## У-7. Несанкционированный доступ и отрицание действий
 
 | Мера | Реализация | Проверка |
 |---|---|---|
-| Всё, кроме входа и `/health`, — только после входа | `app/auth.py`: сессия по cookie (HttpOnly, SameSite=strict) или bearer-токену | `test_auth.py::test_everything_except_login_and_health_requires_a_session` |
-| Пароли не хранятся | scrypt с солью, минимальная длина | `test_auth.py::test_password_is_stored_as_a_salted_hash` |
-| Роли разграничены | `auth.require`: инспектор, супервизор, администратор, ML-инженер, внешняя система | `test_auth.py::test_roles_limit_what_a_user_can_do` |
-| Каждое изменение записано | журнал аудита: пользователь, действие, объект, код ответа, IP, агент | `test_auth.py::test_every_change_is_audited_with_user_ip_and_agent` |
-| Решение привязано к учётной записи | `user_id` в решении инспектора, автор — из сессии, а не из запроса | `test_official_api.py` |
+| Всё, кроме входа и `/health`, — после входа | `server/src/auth/auth.ts` | `admin.test.ts` «всё, кроме входа и /health…» |
+| Пароли — scrypt с солью | `server/src/auth/passwords.ts` | `admin.test.ts` «пароль хранится только хешем…» |
+| Роли разграничены | `requireRole` | `admin.test.ts` «роли ограничивают действия» |
+| Каждое изменение записано; журнал только дополняется | `server/src/audit.ts`, триггеры схемы | `admin.test.ts` «изменение записано с пользователем, IP и агентом…» |
+| Отмена финализации — только супервизор, с причиной, в журнал безопасности | `processes.unfinalize` | `process.test.ts` |
 
 ## Что решение не реализует
 
-- Шифрование данных «в покое» средствами приложения: базы и копии лежат на
-  томах `nadzor-state` и `nadzor-backups`, шифрование — средствами тома
-  (LUKS или СХД заказчика). Передача — TLS 1.3 (порт 5443).
-- Систему обнаружения вторжений и защиту от DDoS: это средства периметра
-  контура заказчика; сервис даёт им журнал безопасности (`security.log`) и
-  метрики.
-
-- Проверку усиленной электронной подписи: поле `signature_status` из реестра
+- Систему обнаружения вторжений и защиту от DDoS — средства периметра
+  заказчика; сервис даёт им журнал безопасности и метрики.
+- Проверку усиленной электронной подписи: `signature_status` из реестра
   сохраняется как есть.
-- ГОСТ-TLS и подпись передаваемого пакета УКЭП: передача во внешнюю систему
-  включается адресом приёма (`NADZOR_RIN_URL`, только внутри контура), сервис
-  предъявляет клиентский сертификат стандартным TLS (`NADZOR_RIN_CLIENT_CERT`);
-  криптография по ГОСТ — на СКЗИ заказчика перед приёмником.
+- Криптографию по ГОСТ: шифрование и TLS — стандартные алгоритмы;
+  ГОСТ-TLS и подпись пакета УКЭП — на СКЗИ заказчика.

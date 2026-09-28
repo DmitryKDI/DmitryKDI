@@ -17,6 +17,6 @@ test('inspector clarification is a separate visible decision', () => {
   assert.equal(findingLabel('CLARIFICATION_REQUIRED', 'completed'), 'запрошено уточнение')
 })
 
-test('evidence image URL uses the existing backend rendering route', () => {
-  assert.equal(officialApi.pageImageUrl(17, 4), '/backend/page-image/17/4')
+test('evidence image URL uses the server REST route', () => {
+  assert.equal(officialApi.pageImageUrl(17, 4), '/api/v1/documents/17/pages/4/image')
 })

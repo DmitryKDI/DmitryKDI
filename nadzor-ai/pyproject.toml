@@ -1,17 +1,17 @@
 [project]
-name = "nadzor-ai"
+name = "inspector-ai-ml"
 version = "0.1.0"
-description = "НАДЗОР.ИИ — модуль предиктивного строительного надзора"
+description = "«Инспектор ИИ» — ML-модули (ТЗ 1.5)"
 requires-python = ">=3.11"
 
 [tool.setuptools.packages.find]
-where = ["packages"]
+where = ["packages/ml"]
 
 [tool.pytest.ini_options]
-pythonpath = ["packages", "."]
-testpaths = ["tests"]
+pythonpath = ["packages/ml"]
+testpaths = ["packages/ml/tests"]
+asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
-markers = ["real_auth: тест идёт через настоящий вход, без подмены пользователя"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
@@ -31,5 +31,5 @@ ignore = [
 "**/scripts/*" = ["S", "E501"]
 
 [tool.coverage.run]
-source = ["packages"]
+source = ["packages/ml/app"]
 omit = ["*/tests/*"]

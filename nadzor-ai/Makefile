@@ -42,7 +42,8 @@ lint:            ## Стиль и границы модулей
 
 security:        ## Локальный прогон проверок безопасности
 	.venv/bin/bandit -q -r packages -c pyproject.toml
-	.venv/bin/pip-audit -r requirements.txt || true
+	.venv/bin/pip-audit -r packages/ml/requirements.txt || true
+	cd packages/server && npm audit --omit=dev || true
 
 clean:           ## Убрать сгенерированное
 	rm -rf .pytest_cache htmlcov packages/server/dist
