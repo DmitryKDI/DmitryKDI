@@ -88,8 +88,17 @@ DECLARED: dict[str, str] = {
     "auth.SCRYPT_P": BUDGET,
     "api_v1.MAX_PACKAGE_BYTES": BUDGET,
     "official_api.EXECUTE_RETRIES": BUDGET,
-    # ТЗ 9.6: повторы передачи через 1, 5 и 15 минут; частота проверки срока.
-    "external_sync.RETRY_POLL_S": BUDGET,
+    # Фоновые задачи: как часто проверять сроки и каким периодом строить отчёт.
+    "jobs.POLL_S": BUDGET,
+    "jobs.REPORT_PERIOD_DAYS": BUDGET,
+    # Доли разбиения объектов по наборам — сколько данных отдать на обучение и
+    # проверку, а не порог истины.
+    "feedback.SPLIT_TRAIN_PERCENT": BUDGET,
+    "feedback.SPLIT_VALIDATION_PERCENT": BUDGET,
+    # Пороги приёмки модели — значения из ТЗ 14.3 и 9.4, а не подобранные.
+    "feedback.MAX_FALSE_POSITIVE_RATE": BUDGET,
+    "feedback.MAX_RECALL_DROP": BUDGET,
+    "feedback.MAX_FPR_GROWTH": BUDGET,
     # Свободный поиск (ТЗ 9.5): значимое слово и общий корень — правило языка;
     # правило трёх сигм и минимум объектов для сравнения — общепринятая
     # статистика и объём выборки, а не порог, подобранный по примеру.

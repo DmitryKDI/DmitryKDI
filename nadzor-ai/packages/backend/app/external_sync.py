@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-import threading
 from dataclasses import dataclass
 
 import httpx
@@ -41,8 +40,6 @@ CA_ENV = "NADZOR_RIN_CA"
 SEND_TIMEOUT_S = 30
 # Задержки повторов, минуты (ТЗ 9.6: до трёх повторов — 1, 5, 15 минут).
 RETRY_DELAYS_MIN = (1, 5, 15)
-# Как часто фоновая задача ищет протоколы, которым пора повторить отправку.
-RETRY_POLL_S = 30
 
 LOCAL_ONLY = "LOCAL_ONLY"
 SENT = "SENT"
@@ -165,29 +162,3 @@ def retry_due(now: dt.datetime | None = None) -> int:
             attempt(db, run, now=now)
             done += 1
     return done
-
-
-_worker: threading.Thread | None = None
-_stop = threading.Event()
-
-
-def start_worker() -> None:
-    """Фоновые повторы отправки; безопасно вызывать повторно."""
-    global _worker
-    if _worker is not None and _worker.is_alive():
-        return
-
-    def loop() -> None:
-        while not _stop.wait(RETRY_POLL_S):
-            try:
-                retry_due()
-            except Exception as exc:  # noqa: BLE001 — сбой цикла не должен его останавливать
-                print(f"повтор передачи во внешнюю систему не выполнен: {exc}")
-
-    _stop.clear()
-    _worker = threading.Thread(target=loop, name="external-sync-retry", daemon=True)
-    _worker.start()
-
-
-def stop_worker() -> None:
-    _stop.set()

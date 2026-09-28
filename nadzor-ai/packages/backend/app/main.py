@@ -15,7 +15,17 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, R
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import audit, auth, facts_store, file_store, models, openapi30, parameter_catalog, schemas
+from . import (
+    audit,
+    auth,
+    facts_store,
+    file_store,
+    jobs,
+    models,
+    openapi30,
+    parameter_catalog,
+    schemas,
+)
 from .admin_api import router as admin_router
 from .api_v1 import router as api_v1_router
 from .auth_api import router as auth_router
@@ -23,6 +33,7 @@ from .classification import classify_document
 from .db import get_session, init_db
 from .document_split import split_pdf
 from .llm import LlmConfig, available_models, check_llm_reachable, local_config, model_configured
+from .ml_api import router as ml_router
 from .official_api import router as official_router
 from .vision import make_llm_stamp_classifier, render_page_to_png_bytes
 
@@ -37,6 +48,7 @@ app.add_middleware(
 # Вход открыт; всё остальное — только после входа и по роли (ТЗ 12, п.1–2).
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(ml_router)
 app.include_router(official_router, dependencies=[Depends(auth.require(*auth.READERS))])
 app.include_router(api_v1_router, dependencies=[Depends(auth.require(*auth.READERS))])
 
@@ -81,9 +93,9 @@ _ensure_schema_and_defaults()
 
 @app.on_event("startup")
 def _start_background_jobs() -> None:
-    # Повторы передачи во внешнюю систему (ТЗ 9.6) — только в работающем
-    # сервисе; тестам фоновый поток не нужен.
-    external_sync.start_worker()
+    # Фоновые задачи (повторы передачи, еженедельный отчёт) — только в
+    # работающем сервисе; тестам фоновый поток не нужен.
+    jobs.start()
 
 
 # Поле `tls` ответа проверки связи сохранено ради совместимости контракта.

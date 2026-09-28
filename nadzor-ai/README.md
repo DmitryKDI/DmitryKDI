@@ -168,6 +168,35 @@ GET|POST /api/v1/admin/rules,     PUT /api/v1/admin/rules/{id}       логич�
 `POST /official/runs/{id}/suspicions/{suspicion_id}` с `action`: `promote` (в кандидаты —
 только с листом и координатами в ПД и РД/ИД), `dismiss`, затем `confirm` / `reject`.
 
+## Обратная связь и управляемое дообучение (ТЗ 9.4, модули 4 и 10)
+
+Решение инспектора сразу размечается: `CONFIRMED_VIOLATION` — положительный
+GOLD-кандидат, `NEGATIVE_VERIFIED` — отрицательный пример и запись в `rejection_log`
+(причина, машинный вердикт, рекомендация), `CLARIFICATION_REQUIRED` — в GOLD не идёт,
+спорный случай в `dispute_log`. К каждому решению — системный комментарий в
+формулировках ТЗ (`system_comment`). Весов сервис не обучает: обучение выполняется
+на стенде с GPU, сюда регистрируются его результаты.
+
+```text
+GET  /api/v1/ml/dataset/items?status=DRAFT      черновик набора
+POST /api/v1/ml/dataset/items/{id}/curate       решение куратора (ML-инженер)
+POST /api/v1/ml/dataset/versions                выпуск dataset_version: только одобренное
+                                                из финализированных протоколов; разбиение по
+                                                объектам, SHA-256 каждого набора
+GET  /api/v1/ml/dataset/versions/{v}/evaluate   Precision / Recall / F1 / FPR по разделам
+GET  /api/v1/ml/rejections, /api/v1/ml/disputes журналы отклонений и спорных случаев
+POST /api/v1/ml/models                          результат обучения → приёмка по ТЗ 14.3
+POST /api/v1/ml/models/{id}/approve|reject      подпись публикации (администратор)
+POST /api/v1/ml/models/{id}/rollback            откат к предыдущей опубликованной
+GET  /api/v1/ml/report?days=7, /api/v1/ml/reports   отчёт по отклонениям с рекомендациями
+```
+
+Приёмка: Precision ≥ 0,90, Recall ≥ 0,80, F1 ≥ 0,85, FPR ≤ 0,10, и относительно
+действующей модели Recall ни одной категории не падает, а FPR не растёт более чем на
+2 п.п. Объект получает набор (train/validation/test) один раз и навсегда. Отчёт для
+ML-инженеров формируется автоматически раз в неделю. `dataset_version` в протоколе —
+у опубликованной модели.
+
 ## Интеграция с внешней системой
 
 Внешняя система работает с сервисом через `/api/v1` (см. выше): загружает

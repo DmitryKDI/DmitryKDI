@@ -276,3 +276,116 @@ class Suspicion(Base):
     reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reviewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class DatasetItem(Base):
+    """Запись GOLD-набора (ТЗ 9.4, 14.1): одна evidence_group с решением эксперта.
+
+    Положительная метка — только CONFIRMED_VIOLATION, отрицательная — только
+    NEGATIVE_VERIFIED, обе с полным комплектом доказательств. Запись попадает
+    в черновик сразу после решения, в выпуск набора — только после проверки
+    куратором и финализации протокола.
+    """
+    __tablename__ = "dataset_items"
+    __table_args__ = (UniqueConstraint("run_id", "finding_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("official_runs.id"))
+    object_id: Mapped[str] = mapped_column(String)
+    finding_id: Mapped[str] = mapped_column(String)
+    parameter_code: Mapped[str] = mapped_column(String, default="")
+    label: Mapped[str] = mapped_column(String(20))  # POSITIVE | NEGATIVE
+    decision_version: Mapped[int] = mapped_column(Integer)
+    reason_code: Mapped[str] = mapped_column(String, default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    machine_status: Mapped[str] = mapped_column(String, default="")
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    source_versions: Mapped[dict] = mapped_column(JSON, default=dict)
+    # DRAFT → APPROVED | EXCLUDED (решение куратора); SUPERSEDED — решение изменено.
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    curated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    curated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class ObjectSplit(Base):
+    """Разбиение по объектам (ТЗ 14.2): объект навсегда в одном наборе."""
+    __tablename__ = "object_splits"
+    object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    split: Mapped[str] = mapped_column(String(10))  # train | validation | test
+    assigned_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class DatasetVersion(Base):
+    """Выпуск набора данных: состав и хеши наборов фиксируются при выпуске."""
+    __tablename__ = "dataset_versions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[str] = mapped_column(String, unique=True)
+    matrix_version: Mapped[str] = mapped_column(String, default="")
+    item_ids: Mapped[list] = mapped_column(JSON, default=list)
+    split_hashes: Mapped[dict] = mapped_column(JSON, default=dict)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class RejectionLog(Base):
+    """Лог отклонений для дообучения (ТЗ 10, таблица Rejection_Log)."""
+    __tablename__ = "rejection_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("official_runs.id"))
+    violation_id: Mapped[str] = mapped_column(String)
+    parameter_code: Mapped[str] = mapped_column(String, default="")
+    rejection_reason: Mapped[str] = mapped_column(String, default="")
+    inspector_comment: Mapped[str] = mapped_column(Text, default="")
+    ai_verdict: Mapped[str] = mapped_column(Text, default="")
+    suggested_fix: Mapped[str] = mapped_column(Text, default="")
+    retraining_status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class DisputeLog(Base):
+    """Спорные случаи (ТЗ 10, таблица Dispute_Log): запрос уточнения."""
+    __tablename__ = "dispute_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("official_runs.id"))
+    violation_id: Mapped[str] = mapped_column(String)
+    inspector_comment: Mapped[str] = mapped_column(Text, default="")
+    ai_comment: Mapped[str] = mapped_column(Text, default="")
+    resolution_status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    resolved_by: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ModelVersion(Base):
+    """Итерация дообучения (ТЗ 10, таблица ML_Retraining_Log; ТЗ 9.4)."""
+    __tablename__ = "ml_retraining_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model_version: Mapped[str] = mapped_column(String, unique=True)
+    dataset_version: Mapped[str] = mapped_column(String)
+    matrix_version: Mapped[str] = mapped_column(String, default="")
+    split_hashes: Mapped[dict] = mapped_column(JSON, default=dict)
+    precision: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    f1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    false_positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    per_category_metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    training_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    code_ref: Mapped[str] = mapped_column(String, default="")
+    previous_model: Mapped[str] = mapped_column(String, default="")
+    acceptance: Mapped[dict] = mapped_column(JSON, default=dict)
+    # PENDING → APPROVED | REJECTED; APPROVED → ROLLED_BACK при откате.
+    approval_status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    approved_by: Mapped[str] = mapped_column(String, default="")
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class WeeklyReport(Base):
+    """Еженедельный отчёт для ML-инженеров (ТЗ 7, модуль 10)."""
+    __tablename__ = "weekly_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    period_start: Mapped[dt.datetime] = mapped_column(DateTime)
+    period_end: Mapped[dt.datetime] = mapped_column(DateTime)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)

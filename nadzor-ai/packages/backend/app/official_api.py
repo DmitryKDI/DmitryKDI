@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from . import auth, free_search, models, protocol
+from . import auth, feedback, free_search, models, protocol
 from .db import SessionLocal, get_session
 from .llm import LlmConfig, local_config
 from .official_pipeline import (
@@ -160,7 +160,9 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
     built = protocol.build(
         result, run.input_snapshot or [], run_status=run.status,
         finalized=run.finalized_at is not None, decisions=len(decisions),
-        model_version=run.model_version or "")
+        model_version=run.model_version or "",
+        dataset_version=published.dataset_version if (published := feedback.published(db))
+        else None)
     return {
         # process_id — идентификатор процесса в контракте pull-модели: клиент
         # запускает проверку, получает process_id и опрашивает статус по нему.
@@ -182,6 +184,10 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
         "completed": run.completed, "total": run.total, "result": result,
         "protocol": built,
         "error": run.error, "version": max((row.version for row in decisions), default=0),
+        # Системный комментарий к последнему решению (ТЗ 9.4).
+        "system_comment": feedback.system_comment(decisions[-1].status,
+                                                  decisions[-1].reason_code)
+        if decisions else "",
     }
 
 
@@ -581,9 +587,20 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session),
         status=body.status, author=user.display, reason=body.reason.strip(),
         reason_code=reason_code, user_id=user.user_id,
     ))
+    # Разметка для GOLD-набора, лог отклонений и спорных случаев (ТЗ 9.4).
+    feedback.record_decision(db, row, check, status=body.status, version=current + 1,
+                             reason=body.reason.strip(), reason_code=reason_code,
+                             source_versions=_source_versions(db, row))
     db.commit()
     db.refresh(row)
     return _run_dict(db, row)
+
+
+def _source_versions(db: Session, run: models.OfficialRun) -> dict:
+    """Версии источников метки (ТЗ 14.1): матрица, модель, входной манифест."""
+    built = _run_dict(db, run)["protocol"]["versions"]
+    return {key: built.get(key) for key in (
+        "matrix_version", "model_version", "input_manifest_hash")}
 
 
 SUSPICION_ACTIONS = {
@@ -633,6 +650,13 @@ def review_suspicion(run_id: int, suspicion_id: int, body: SuspicionReview,
     item.inspector_comment = " ".join(part for part in (reason_code, body.comment.strip())
                                       if part)
     item.reviewed_by, item.reviewed_at = user.user_id, dt.datetime.utcnow()
+    if finding_status in feedback.LABELS:
+        feedback.record_decision(
+            db, run_row, {"finding_id": f"S-{item.id}", "parameter_code": item.parameter_code,
+                          "finding_status": "CANDIDATE", "explanation": item.description,
+                          "evidence": evidence},
+            status=finding_status, version=_version(db, run_id), reason=body.comment.strip(),
+            reason_code=reason_code, source_versions=_source_versions(db, run_row))
     # Протокол читает гипотезы из результата процесса — обновляем и его.
     result = copy.deepcopy(run_row.result or {})
     free = result.setdefault("free_search", {"status": "completed", "items": []})

@@ -154,13 +154,14 @@ def manifest_hash(snapshot: list[dict]) -> str:
     return hashlib.sha256("\n".join(sorted(rows)).encode()).hexdigest()
 
 
-def versions(model_version: str, matrix_version: str, snapshot: list[dict]) -> dict:
-    # Дообучения весов не было: модель используется как есть. Версия набора
-    # данных задаётся при развёртывании, когда она появится (ТЗ 9.4).
+def versions(model_version: str, matrix_version: str, snapshot: list[dict],
+             dataset_version: str | None = None) -> dict:
+    # Версия набора данных — у опубликованной модели (ТЗ 9.4); пока ни одна
+    # дообученная модель не опубликована, модель используется как есть.
     return {
         "matrix_version": matrix_version,
         "model_version": model_version,
-        "dataset_version": os.environ.get("NADZOR_DATASET_VERSION", "none"),
+        "dataset_version": dataset_version or os.environ.get("NADZOR_DATASET_VERSION", "none"),
         "input_manifest_hash": manifest_hash(snapshot),
     }
 
@@ -237,7 +238,8 @@ def suspicion_card(item: dict, documents: dict[int, dict]) -> dict:
 
 
 def build(result: dict | None, snapshot: list[dict], *, run_status: str,
-          finalized: bool, decisions: int, model_version: str) -> dict:
+          finalized: bool, decisions: int, model_version: str,
+          dataset_version: str | None = None) -> dict:
     """Протокол целиком: загрузка, сценарий, пять таблиц, версии."""
     documents = {item.get("id"): item.get("metadata") or {} for item in snapshot}
     stage_counts: dict[str, int] = {}
@@ -261,7 +263,8 @@ def build(result: dict | None, snapshot: list[dict], *, run_status: str,
         "verification_status": verification_status(finalized, result),
         "upload_status": statuses,
         "scenario": scenario(statuses),
-        "versions": versions(model_version, (result or {}).get("matrix_version", ""), snapshot),
+        "versions": versions(model_version, (result or {}).get("matrix_version", ""), snapshot,
+                             dataset_version),
         "tables": {
             "completeness": [{
                 "finding_id": item.get("finding_id"),
