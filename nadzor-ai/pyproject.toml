@@ -27,8 +27,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S", "E501"]
-"scripts/*" = ["S", "E501"]
+"**/tests/*" = ["S", "E501", "N802", "N806"]
+"**/scripts/*" = ["S", "E501"]
 
 [tool.coverage.run]
 source = ["packages"]

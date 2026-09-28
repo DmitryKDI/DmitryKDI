@@ -75,7 +75,8 @@ export function documentRoutes(app: FastifyInstance, ctx: Context): void {
     const row = loadFile(ctx, documentId)
     if (row.status !== 'OK') throw new HttpError(409, 'документ ещё не разобран')
     if (page > row.pages) throw notFound('лист вне документа')
-    const image = await ctx.ml.renderPage(row.file_hash, row.source_format, page, PAGE_DPI)
+    const image = await ctx.ml.renderPage({ sha256: row.file_hash, sourceFormat: row.source_format,
+      derivedSha256: row.derived_hash }, page, PAGE_DPI)
     reply.header('Cache-Control', 'private, max-age=3600').type('image/png')
     return image
   })

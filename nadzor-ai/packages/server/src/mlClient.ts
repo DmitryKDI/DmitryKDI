@@ -15,8 +15,15 @@ export interface LlmCheck {
   [key: string]: unknown
 }
 
+/** Файл для отрисовки листа: у чертежа DWG/DXF рисуется производный DXF. */
+export interface RenderSource {
+  sha256: string
+  sourceFormat: string
+  derivedSha256: string | null
+}
+
 export interface MlClient {
-  renderPage(sha256: string, sourceFormat: string, page: number, dpi: number): Promise<Buffer>
+  renderPage(file: RenderSource, page: number, dpi: number): Promise<Buffer>
   llmCheck(): Promise<LlmCheck>
   evaluate(body: unknown): Promise<unknown>
   validateRule(expression: string): Promise<{ ok: boolean; error?: string }>
@@ -49,9 +56,9 @@ export class HttpMlClient implements MlClient {
     return response
   }
 
-  async renderPage(sha256: string, sourceFormat: string, page: number, dpi: number): Promise<Buffer> {
-    const query = new URLSearchParams({ sha256, source_format: sourceFormat,
-      page: String(page), dpi: String(dpi) })
+  async renderPage(file: RenderSource, page: number, dpi: number): Promise<Buffer> {
+    const query = new URLSearchParams({ sha256: file.sha256, source_format: file.sourceFormat,
+      page: String(page), dpi: String(dpi), ...(file.derivedSha256 ? { derived_sha256: file.derivedSha256 } : {}) })
     const response = await this.call(`/render?${query}`)
     return Buffer.from(await response.arrayBuffer())
   }

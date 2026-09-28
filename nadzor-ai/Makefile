@@ -1,14 +1,19 @@
-.PHONY: help install backend web up down test check-generic lint security openapi clean
+.PHONY: help install server ml web up down test check-generic lint security openapi clean
 
 help:            ## Список команд
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
 
 install:         ## Установить зависимости для локальной разработки
 	python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+	cd packages/server && npm install
 	cd frontend && npm install
 
-backend:         ## Запустить движок разбора документов
-	cd packages/backend && PYTHONPATH=$(PWD)/packages/backend ../../.venv/bin/python -m uvicorn app.main:app --reload --port 8010
+server:          ## Запустить сервер (Node.js, REST /api/v1)
+	cd packages/server && npm run dev
+
+ml:              ## Запустить ML-модули: воркер очереди и внутренний REST
+	cd packages/ml && PYTHONPATH=. ../../.venv/bin/python -m app.worker & \
+	cd packages/ml && PYTHONPATH=. ../../.venv/bin/python -m uvicorn app.service:app --port 8090
 
 web:             ## Запустить интерфейс
 	cd frontend && npm run dev
@@ -17,25 +22,27 @@ up:              ## Поднять всё одной командой (нужн�
 	docker compose up -d
 
 openapi:         ## Выгрузить схему API (OpenAPI 3.0) в docs/openapi.json
-	cd packages/backend && PYTHONPATH=. ../../.venv/bin/python -c "import json, app.main as m; json.dump(m.app.openapi(), open('../../docs/openapi.json', 'w'), ensure_ascii=False, indent=2)"
+	cd packages/server && npm run openapi
 
 down:            ## Остановить и удалить контейнеры
 	docker compose down -v
 
-test:            ## Прогнать тесты движка
-	PYTHONPATH=.:packages/backend .venv/bin/python -m pytest packages/backend/tests -q
+test:            ## Прогнать тесты сервера и ML-модулей
+	cd packages/server && npm test
+	PYTHONPATH=packages/ml .venv/bin/python -m pytest packages/ml/tests -q
 
-check-generic:   ## Проверить, что код не заточен под конкретный пример (раздел 0, п.8)
-	PYTHONPATH=.:packages/backend .venv/bin/python -m pytest \
-		packages/backend/tests/test_code_is_generic.py \
-		packages/backend/tests/test_constants_are_declared.py -q
+check-generic:   ## Проверить, что код не заточен под конкретный пример
+	PYTHONPATH=packages/ml .venv/bin/python -m pytest \
+		packages/ml/tests/test_code_is_generic.py \
+		packages/ml/tests/test_constants_are_declared.py -q
 
 lint:            ## Стиль и границы модулей
-	.venv/bin/ruff check packages scripts
+	.venv/bin/ruff check packages/ml scripts
+	cd packages/server && npx tsc --noEmit
 
 security:        ## Локальный прогон проверок безопасности
 	.venv/bin/bandit -q -r packages -c pyproject.toml
 	.venv/bin/pip-audit -r requirements.txt || true
 
 clean:           ## Убрать сгенерированное
-	rm -rf data/nadzor.db .pytest_cache htmlcov
+	rm -rf .pytest_cache htmlcov packages/server/dist
