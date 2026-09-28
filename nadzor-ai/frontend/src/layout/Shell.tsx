@@ -1,6 +1,7 @@
-import { type ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { authApi, can, type Role } from '../authApi'
+import ChangePassword from '../components/ChangePassword'
 import { useApp } from '../store'
 
 const MENU: { to: string; label: string; icon: string; roles?: Role[] }[] = [
@@ -21,6 +22,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   const location = useLocation()
   const { menuCollapsed, toggleMenu, user, setUser } = useApp()
   const title = TITLES[location.pathname] ?? 'Инспектор ИИ'
+  const [changingPassword, setChangingPassword] = useState(false)
 
   async function logout() {
     await authApi.logout().catch(() => undefined)
@@ -102,12 +104,14 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <div className="font-medium text-ink">{user.full_name || user.login}</div>
                 <div className="text-ink-faint">{user.role_title}</div>
               </div>
+              <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setChangingPassword(true)}>Сменить пароль</button>
               <button className="btn-ghost px-2 py-1 text-xs" onClick={logout}>Выйти</button>
             </div>
           )}
         </header>
 
         <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
+        {changingPassword && <ChangePassword onClose={() => setChangingPassword(false)} />}
       </div>
 
     </div>

@@ -58,11 +58,15 @@ function Users({ act }: { act: Act }) {
       <select className={input} value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as Role })}>{Object.entries(ROLES).map(([role, title]) => <option key={role} value={role}>{title}</option>)}</select>
       <button className="btn-primary px-3 py-1.5 text-xs" onClick={() => void act(() => adminApi.createUser(draft), 'Пользователь создан.', () => { setDraft({ ...draft, login: '', password: '', full_name: '' }); reload() })}>Создать</button>
     </div>
-    <Table head={['Логин', 'ФИО', 'Роль', 'Последний вход', 'Состояние']}>{(users ?? []).map((user) => <tr key={user.id} className="border-t border-surface-line">
+    <Table head={['Логин', 'ФИО', 'Роль', 'Последний вход', 'Состояние', 'Пароль']}>{(users ?? []).map((user) => <tr key={user.id} className="border-t border-surface-line">
       <td className={cell}>{user.login}</td><td className={cell}>{user.full_name}</td>
       <td className={cell}><select className={input} value={user.role} onChange={(event) => void act(() => adminApi.updateUser(user.id, { role: event.target.value as Role }), 'Роль изменена.', reload)}>{Object.entries(ROLES).map(([role, title]) => <option key={role} value={role}>{title}</option>)}</select></td>
       <td className={`${cell} text-xs`}>{user.last_login_at?.slice(0, 16) ?? '—'}</td>
       <td className={cell}><button className="btn-ghost px-2 py-1 text-xs" onClick={() => void act(() => adminApi.updateUser(user.id, { is_active: !user.is_active }), user.is_active ? 'Учётная запись отключена, сессии закрыты.' : 'Учётная запись включена.', reload)}>{user.is_active ? 'Отключить' : 'Включить'}</button></td>
+      <td className={cell}><button className="btn-ghost px-2 py-1 text-xs" onClick={() => {
+        const password = window.prompt(`Новый пароль для «${user.login}» (не короче 8 символов). Действующие сессии пользователя будут закрыты.`)
+        if (password) void act(() => adminApi.updateUser(user.id, { password }), `Пароль пользователя «${user.login}» изменён.`, reload)
+      }}>Задать пароль</button></td>
     </tr>)}</Table>
   </SectionCard>
 }
