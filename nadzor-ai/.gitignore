@@ -33,3 +33,8 @@ bundle/
 
 # Пароль администратора, сгенерированный при первом запуске.
 initial-admin-password.txt
+
+# Сертификаты TLS и токен сбора метрик — только на стенде, не в git.
+certs/*
+!certs/.gitkeep
+deploy/monitoring/metrics-token

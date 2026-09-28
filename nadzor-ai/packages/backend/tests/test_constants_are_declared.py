@@ -90,6 +90,17 @@ DECLARED: dict[str, str] = {
     "official_api.EXECUTE_RETRIES": BUDGET,
     # Фоновые задачи: как часто проверять сроки и каким периодом строить отчёт.
     "jobs.POLL_S": BUDGET,
+    # Эксплуатация (ТЗ 12–13): сроки хранения логов и копий, периоды проверок —
+    # значения из ТЗ; размеры кусков и тайм-ауты — бюджет.
+    "observability.LOG_RETENTION_DAYS": BUDGET,
+    "observability.SECURITY_LOG_RETENTION_DAYS": BUDGET,
+    "integrity.CHECK_PERIOD_HOURS": BUDGET,
+    "backup.FREQUENT_MINUTES": BUDGET,
+    "backup.FREQUENT_KEEP_HOURS": BUDGET,
+    "backup.DAILY_KEEP_DAYS": BUDGET,
+    "antivirus.DEFAULT_PORT": GEOMETRY,
+    "antivirus.TIMEOUT_S": BUDGET,
+    "antivirus.CHUNK": BUDGET,
     "jobs.REPORT_PERIOD_DAYS": BUDGET,
     # Доли разбиения объектов по наборам — сколько данных отдать на обучение и
     # проверку, а не порог истины.

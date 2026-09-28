@@ -99,12 +99,20 @@ services:
       NADZOR_RIN_CLIENT_KEY: ${NADZOR_RIN_CLIENT_KEY:-}
       NADZOR_RIN_CA: ${NADZOR_RIN_CA:-}
       NADZOR_ALLOWED_HOSTS: ${NADZOR_ALLOWED_HOSTS:-}
+      # Эксплуатация (ТЗ 12–13): JSON-логи в файлы с ротацией 90/365 дней,
+      # резервные копии (каждые 15 минут и ежедневно, 30 дней), антивирус.
+      NADZOR_ENV: ${NADZOR_ENV:-production}
+      NADZOR_LOG_DIR: /app/state/logs
+      NADZOR_BACKUP_DIR: /app/backups
+      NADZOR_CLAMD_HOST: ${NADZOR_CLAMD_HOST:-}
     volumes:
       # База, загруженные документы и результаты переживают пересборку и
       # обновление образа. Именованный том, а не каталог хоста: том
       # наследует права каталога из образа, и приложение, работающее не от
       # root, может в него писать на любой машине.
       - nadzor-state:/app/state
+      # Копии — на отдельном томе: том можно разместить на другом диске.
+      - nadzor-backups:/app/backups
     depends_on:
       llm:
         condition: service_healthy
@@ -122,13 +130,49 @@ services:
       backend:
         condition: service_healthy
     networks: [edge]
+    volumes:
+      # server.crt и server.key включают HTTPS с TLS 1.3 на порту 5443.
+      - ./certs:/etc/nginx/certs:ro
     ports:
       - "5173:5173"
+      - "5443:5443"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5173/"]
       interval: 15s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # Антивирус контура (ТЗ 12, п.11): `docker compose --profile antivirus up -d`
+  # и NADZOR_CLAMD_HOST=clamav. Базы сигнатур без Интернета обновляются с
+  # зеркала заказчика (переменная CLAMAV_NO_FRESHCLAMD и том с базами).
+  clamav:
+    image: clamav/clamav:1.4
+    profiles: [antivirus]
+    networks: [contour]
+    volumes:
+      - clamav-db:/var/lib/clamav
+    restart: unless-stopped
+
+  # Мониторинг (ТЗ 13, п.5, 7): `docker compose --profile monitoring up -d`.
+  # Prometheus читает /metrics с токеном учётной записи роли service
+  # (файл deploy/monitoring/metrics-token), правила алертов — в alerts.yml.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    networks: [edge]
+    volumes:
+      - ./deploy/monitoring:/etc/prometheus:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: [monitoring]
+    networks: [edge]
+    ports:
+      - "3000:3000"
     restart: unless-stopped
 
 networks:
@@ -138,3 +182,5 @@ networks:
 
 volumes:
   nadzor-state: {}
+  nadzor-backups: {}
+  clamav-db: {}

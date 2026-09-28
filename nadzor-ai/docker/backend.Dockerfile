@@ -46,7 +46,7 @@ ENV NADZOR_DB_PATH=/app/state/nadzor.db \
     NADZOR_LLM_CACHE_DB=/app/state/llm_result_cache.sqlite3
 
 # Приложение работает от непривилегированного пользователя.
-RUN useradd --create-home --uid 10001 nadzor && mkdir -p /app/state \
+RUN useradd --create-home --uid 10001 nadzor && mkdir -p /app/state /app/backups \
     && chown -R nadzor:nadzor /app
 USER nadzor
 

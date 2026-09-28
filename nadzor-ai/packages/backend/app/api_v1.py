@@ -125,6 +125,13 @@ def upload(background: BackgroundTasks,
                              f"{MAX_FILE_BYTES // 1048576} МБ"})
             continue
         try:
+            main.scan_or_reject(data)
+        except HTTPException as exc:
+            if exc.status_code == 503:
+                raise  # антивирус недоступен — не принимать пакет вовсе
+            rejected.append({"file_name": name, "reason": str(exc.detail)})
+            continue
+        try:
             converted = document_convert.to_pdf(data, name)
         except document_convert.UnsupportedFormatError as exc:
             rejected.append({"file_name": name, "reason": str(exc)})

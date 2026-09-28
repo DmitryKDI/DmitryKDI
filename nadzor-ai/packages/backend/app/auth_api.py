@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from . import audit, auth, models
+from . import audit, auth, backup, integrity, models
 from .db import get_session
 
 router = APIRouter(prefix="/api/v1", tags=["auth"])
@@ -152,6 +152,32 @@ def update_user(user_id: int, body: UserUpdate,
     db.commit()
     db.refresh(row)
     return _user_dict(row)
+
+
+@router.get("/admin/integrity", summary="Проверки целостности хранилища")
+def integrity_checks(_: auth.Principal = Depends(auth.require("admin", "ml_engineer")),
+                     db: Session = Depends(get_session)):
+    rows = db.query(models.IntegrityCheck).order_by(models.IntegrityCheck.id.desc()).limit(30)
+    return [integrity.check_dict(row) for row in rows]
+
+
+@router.post("/admin/integrity", summary="Проверить целостность хранилища сейчас")
+def integrity_now(_: auth.Principal = Depends(auth.require("admin"))):
+    return integrity.run_check()
+
+
+@router.get("/admin/backups", summary="Состояние резервного копирования")
+def backups(_: auth.Principal = Depends(auth.require("admin"))):
+    return backup.status()
+
+
+@router.post("/admin/backups", summary="Снять полную резервную копию сейчас")
+def backup_now(_: auth.Principal = Depends(auth.require("admin"))):
+    try:
+        folder = backup.make("daily")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"folder": str(folder), **backup.status()}
 
 
 @router.get("/admin/audit", summary="Журнал аудита")

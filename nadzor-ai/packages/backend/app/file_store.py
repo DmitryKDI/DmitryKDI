@@ -237,3 +237,35 @@ def stats() -> StoreStats:
         files = db.scalar(select(func.count()).select_from(StoredFile)) or 0
         size = db.scalar(select(func.coalesce(func.sum(StoredFile.size), 0))) or 0
     return StoreStats(files=int(files), bytes=int(size))
+
+
+
+def verify_all(batch: int = 50) -> tuple[int, list[tuple[str, str]]]:
+    """Сверить каждый оригинал с его отпечатком: (проверено, [(отпечаток, причина)]).
+
+    Ключ записи и есть SHA-256 содержимого, поэтому повреждение или подмена
+    видны без отдельного реестра хешей. Файл кэша назван отпечатком своего
+    содержимого и проверяется тем же правилом; испорченный файл кэша
+    удаляется — он производное и восстановится из базы.
+    """
+    with _session() as db:
+        keys = [row[0] for row in db.execute(select(StoredFile.digest)).all()]
+    checked, failures = 0, []
+    for start in range(0, len(keys), batch):
+        with _session() as db:
+            rows = db.execute(select(StoredFile.digest, StoredFile.content, StoredFile.size)
+                              .where(StoredFile.digest.in_(keys[start:start + batch]))).all()
+        for key, content, size in rows:
+            checked += 1
+            if digest_of(content) != key:
+                failures.append((key, "содержимое в хранилище не совпадает с отпечатком"))
+            elif len(content) != size:
+                failures.append((key, "размер в хранилище не совпадает с записанным"))
+    if CACHE_DIR.is_dir():
+        for path in CACHE_DIR.glob("*.pdf"):
+            checked += 1
+            if digest_of(path.read_bytes()) != path.stem:
+                failures.append((path.stem, "файл кэша не совпадает с отпечатком; удалён, "
+                                            "будет восстановлен из хранилища"))
+                path.unlink(missing_ok=True)
+    return checked, failures

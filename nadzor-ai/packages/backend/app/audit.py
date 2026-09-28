@@ -19,7 +19,7 @@ from .db import SessionLocal
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def _client_ip(request: Request) -> str:
+def client_ip(request: Request) -> str:
     # За обратным прокси интерфейса адрес клиента приходит заголовком.
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
@@ -47,7 +47,7 @@ def record(request: Request, status_code: int) -> None:
             login=getattr(principal, "login", "") or details.pop("login", ""),
             action=f"{request.method} {path}", object_id=object_id, details=details,
             status_code=status_code, timestamp=dt.datetime.utcnow(),
-            ip_address=_client_ip(request),
+            ip_address=client_ip(request),
             user_agent=request.headers.get("user-agent", "")[:500],
         ))
         db.commit()

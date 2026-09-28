@@ -7,7 +7,10 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import logging
 import sys
+import time
 from pathlib import Path
 
 import pymupdf
@@ -16,12 +19,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from . import (
+    antivirus,
     audit,
     auth,
     facts_store,
     file_store,
+    integrity,
     jobs,
     models,
+    observability,
     openapi30,
     parameter_catalog,
     schemas,
@@ -30,7 +36,7 @@ from .admin_api import router as admin_router
 from .api_v1 import router as api_v1_router
 from .auth_api import router as auth_router
 from .classification import classify_document
-from .db import get_session, init_db
+from .db import DB_PATH, get_session, init_db
 from .document_split import split_pdf
 from .llm import LlmConfig, available_models, check_llm_reachable, local_config, model_configured
 from .ml_api import router as ml_router
@@ -53,13 +59,42 @@ app.include_router(official_router, dependencies=[Depends(auth.require(*auth.REA
 app.include_router(api_v1_router, dependencies=[Depends(auth.require(*auth.READERS))])
 
 
+observability.configure()
+
+
 @app.middleware("http")
-async def audit_trail(request: Request, call_next):
-    """Каждое действие, меняющее данные, — запись журнала аудита (ТЗ 12, п.4)."""
-    response = await call_next(request)
-    if audit.should_record(request):
-        audit.record(request, response.status_code)
-    return response
+async def request_trail(request: Request, call_next):
+    """Журнал запроса, метрики и аудит (ТЗ 12, п.4; ТЗ 13, п.1, 4).
+
+    Каждый запрос получает request_id (из `X-Request-ID` или новый) — он
+    возвращается в ответе и стоит в каждой строке лога этого запроса.
+    Действие, меняющее данные, — запись журнала аудита.
+    """
+    request_id = observability.new_request_id(request.headers.get("x-request-id"))
+    token = observability.request_id_var.set(request_id)
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        seconds = time.perf_counter() - started
+        principal = getattr(request.state, "principal", None)
+        user_id = str(principal.user_id) if principal is not None else ""
+        observability.METRICS.observe(request.method, status, seconds)
+        level = (logging.ERROR if status >= 500 else
+                 logging.WARNING if status in (401, 403) else logging.INFO)
+        observability.logger.log(
+            level, f"{request.method} {request.url.path} → {status}",
+            extra={"event": "http_request", "method": request.method,
+                   "path": request.url.path, "status": status,
+                   "duration_ms": round(seconds * 1000, 1), "user_id": user_id,
+                   "ip": audit.client_ip(request), "security": status in (401, 403)})
+        if audit.should_record(request):
+            audit.record(request, status)
+        observability.request_id_var.reset(token)
 
 # ТЗ 1.3: схема API — OpenAPI 3.0 (FastAPI по умолчанию строит 3.1).
 openapi30.install(app)
@@ -68,6 +103,29 @@ openapi30.install(app)
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/metrics", summary="Метрики Prometheus (ТЗ 13, п.4–5)",
+         dependencies=[Depends(auth.require("ml_engineer", "service"))])
+def metrics(db: Session = Depends(get_session)) -> Response:
+    now = dt.datetime.utcnow()
+    runs = models.OfficialRun
+    gauges = {
+        "inspector_active_sessions": (
+            "Активные сессии пользователей.",
+            db.query(models.AuthSession).filter(models.AuthSession.expires_at > now).count()),
+        "inspector_queue_size": (
+            "Проверки в очереди и в работе (аналог очереди сообщений).",
+            db.query(runs).filter(runs.status.in_(("queued", "running"))).count()),
+        "inspector_pending_sync": (
+            "Протоколы, ожидающие повторной передачи во внешнюю систему.",
+            db.query(runs).filter(runs.sync_status == "PENDING_SYNC").count()),
+        "inspector_integrity_failures": (
+            "Файлы с несовпавшей контрольной суммой при последней проверке.",
+            integrity.last_failures(db)),
+    }
+    return Response(observability.render(gauges, str(Path(DB_PATH).parent)),
+                    media_type="text/plain; version=0.0.4")
 
 
 def _ensure_schema_and_defaults() -> None:
@@ -196,8 +254,10 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
     # до того, как файл где-то окажется. Лимит проверяется по факту
     # прочитанного, а не по заголовку запроса — заголовок присылает клиент.
     from .document_convert import UnsupportedFormatError, to_pdf
+    raw = file.file.read()
+    scan_or_reject(raw)
     try:
-        converted = to_pdf(file.file.read(), file.filename or "document")
+        converted = to_pdf(raw, file.filename or "document")
     except UnsupportedFormatError as exc:
         raise HTTPException(415, str(exc)) from exc
     doc = ingest_pdf(db, converted.pdf, file.filename or "document.pdf", side,
@@ -205,6 +265,20 @@ def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTas
     # Через `_document_out`, а не напрямую: число частей — вычисляемое поле,
     # и возврат ORM-объекта отдавал бы ноль частей у разрезанного тома.
     return _document_out(doc)
+
+
+def scan_or_reject(data: bytes) -> antivirus.ScanResult:
+    """Антивирусная проверка исходного файла до разбора и сохранения (ТЗ 12, п.11)."""
+    result = antivirus.scan(data)
+    if result.status == antivirus.INFECTED:
+        observability.logger.warning(
+            f"загрузка отклонена антивирусом: {result.detail}",
+            extra={"event": "antivirus", "security": True})
+        raise HTTPException(422, f"файл заражён: {result.detail}")
+    if result.status == antivirus.UNAVAILABLE:
+        observability.logger.error(result.detail, extra={"event": "antivirus"})
+        raise HTTPException(503, f"файл не принят: {result.detail}; повторите загрузку позже")
+    return result
 
 
 def ingest_pdf(db: Session, data: bytes, filename: str, side: str,

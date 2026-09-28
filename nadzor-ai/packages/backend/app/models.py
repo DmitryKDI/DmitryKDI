@@ -389,3 +389,14 @@ class WeeklyReport(Base):
     period_end: Mapped[dt.datetime] = mapped_column(DateTime)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class IntegrityCheck(Base):
+    """Ежедневная проверка контрольных сумм хранилища (ТЗ 13, п.8; 12, п.7)."""
+    __tablename__ = "integrity_checks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    checked: Mapped[int] = mapped_column(Integer, default=0)
+    failures: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="RUNNING")

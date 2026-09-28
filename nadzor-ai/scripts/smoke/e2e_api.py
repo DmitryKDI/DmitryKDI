@@ -166,9 +166,12 @@ def run(base: str, timeout: float, login: str, password: str) -> None:
         version = decision.json()["version"]
     final = client.post(f"/api/v1/processes/{pid}/finalize", json={}).json()
     check(final["status"] == "FINALIZED", "протокол финализирован")
-    blocked = client.post("/api/v1/documents/upload", data={"process_id": str(pid)},
-                          files=[("files", ("x.pdf", _pdf(["x"]), "application/pdf"))])
-    check(blocked.status_code == 409, "дозагрузка после финализации закрыта")
+    late = client.post("/api/v1/documents/upload", data={"process_id": str(pid)},
+                       files=[("files", ("x.pdf", _pdf(["x"]), "application/pdf"))])
+    after = client.get(f"/api/v1/processes/{pid}").json()
+    check(late.status_code == 200 and "notice" in late.json()
+          and after["status"] == "FINALIZED" and after["pending_documents"],
+          "после финализации проверка не запускается, инспектор уведомлён (ТЗ 9.6)")
 
     print("5. Выгрузки")
     for fmt, magic in (("json", b"{"), ("xml", b"<?xml"), ("docx", b"PK"), ("pdf", b"%PDF")):
