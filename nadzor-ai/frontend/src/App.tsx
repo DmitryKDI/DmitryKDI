@@ -1,11 +1,28 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { SESSION_EXPIRED, authApi } from './authApi'
 import Shell from './layout/Shell'
+import Login from './pages/Login'
 import OfficialAnalysis from './pages/OfficialAnalysis'
+import { useApp } from './store'
 
 export default function App() {
   const location = useLocation()
+  const { user, setUser } = useApp()
+  const [checked, setChecked] = useState(false)
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
+
+  // Сессия проверяется сервером при каждом открытии: в браузере хранится
+  // только cookie, и её срок знает сервер, а не интерфейс.
+  useEffect(() => {
+    authApi.session().then((state) => setUser(state.user)).catch(() => setUser(null)).finally(() => setChecked(true))
+    const expired = () => setUser(null)
+    window.addEventListener(SESSION_EXPIRED, expired)
+    return () => window.removeEventListener(SESSION_EXPIRED, expired)
+  }, [setUser])
+
+  if (!checked) return null
+  if (!user) return <Login onLogin={setUser} />
 
   return (
     <Shell>

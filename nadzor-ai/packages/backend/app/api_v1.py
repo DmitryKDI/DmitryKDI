@@ -25,7 +25,7 @@ from fastapi import (
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from . import document_convert, external_sync, models, official_api, protocol, protocol_export
+from . import auth, document_convert, external_sync, models, official_api, protocol, protocol_export
 from .db import get_session
 from .official_pipeline import clarification_result
 
@@ -84,7 +84,8 @@ def _run(db: Session, process_id: int) -> models.OfficialRun:
     return run
 
 
-@router.post("/documents/upload", summary="Загрузить документы и получить process_id")
+@router.post("/documents/upload", summary="Загрузить документы и получить process_id",
+             dependencies=[Depends(auth.require(*auth.VERIFIERS, "service"))])
 def upload(background: BackgroundTasks,
            files: list[UploadFile] = File(...),
            registry: UploadFile | None = File(None),
@@ -221,25 +222,28 @@ def process(process_id: int, db: Session = Depends(get_session)):
 
 @router.post("/processes/{process_id}/decisions", summary="Решение инспектора по кандидату")
 def decide(process_id: int, body: official_api.DecisionInput,
-           db: Session = Depends(get_session)):
+           db: Session = Depends(get_session),
+           user: auth.Principal = Depends(auth.require(*auth.VERIFIERS))):
     status_now = _payload(db, _run(db, process_id))["status"]
     if not protocol.can_verify(status_now):
         raise HTTPException(409, f"верификация невозможна в статусе {status_now}")
-    official_api.decide(process_id, body, db)
+    official_api.decide(process_id, body, db, user)
     return _payload(db, _run(db, process_id))
 
 
 @router.post("/processes/{process_id}/finalize", summary="Финализировать протокол")
 def finalize(process_id: int, body: official_api.FinalizeInput,
-             db: Session = Depends(get_session)):
-    official_api.finalize_run(process_id, body, db)
+             db: Session = Depends(get_session),
+             user: auth.Principal = Depends(auth.require(*auth.VERIFIERS))):
+    official_api.finalize_run(process_id, body, db, user)
     return _payload(db, _run(db, process_id))
 
 
 @router.post("/processes/{process_id}/unfinalize", summary="Отменить финализацию")
 def unfinalize(process_id: int, body: official_api.UnfinalizeInput,
-               db: Session = Depends(get_session)):
-    official_api.unfinalize_run(process_id, body, db)
+               db: Session = Depends(get_session),
+               user: auth.Principal = Depends(auth.require("supervisor"))):
+    official_api.unfinalize_run(process_id, body, db, user)
     return _payload(db, _run(db, process_id))
 
 
@@ -263,7 +267,8 @@ def export(process_id: int, output_format: str = Query("json", alias="format"),
         "Content-Disposition": f'attachment; filename="{name}.{output_format}"'})
 
 
-@router.post("/inspection/{process_id}", summary="Передача результатов во внешнюю систему")
+@router.post("/inspection/{process_id}", summary="Передача результатов во внешнюю систему",
+             dependencies=[Depends(auth.require(*auth.VERIFIERS, "service"))])
 def inspection(process_id: int, db: Session = Depends(get_session)):
     """Передаются только подтверждённые инспектором записи финализированного
     протокола вместе с версиями и реестром входных файлов (ТЗ 9.3, п.4).

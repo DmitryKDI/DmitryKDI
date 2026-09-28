@@ -112,6 +112,8 @@ class InspectorDecision(Base):
     reason: Mapped[str] = mapped_column(Text)
     # Кодированная причина решения (ТЗ 9.3): обязательна при отклонении.
     reason_code: Mapped[str] = mapped_column(String, default="")
+    # Кто принял решение (ТЗ 9.3: решение содержит user_id, timestamp, комментарий).
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     run: Mapped[OfficialRun] = relationship()
 
@@ -135,3 +137,43 @@ class Settings(Base):
     max_upload_kb: Mapped[int] = mapped_column(Integer, default=512 * 1024)
     max_pages: Mapped[int] = mapped_column(Integer, default=5000)
     part_kb: Mapped[int] = mapped_column(Integer, default=32 * 1024)
+
+
+class User(Base):
+    """Пользователь с логином и паролем (ТЗ 12, п.1–2)."""
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    login: Mapped[str] = mapped_column(String, unique=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String)
+    full_name: Mapped[str] = mapped_column(String, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AuthSession(Base):
+    """Сессия входа; хранится SHA-256 токена, а не сам токен."""
+    __tablename__ = "auth_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    user: Mapped[User] = relationship()
+
+
+class AuditLog(Base):
+    """Журнал аудита действий пользователей (ТЗ 10, таблица Audit_Log; 12, п.4)."""
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    login: Mapped[str] = mapped_column(String, default="")
+    action: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String, default="")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    status_code: Mapped[int] = mapped_column(Integer, default=0)
+    timestamp: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow,
+                                                   index=True)
+    ip_address: Mapped[str] = mapped_column(String, default="")
+    user_agent: Mapped[str] = mapped_column(String, default="")

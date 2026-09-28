@@ -59,8 +59,8 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/backend/],
       },
       manifest: {
-        name: 'НАДЗОР.ИИ — предиктивный строительный надзор',
-        short_name: 'НАДЗОР.ИИ',
+        name: 'Инспектор ИИ — сверка ПД, РД и ИД',
+        short_name: 'Инспектор ИИ',
         description: 'Сверка ПД, РД и ИД по матрице параметров с решениями инспектора',
         theme_color: '#5B5BD6',
         background_color: '#F5F6F8',

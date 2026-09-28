@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from . import models, protocol
+from . import auth, models, protocol
 from .db import SessionLocal, get_session
 from .llm import LlmConfig, local_config
 from .official_pipeline import run_official_analysis, select_current_documents
@@ -70,22 +70,25 @@ class RunInput(BaseModel):
 class DecisionInput(BaseModel):
     finding_id: str
     status: str
-    author: str
     reason: str
+    # Автор берётся из учётной записи; поле оставлено для совместимости
+    # клиентов и в решение не записывается.
+    author: str = ""
     expected_version: int
     # Кодированная причина (ТЗ 9.3): обязательна при отклонении кандидата.
     reason_code: str = ""
 
 
 class FinalizeInput(BaseModel):
-    author: str
+    # Автор — пользователь, выполнивший вход; поле для совместимости.
+    author: str = ""
 
 
 class UnfinalizeInput(BaseModel):
-    author: str
     reason: str
-    # Отмена финализации — право администратора или супервизора (ТЗ 9.3).
-    role: str
+    # Роль берётся из учётной записи (ТЗ 9.3: администратор или супервизор).
+    author: str = ""
+    role: str = ""
 
 
 # Сколько раз повторить проверку, упавшую с исключением (ТЗ 9.1: таймаут —
@@ -132,6 +135,7 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
             history = check.setdefault("review_history", [])
             history.append({
                 "status": decision.status, "author": decision.author,
+                "user_id": decision.user_id,
                 "reason": decision.reason, "reason_code": decision.reason_code,
                 "created_at": decision.created_at.isoformat(),
                 "version": decision.version,
@@ -173,7 +177,8 @@ def documents(db: Session = Depends(get_session)):
             if (row.source_metadata or {}).get("stage") in STAGES]
 
 
-@router.put("/documents/{document_id}/metadata")
+@router.put("/documents/{document_id}/metadata",
+            dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def save_metadata(document_id: int, body: MetadataInput, db: Session = Depends(get_session)):
     document = db.get(models.Document, document_id)
     if document is None:
@@ -338,7 +343,7 @@ def _execute(run_id: int) -> None:
         db.close()
 
 
-@router.post("/runs")
+@router.post("/runs", dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def create_run(body: RunInput, background: BackgroundTasks, db: Session = Depends(get_session)):
     if not body.object_id.strip() or not body.document_ids:
         raise HTTPException(422, "выберите документы одного объекта")
@@ -383,7 +388,7 @@ def run(run_id: int, db: Session = Depends(get_session)):
     return _run_dict(db, row)
 
 
-@router.post("/runs/{run_id}/cancel")
+@router.post("/runs/{run_id}/cancel", dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def cancel_run(run_id: int, db: Session = Depends(get_session)):
     row = db.get(models.OfficialRun, run_id)
     if row is None:
@@ -400,7 +405,8 @@ def _event(db: Session, run_id: int, action: str, author: str = "", reason: str 
 
 
 @router.post("/runs/{run_id}/finalize")
-def finalize_run(run_id: int, body: FinalizeInput, db: Session = Depends(get_session)):
+def finalize_run(run_id: int, body: FinalizeInput, db: Session = Depends(get_session),
+                 user: auth.Principal = Depends(auth.require(*auth.VERIFIERS))):
     """Финализация протокола («Завершить», ТЗ 9.3, п.4).
 
     Разрешена, только когда у каждого кандидата есть решение инспектора или
@@ -410,8 +416,6 @@ def finalize_run(run_id: int, body: FinalizeInput, db: Session = Depends(get_ses
     row = db.get(models.OfficialRun, run_id)
     if row is None:
         raise HTTPException(404, "прогон не найден")
-    if not body.author.strip():
-        raise HTTPException(422, "укажите инспектора")
     if row.finalized_at is not None:
         raise HTTPException(409, "протокол уже финализирован")
     if row.status != "completed" or not row.result:
@@ -420,7 +424,7 @@ def finalize_run(run_id: int, body: FinalizeInput, db: Session = Depends(get_ses
     if pending:
         raise HTTPException(409, "есть кандидаты без решения инспектора: " + ", ".join(pending))
     row.finalized_at = dt.datetime.utcnow()
-    row.finalized_by = body.author.strip()
+    row.finalized_by = user.display
     _event(db, run_id, "FINALIZE", row.finalized_by)
     db.commit()
     db.refresh(row)
@@ -428,20 +432,19 @@ def finalize_run(run_id: int, body: FinalizeInput, db: Session = Depends(get_ses
 
 
 @router.post("/runs/{run_id}/unfinalize")
-def unfinalize_run(run_id: int, body: UnfinalizeInput, db: Session = Depends(get_session)):
+def unfinalize_run(run_id: int, body: UnfinalizeInput, db: Session = Depends(get_session),
+                   user: auth.Principal = Depends(auth.require("supervisor"))):
     """Отмена финализации — только администратор или супервизор, с причиной."""
     row = db.get(models.OfficialRun, run_id)
     if row is None:
         raise HTTPException(404, "прогон не найден")
-    if body.role not in {"admin", "supervisor"}:
-        raise HTTPException(403, "отменить финализацию может только администратор или супервизор")
-    if not body.author.strip() or not body.reason.strip():
-        raise HTTPException(422, "укажите автора и причину отмены")
+    if not body.reason.strip():
+        raise HTTPException(422, "укажите причину отмены")
     if row.finalized_at is None:
         raise HTTPException(409, "протокол не финализирован")
     row.finalized_at = None
     row.finalized_by = ""
-    _event(db, run_id, "UNFINALIZE", body.author.strip(), body.reason.strip())
+    _event(db, run_id, "UNFINALIZE", user.display, body.reason.strip())
     db.commit()
     db.refresh(row)
     return _run_dict(db, row)
@@ -456,7 +459,8 @@ def run_events(run_id: int, db: Session = Depends(get_session)):
 
 
 @router.post("/runs/{run_id}/decisions")
-def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session)):
+def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session),
+           user: auth.Principal = Depends(auth.require(*auth.VERIFIERS))):
     row = db.get(models.OfficialRun, run_id)
     if row is None:
         raise HTTPException(404, "прогон не найден")
@@ -470,8 +474,8 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session))
     if body.status == "NEGATIVE_VERIFIED" and reason_code not in protocol.REASON_CODES:
         raise HTTPException(422, "при отклонении нужна кодированная причина: "
                                  + ", ".join(protocol.REASON_CODES))
-    if not body.author.strip() or not body.reason.strip():
-        raise HTTPException(422, "укажите инспектора и основание решения")
+    if not body.reason.strip():
+        raise HTTPException(422, "укажите основание решения")
     current = _version(db, run_id)
     if body.expected_version != current:
         raise HTTPException(409, "протокол уже изменён; обновите страницу")
@@ -488,8 +492,8 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session))
         raise HTTPException(422, "экспертное решение требует полного комплекта доказательств")
     db.add(models.InspectorDecision(
         run_id=run_id, version=current + 1, finding_id=body.finding_id,
-        status=body.status, author=body.author.strip(), reason=body.reason.strip(),
-        reason_code=reason_code,
+        status=body.status, author=user.display, reason=body.reason.strip(),
+        reason_code=reason_code, user_id=user.user_id,
     ))
     db.commit()
     db.refresh(row)
@@ -531,7 +535,8 @@ def export_run(
 # (queued → running → completed | cancelled | error), этап, прогресс и,
 # по завершении, результат. Это те же обработчики, что /runs, под именами
 # контракта — второй реализации нет, расходиться нечему.
-@router.post("/processes", summary="Запустить процесс проверки")
+@router.post("/processes", summary="Запустить процесс проверки",
+             dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def start_process(body: RunInput, background: BackgroundTasks,
                   db: Session = Depends(get_session)):
     return create_run(body, background, db)
@@ -542,6 +547,7 @@ def process_status(process_id: int, db: Session = Depends(get_session)):
     return run(process_id, db)
 
 
-@router.post("/processes/{process_id}/cancel", summary="Остановить процесс")
+@router.post("/processes/{process_id}/cancel", summary="Остановить процесс",
+             dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def cancel_process(process_id: int, db: Session = Depends(get_session)):
     return cancel_run(process_id, db)

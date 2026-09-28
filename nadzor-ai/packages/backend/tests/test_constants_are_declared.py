@@ -80,6 +80,12 @@ DECLARED: dict[str, str] = {
     # бюджет приёма и работы, а не порог истины о документе.
     "api_v1.MAX_FILE_BYTES": BUDGET,
     "external_sync.SEND_TIMEOUT_S": BUDGET,
+    # Политика доступа (ТЗ 12): срок сессии, длина пароля, стоимость scrypt.
+    "auth.SESSION_TTL_HOURS": BUDGET,
+    "auth.MIN_PASSWORD_LENGTH": BUDGET,
+    "auth.SCRYPT_N": BUDGET,
+    "auth.SCRYPT_R": BUDGET,
+    "auth.SCRYPT_P": BUDGET,
     "api_v1.MAX_PACKAGE_BYTES": BUDGET,
     "official_api.EXECUTE_RETRIES": BUDGET,
     # Все одного устройства: число в коде — умолчание, переменная окружения

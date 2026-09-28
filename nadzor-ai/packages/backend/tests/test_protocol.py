@@ -139,14 +139,16 @@ def test_finalization_requires_decisions_and_locks_the_protocol():
     assert locked.status_code == 409
 
 
-def test_unfinalize_needs_a_supervisor_and_is_logged():
+def test_unfinalize_needs_a_supervisor_and_is_logged(act_as):
     run_id = _stored_run(_result([_check("M-001:matrix", "NEGATIVE_VERIFIED")]))
-    client.post(f"/official/runs/{run_id}/finalize", json={"author": "insp"})
+    act_as("inspector")
+    client.post(f"/official/runs/{run_id}/finalize", json={})
+    # Роль берётся из учётной записи: подставить «supervisor» в тело нельзя.
     denied = client.post(f"/official/runs/{run_id}/unfinalize",
-                         json={"author": "insp", "reason": "ошибка", "role": "inspector"})
+                         json={"reason": "ошибка", "role": "supervisor"})
     assert denied.status_code == 403
-    reopened = client.post(f"/official/runs/{run_id}/unfinalize",
-                           json={"author": "boss", "reason": "ошибка", "role": "supervisor"})
+    act_as("supervisor")
+    reopened = client.post(f"/official/runs/{run_id}/unfinalize", json={"reason": "ошибка"})
     assert reopened.json()["process_status"] == "COMPLETED"
     events = client.get(f"/official/runs/{run_id}/events").json()
     assert [e["action"] for e in events] == ["FINALIZE", "UNFINALIZE"]

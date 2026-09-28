@@ -30,3 +30,6 @@ data/run_logs/
 models/
 bundle/
 *.tsbuildinfo
+
+# Пароль администратора, сгенерированный при первом запуске.
+initial-admin-password.txt

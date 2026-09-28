@@ -1,4 +1,4 @@
-"""FastAPI-приложение НАДЗОР.ИИ: приём документов комплекта, изображение
+"""FastAPI-приложение «Инспектор ИИ»: приём документов комплекта, изображение
 листа, проверка связи с локальной моделью, настройки хранения.
 
 Сама проверка ПД → РД → ИД по матрице параметров ТЗ — `official_api`
@@ -11,12 +11,13 @@ import sys
 from pathlib import Path
 
 import pymupdf
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from . import facts_store, file_store, models, openapi30, schemas
+from . import audit, auth, facts_store, file_store, models, openapi30, schemas
 from .api_v1 import router as api_v1_router
+from .auth_api import router as auth_router
 from .classification import classify_document
 from .db import get_session, init_db
 from .document_split import split_pdf
@@ -28,12 +29,24 @@ from .vision import make_llm_stamp_classifier, render_page_to_png_bytes
 # можно удалить целиком, файлы восстановятся из базы по требованию.
 UPLOAD_DIR = file_store.CACHE_DIR
 
-app = FastAPI(title="НАДЗОР.ИИ — backend")
+app = FastAPI(title="Инспектор ИИ — API")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
-app.include_router(official_router)
-app.include_router(api_v1_router)
+# Вход открыт; всё остальное — только после входа и по роли (ТЗ 12, п.1–2).
+app.include_router(auth_router)
+app.include_router(official_router, dependencies=[Depends(auth.require(*auth.READERS))])
+app.include_router(api_v1_router, dependencies=[Depends(auth.require(*auth.READERS))])
+
+
+@app.middleware("http")
+async def audit_trail(request: Request, call_next):
+    """Каждое действие, меняющее данные, — запись журнала аудита (ТЗ 12, п.4)."""
+    response = await call_next(request)
+    if audit.should_record(request):
+        audit.record(request, response.status_code)
+    return response
+
 # ТЗ 1.3: схема API — OpenAPI 3.0 (FastAPI по умолчанию строит 3.1).
 openapi30.install(app)
 
@@ -57,6 +70,7 @@ def _ensure_schema_and_defaults() -> None:
             db.commit()
     finally:
         db.close()
+    auth.ensure_initial_admin()
 
 
 _ensure_schema_and_defaults()
@@ -150,7 +164,8 @@ def _parse_document(document_id: int) -> None:
         db.close()
 
 
-@app.post("/documents", response_model=schemas.DocumentOut)
+@app.post("/documents", response_model=schemas.DocumentOut,
+          dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def upload_document(side: str, file: UploadFile, background_tasks: BackgroundTasks,
                     db: Session = Depends(get_session)):
     if side not in ("before", "after"):
@@ -238,13 +253,14 @@ def ingest_pdf(db: Session, data: bytes, filename: str, side: str,
     return doc
 
 
-@app.get("/documents", response_model=list[schemas.DocumentOut])
+@app.get("/documents", response_model=list[schemas.DocumentOut],
+         dependencies=[Depends(auth.require(*auth.READERS))])
 def list_documents(db: Session = Depends(get_session)):
     rows = db.query(models.Document).order_by(models.Document.uploaded_at.desc()).all()
     return [_document_out(d) for d in rows]
 
 
-@app.delete("/documents/{document_id}")
+@app.delete("/documents/{document_id}", dependencies=[Depends(auth.require(*auth.VERIFIERS))])
 def delete_document(document_id: int, db: Session = Depends(get_session)):
     doc = db.get(models.Document, document_id)
     if doc is None:
@@ -276,7 +292,8 @@ def delete_document(document_id: int, db: Session = Depends(get_session)):
     return {"ok": True}
 
 
-@app.get("/page-image/{document_id}/{page}")
+@app.get("/page-image/{document_id}/{page}",
+         dependencies=[Depends(auth.require(*auth.READERS))])
 def get_page_image(document_id: int, page: int, db: Session = Depends(get_session)):
     doc = db.get(models.Document, document_id)
     if doc is None:
@@ -287,7 +304,8 @@ def get_page_image(document_id: int, page: int, db: Session = Depends(get_sessio
     return Response(content=png_bytes, media_type="image/png")
 
 
-@app.get("/llm-check", response_model=schemas.LlmCheckOut)
+@app.get("/llm-check", response_model=schemas.LlmCheckOut,
+         dependencies=[Depends(auth.require(*auth.READERS))])
 def llm_check(db: Session = Depends(get_session)):
     """Проверка связи одним коротким вызовом (Г.91) — чтобы инспектор узнал
     о проблеме до запуска разбора на сотни страниц, а не по его пустому
@@ -314,7 +332,8 @@ def llm_check(db: Session = Depends(get_session)):
     )
 
 
-@app.get("/settings", response_model=schemas.SettingsOut)
+@app.get("/settings", response_model=schemas.SettingsOut,
+         dependencies=[Depends(auth.require(*auth.READERS))])
 def get_settings(db: Session = Depends(get_session)):
     return _settings_out(_limits(db), db)
 
@@ -331,7 +350,8 @@ def _settings_out(row: models.Settings, db: Session) -> schemas.SettingsOut:
     return out
 
 
-@app.put("/settings", response_model=schemas.SettingsOut)
+@app.put("/settings", response_model=schemas.SettingsOut,
+         dependencies=[Depends(auth.require("admin"))])
 def update_settings(body: schemas.SettingsUpdate, db: Session = Depends(get_session)):
     s = db.query(models.Settings).first()
     s.provider = body.provider

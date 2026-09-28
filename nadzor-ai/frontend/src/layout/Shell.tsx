@@ -1,5 +1,6 @@
 import { type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { authApi } from '../authApi'
 import { useApp } from '../store'
 
 const MENU = [
@@ -12,8 +13,13 @@ const TITLES: Record<string, string> = {
 
 export default function Shell({ children }: { children: ReactNode }) {
   const location = useLocation()
-  const { menuCollapsed, toggleMenu } = useApp()
-  const title = TITLES[location.pathname] ?? 'НАДЗОР.ИИ'
+  const { menuCollapsed, toggleMenu, user, setUser } = useApp()
+  const title = TITLES[location.pathname] ?? 'Инспектор ИИ'
+
+  async function logout() {
+    await authApi.logout().catch(() => undefined)
+    setUser(null)
+  }
 
   return (
     <div className="flex min-h-screen bg-surface-muted">
@@ -23,10 +29,10 @@ export default function Shell({ children }: { children: ReactNode }) {
         }`}
       >
         <div className="flex h-[72px] items-center gap-3 border-b border-surface-line px-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-sm font-bold text-white shadow-sm">Н</div>
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-sm font-bold text-white shadow-sm">ИИ</div>
           {!menuCollapsed && (
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold tracking-wide text-ink">НАДЗОР.ИИ</div>
+              <div className="truncate text-sm font-semibold tracking-wide text-ink">Инспектор ИИ</div>
               <div className="truncate text-[11px] text-ink-faint">сверка ПД, РД и ИД</div>
             </div>
           )}
@@ -84,6 +90,15 @@ export default function Shell({ children }: { children: ReactNode }) {
               Выводы ИИ требуют подтверждения инспектором
             </div>
           </div>
+          {user && (
+            <div className="flex items-center gap-3">
+              <div className="text-right text-xs">
+                <div className="font-medium text-ink">{user.full_name || user.login}</div>
+                <div className="text-ink-faint">{user.role_title}</div>
+              </div>
+              <button className="btn-ghost px-2 py-1 text-xs" onClick={logout}>Выйти</button>
+            </div>
+          )}
         </header>
 
         <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>

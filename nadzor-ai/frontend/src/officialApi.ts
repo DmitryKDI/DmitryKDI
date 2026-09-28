@@ -3,6 +3,13 @@
  * здесь три стадии комплекта и результат по параметрам матрицы, а не только
  * пара «до/после».
  */
+/** Событие «сессия закончилась»: любой запрос, получивший 401, сообщает о нём. */
+export const SESSION_EXPIRED = 'inspector:session-expired'
+
+export function notifySessionExpired(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(SESSION_EXPIRED))
+}
+
 export class OfficialApiError extends Error {
   readonly status: number
 
@@ -14,6 +21,7 @@ export class OfficialApiError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/backend${path}`, init)
+  if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: 'Сервер недоступен.' }))
     throw new OfficialApiError(response.status, body.detail || 'Сервер вернул ошибку.')
@@ -125,6 +133,10 @@ export interface OfficialRun {
   process_status?: string
   verification_status?: string
   finalized_at?: string | null
+  finalized_by?: string | null
+  sync_status?: string
+  /** Системный комментарий к последнему решению (ТЗ 9.4). */
+  system_comment?: string
   protocol?: {
     scenario: string
     upload_status: Record<string, string>
@@ -144,10 +156,12 @@ export const REASON_CODES: Record<string, string> = {
   OTHER: 'иное (см. основание)',
 }
 
+/** Действия инспектора по ТЗ 9.3: подтвердить, отклонить, запросить уточнение. */
+export type DecisionStatus = Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CLARIFICATION_REQUIRED'>
+
 export interface DecisionInput {
   finding_id: string
-  status: Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CANDIDATE' | 'CLARIFICATION_REQUIRED'>
-  author: string
+  status: DecisionStatus
   reason: string
   expected_version: number
   reason_code?: string
@@ -210,9 +224,13 @@ export const officialApi = {
   ),
   exportUrl: (id: number, format: 'json' | 'csv') => `/backend/official/runs/${id}/export?format=${format}`,
   protocolUrl: (id: number, format: 'pdf' | 'docx' | 'xml') => `/backend/api/v1/processes/${id}/export?format=${format}`,
-  finalize: (id: number, author: string) => request<OfficialRun>(
+  finalize: (id: number) => request<OfficialRun>(
     `/official/runs/${id}/finalize`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ author }) },
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
+  ),
+  unfinalize: (id: number, reason: string) => request<OfficialRun>(
+    `/official/runs/${id}/unfinalize`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) },
   ),
   pageImageUrl: (documentId: number, page: number) => `/backend/page-image/${documentId}/${page}`,
 }

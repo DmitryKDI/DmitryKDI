@@ -11,6 +11,7 @@ where = ["packages"]
 pythonpath = ["packages", "."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["real_auth: тест идёт через настоящий вход, без подмены пользователя"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]

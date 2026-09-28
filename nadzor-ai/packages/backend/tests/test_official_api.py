@@ -3,6 +3,7 @@
 import datetime as dt
 
 import pytest
+from conftest import principal
 from app import main as backend_main
 from app import models, official_api
 from app.db import Base
@@ -78,7 +79,7 @@ def test_decision_is_versioned_without_mutating_machine_result(db):
     view = official_api.decide(run.id, official_api.DecisionInput(
         finding_id="M-001:matrix", status="CONFIRMED_VIOLATION",
         author="Инспектор", reason="Проверено по источнику", expected_version=0,
-    ), db)
+    ), db, principal("inspector"))
     db.refresh(run)
     assert run.result == raw_before
     assert view["object_id"] == "synthetic"
@@ -88,7 +89,7 @@ def test_decision_is_versioned_without_mutating_machine_result(db):
         official_api.decide(run.id, official_api.DecisionInput(
             finding_id="M-001:matrix", status="CANDIDATE", author="Инспектор",
             reason="Уточнение", expected_version=0,
-        ), db)
+        ), db, principal("inspector"))
     print("OK: решение создаёт новую версию и не переписывает машинный результат")
 
 
@@ -104,7 +105,7 @@ def test_final_expert_decision_requires_evidence(db, status):
         official_api.decide(run.id, official_api.DecisionInput(
             finding_id="M-001:matrix", status=status, author="Инспектор",
             reason="Решение", expected_version=0, reason_code="APPROVED_CHANGE",
-        ), db)
+        ), db, principal("inspector"))
     print("OK: окончательное решение без локализованного источника отклоняется")
 
 
@@ -118,7 +119,7 @@ def test_request_for_clarification_is_versioned_without_complete_evidence(db):
     view = official_api.decide(run.id, official_api.DecisionInput(
         finding_id="M-001:matrix", status="CLARIFICATION_REQUIRED",
         author="Инспектор", reason="Нужен читаемый лист", expected_version=0,
-    ), db)
+    ), db, principal("inspector"))
     check = view["result"]["checks"][0]
     assert check["finding_status"] == "CLARIFICATION_REQUIRED"
     assert check["review_history"][0]["reason"] == "Нужен читаемый лист"
@@ -213,8 +214,10 @@ def test_graphic_candidate_accepts_a_versioned_inspector_decision(db):
     view = official_api.decide(run.id, official_api.DecisionInput(
         finding_id="graphic:1", status="CONFIRMED_VIOLATION",
         author="Инспектор", reason="Проверено по листам", expected_version=0,
-    ), db)
+    ), db, principal("inspector"))
     candidate = view["result"]["graphic_analysis"]["candidates"][0]
     assert candidate["finding_status"] == "CONFIRMED_VIOLATION"
-    assert candidate["review_history"][0]["author"] == "Инспектор"
+    # Автор и user_id — из учётной записи, а не из тела запроса (ТЗ 9.3).
+    assert candidate["review_history"][0]["author"] == principal("inspector").display
+    assert candidate["review_history"][0]["user_id"] == principal("inspector").user_id
     print("OK: решение инспектора версионируется и для графического кандидата")

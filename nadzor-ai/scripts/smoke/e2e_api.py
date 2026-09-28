@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -84,12 +85,17 @@ class Check:
         print(f"  ✓ {message}")
 
 
-def run(base: str, timeout: float) -> None:
+def run(base: str, timeout: float, login: str, password: str) -> None:
     check = Check()
     client = httpx.Client(base_url=base, timeout=120)
 
-    print("1. Готовность сервиса")
+    print("1. Готовность сервиса и вход")
     check(client.get("/health").json().get("status") == "ok", "/health отвечает")
+    check(client.get("/api/v1/processes/1/status").status_code == 401,
+          "без входа API закрыто")
+    session = client.post("/api/v1/auth/login", json={"login": login, "password": password})
+    check(session.status_code == 200, f"вход «{login}» ({session.status_code})")
+    client.headers["Authorization"] = f"Bearer {session.json()['token']}"
     llm = client.get("/llm-check").json()
     check(llm["reachable"], f"модель отвечает: {llm['message']}")
     schema = client.get("/openapi.json").json()
@@ -149,16 +155,16 @@ def run(base: str, timeout: float) -> None:
 
     print("4. Решения инспектора и финализация")
     version = process["version"]
-    early = client.post(f"/api/v1/processes/{pid}/finalize", json={"author": "smoke"})
+    early = client.post(f"/api/v1/processes/{pid}/finalize", json={})
     check(early.status_code == 409, "финализация без решений запрещена")
     for card in candidates:
         decision = client.post(f"/api/v1/processes/{pid}/decisions", json={
             "finding_id": card["finding_id"], "status": "CONFIRMED_VIOLATION",
-            "author": "smoke", "reason": "подтверждено по доказательствам",
+            "reason": "подтверждено по доказательствам",
             "expected_version": version})
         check(decision.status_code == 200, f"решение по {card['finding_id']}")
         version = decision.json()["version"]
-    final = client.post(f"/api/v1/processes/{pid}/finalize", json={"author": "smoke"}).json()
+    final = client.post(f"/api/v1/processes/{pid}/finalize", json={}).json()
     check(final["status"] == "FINALIZED", "протокол финализирован")
     blocked = client.post("/api/v1/documents/upload", data={"process_id": str(pid)},
                           files=[("files", ("x.pdf", _pdf(["x"]), "application/pdf"))])
@@ -181,8 +187,10 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:8010")
     parser.add_argument("--timeout", type=float, default=600.0,
                         help="сколько ждать протокол, секунд")
+    parser.add_argument("--login", default=os.environ.get("NADZOR_ADMIN_LOGIN", "admin"))
+    parser.add_argument("--password", default=os.environ.get("NADZOR_ADMIN_PASSWORD", ""))
     args = parser.parse_args()
-    run(args.base_url, args.timeout)
+    run(args.base_url, args.timeout, args.login, args.password)
 
 
 if __name__ == "__main__":

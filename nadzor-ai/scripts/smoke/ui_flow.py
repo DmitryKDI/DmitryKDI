@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 import time
@@ -36,7 +37,7 @@ def _write(folder: Path) -> None:
         doc.save(folder / name)
 
 
-def run(url: str, chromium: str | None) -> None:
+def run(url: str, chromium: str | None, login: str, password: str) -> None:
     obj = f"UI-{int(time.time())}"
     errors: list[str] = []
     with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
@@ -47,6 +48,11 @@ def run(url: str, chromium: str | None) -> None:
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.on("console", lambda m: m.type == "error" and errors.append(m.text))
         page.goto(url, wait_until="networkidle")
+        page.get_by_label("Логин").fill(login)
+        page.get_by_label("Пароль").fill(password)
+        page.get_by_role("button", name="Войти").click()
+        expect(page.get_by_role("button", name="Выйти")).to_be_visible(timeout=30000)
+        print("вход выполнен")
         for title, code, name in (("Проектная документация", "UI-PD", "ui-pd.pdf"),
                                   ("Рабочая документация", "UI-RD", "ui-rd.pdf")):
             card = page.locator("section").filter(has=page.get_by_text(title, exact=True)).last
@@ -72,18 +78,15 @@ def run(url: str, chromium: str | None) -> None:
         # Страница опрашивает сервер и перерисовывается: раскрытая строка
         # ищется по её содержимому, а не по соседству с исходной.
         detail = page.locator("tr").filter(
-            has=page.get_by_role("button", name="Сохранить решение")).first
+            has=page.get_by_role("button", name="Отклонить")).first
         expect(detail).to_be_visible(timeout=30000)
-        detail.locator("select").first.select_option("NEGATIVE_VERIFIED")
-        detail.get_by_placeholder("Инспектор *").fill("Инспектор")
-        detail.get_by_placeholder("Основание *").fill("согласованное изменение")
-        detail.locator("select").nth(1).select_option("APPROVED_CHANGE")
-        detail.get_by_role("button", name="Сохранить решение").click()
+        detail.get_by_placeholder("Комментарий инспектора *").fill("согласованное изменение")
+        detail.get_by_label("Причина отклонения").select_option("APPROVED_CHANGE")
+        detail.get_by_role("button", name="Отклонить").click()
         expect(page.get_by_text("Кандидатов без решения инспектора: 0")).to_be_visible(
             timeout=30000)
         print("решение сохранено")
         panel = page.locator("section").filter(has_text="Кандидатов без решения").last
-        panel.get_by_placeholder("Инспектор *").fill("Инспектор")
         panel.get_by_role("button", name="Завершить").click()
         expect(page.get_by_text("Протокол финализирован").first).to_be_visible(timeout=30000)
         print("протокол финализирован")
@@ -97,8 +100,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--url", default="http://127.0.0.1:5173/")
     parser.add_argument("--chromium", default=None, help="путь к уже установленному Chromium")
+    parser.add_argument("--login", default=os.environ.get("NADZOR_ADMIN_LOGIN", "admin"))
+    parser.add_argument("--password", default=os.environ.get("NADZOR_ADMIN_PASSWORD", ""))
     args = parser.parse_args()
-    run(args.url, args.chromium)
+    run(args.url, args.chromium, args.login, args.password)
 
 
 if __name__ == "__main__":

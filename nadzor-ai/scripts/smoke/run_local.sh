@@ -10,6 +10,9 @@ PY="$ROOT/.venv/bin/python"
 WORK="$(mktemp -d)"
 MODEL_PORT="${SMOKE_MODEL_PORT:-18001}"
 API_PORT="${SMOKE_API_PORT:-18010}"
+# Учётная запись администратора временной базы: вход обязателен (ТЗ 12).
+export NADZOR_ADMIN_LOGIN="${NADZOR_ADMIN_LOGIN:-admin}"
+export NADZOR_ADMIN_PASSWORD="${NADZOR_ADMIN_PASSWORD:-smoke-admin-password}"
 PIDS=()
 cleanup() { for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done; rm -rf "$WORK"; }
 trap cleanup EXIT
