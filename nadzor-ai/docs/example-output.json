@@ -29,6 +29,7 @@
         {
           "finding_id": "M-001:matrix",
           "parameter_code": "M-001",
+          "parameter_name": "Площадь застройки",
           "completeness_status": "COMPLETE",
           "technical_status": "completed",
           "reason": "Значение в РД отличается от ПД; требуется проверка инспектором."
@@ -94,6 +95,23 @@
       "negative_verified": [],
       "suspicions": []
     },
+    "free_search": {
+      "status": "not_run"
+    },
+    "ocr_quality": {
+      "1": {
+        "recognized_pages": 0,
+        "low_quality_pages": [],
+        "abstain_pages": [],
+        "coverage": null
+      },
+      "2": {
+        "recognized_pages": 0,
+        "low_quality_pages": [],
+        "abstain_pages": [],
+        "coverage": null
+      }
+    },
     "missing_evidence": [],
     "pending_candidates": [
       "M-001:matrix"
@@ -129,7 +147,8 @@
               0.4118335114807642,
               0.08941686634779543
             ],
-            "quote": "Total area of the building: 1200 m2."
+            "quote": "Total area of the building: 1200 m2.",
+            "ocr_quality": null
           },
           {
             "document_id": 2,
@@ -144,13 +163,17 @@
               0.4118335114807642,
               0.08941686634779543
             ],
-            "quote": "Total area of the building: 1250 m2."
+            "quote": "Total area of the building: 1250 m2.",
+            "ocr_quality": null
           }
         ],
         "technical_status": "completed",
         "review_history": [],
         "confidence": null,
+        "section": "ПЗ",
+        "normative_refs": {},
         "delta": 50.0,
+        "threshold_status": null,
         "approved_change_ref": "NONE",
         "stages_compared": [
           "PD",
@@ -183,6 +206,20 @@
       },
       "problems": {
         "ID": "документ стадии не загружен"
+      }
+    },
+    "ocr_quality": {
+      "1": {
+        "recognized_pages": 0,
+        "low_quality_pages": [],
+        "abstain_pages": [],
+        "coverage": null
+      },
+      "2": {
+        "recognized_pages": 0,
+        "low_quality_pages": [],
+        "abstain_pages": [],
+        "coverage": null
       }
     }
   }

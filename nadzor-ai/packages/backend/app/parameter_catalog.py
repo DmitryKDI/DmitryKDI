@@ -67,10 +67,20 @@ def _data_type(unit: str) -> str:
     return "number"
 
 
+def _ensure_tables() -> None:
+    """Таблицы матрицы — и при вызове проверки без запуска сервиса (скрипты, CLI)."""
+    from . import models
+    from .db import engine
+
+    models.Base.metadata.create_all(bind=engine, tables=[
+        models.Param.__table__, models.Settings.__table__])
+
+
 def ensure_seeded() -> None:
     """Перенести официальную матрицу в таблицу Params, если таблица пуста."""
     from . import models
 
+    _ensure_tables()
     with SessionLocal() as db:
         if db.query(models.Param).count():
             return
@@ -130,6 +140,7 @@ def current_matrix_version() -> str:
     """Версия матрицы: официальная версия и номер правки администратором."""
     from . import models
 
+    _ensure_tables()
     with SessionLocal() as db:
         settings = db.query(models.Settings).first()
         revision = settings.matrix_revision if settings is not None else 0

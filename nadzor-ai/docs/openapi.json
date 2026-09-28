@@ -1,10 +1,1207 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "НАДЗОР.ИИ — backend",
+    "title": "Инспектор ИИ — API",
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Вход по логину и паролю",
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Выход",
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Текущий пользователь",
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Состояние сессии (без ошибки, если вход не выполнен)",
+        "description": "Интерфейсу при открытии нужно узнать, выполнен ли вход. 401 здесь\nвыглядел бы в консоли браузера как ошибка, хотя это обычное состояние.",
+        "operationId": "session_api_v1_auth_session_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Сменить свой пароль",
+        "operationId": "change_password_api_v1_auth_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Пользователи",
+        "operationId": "users_api_v1_admin_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Создать пользователя",
+        "operationId": "create_user_api_v1_admin_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}": {
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Изменить пользователя",
+        "operationId": "update_user_api_v1_admin_users__user_id__patch",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/integrity": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Проверки целостности хранилища",
+        "operationId": "integrity_checks_api_v1_admin_integrity_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Проверить целостность хранилища сейчас",
+        "operationId": "integrity_now_api_v1_admin_integrity_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/backups": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Состояние резервного копирования",
+        "operationId": "backups_api_v1_admin_backups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Снять полную резервную копию сейчас",
+        "operationId": "backup_now_api_v1_admin_backups_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/audit": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Журнал аудита",
+        "operationId": "audit_log_api_v1_admin_audit_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "User",
+              "nullable": true
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "Action",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/params": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Параметры матрицы (включая неактивные)",
+        "operationId": "params_api_v1_admin_params_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/params/{code}": {
+      "patch": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Изменить параметр матрицы",
+        "operationId": "update_param_api_v1_admin_params__code__patch",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Code"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParamUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/normative": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Нормативная база",
+        "operationId": "normative_api_v1_admin_normative_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Добавить нормативную ссылку",
+        "operationId": "add_norm_api_v1_admin_normative_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NormInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/normative/{item_id}": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Изменить или деактивировать нормативную ссылку",
+        "operationId": "edit_norm_api_v1_admin_normative__item_id__put",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NormInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/rules": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Логические правила свободного поиска",
+        "operationId": "rules_api_v1_admin_rules_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Добавить логическое правило",
+        "operationId": "add_rule_api_v1_admin_rules_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/rules/{item_id}": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Изменить или деактивировать правило",
+        "operationId": "edit_rule_api_v1_admin_rules__item_id__put",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/dataset/items": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Записи набора данных",
+        "operationId": "dataset_items_api_v1_ml_dataset_items_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "Status",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/dataset/items/{item_id}/curate": {
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Решение куратора по записи",
+        "operationId": "curate_api_v1_ml_dataset_items__item_id__curate_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurateInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/dataset/versions": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Выпуски набора данных",
+        "operationId": "versions_api_v1_ml_dataset_versions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Выпустить dataset_version",
+        "operationId": "release_api_v1_ml_dataset_versions_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/dataset/versions/{version}/evaluate": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Метрики текущих машинных результатов на выборке выпуска",
+        "description": "Precision / Recall / F1 / FPR по evidence_group (ТЗ 14.3).\n\nМашина «предсказала нарушение», если её статус находки был CANDIDATE.\nМетрики — по разделам и в целом, с размером выборки: без него точечная\nоценка на десятке записей выглядела бы весомее, чем есть.",
+        "operationId": "evaluate_api_v1_ml_dataset_versions__version__evaluate_get",
+        "parameters": [
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version"
+            }
+          },
+          {
+            "name": "split",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(train|validation|test)$",
+              "default": "test",
+              "title": "Split"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/rejections": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Лог отклонений",
+        "operationId": "rejections_api_v1_ml_rejections_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/disputes": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Спорные случаи",
+        "operationId": "disputes_api_v1_ml_disputes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/models": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Итерации дообучения",
+        "operationId": "model_list_api_v1_ml_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Зарегистрировать результат обучения",
+        "operationId": "register_model_api_v1_ml_models_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/models/{model_id}/approve": {
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Подписать публикацию модели",
+        "operationId": "approve_model_api_v1_ml_models__model_id__approve_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/models/{model_id}/reject": {
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Отклонить модель",
+        "operationId": "reject_model_api_v1_ml_models__model_id__reject_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/models/{model_id}/rollback": {
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Откатить опубликованную модель",
+        "operationId": "rollback_model_api_v1_ml_models__model_id__rollback_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/report": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Отчёт по дообучению за период",
+        "operationId": "report_api_v1_ml_report_get",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 366,
+              "minimum": 1,
+              "default": 7,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/reports": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Сохранённые отчёты",
+        "operationId": "reports_api_v1_ml_reports_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/dashboard": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Объекты с цветовой индикацией (модуль 7)",
+        "operationId": "dashboard_api_v1_dashboard_get",
+        "parameters": [
+          {
+            "name": "section",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "Section",
+              "nullable": true
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "Status",
+              "nullable": true
+            }
+          },
+          {
+            "name": "color",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(green|yellow|red)$",
+              "title": "Color",
+              "nullable": true
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "Date From",
+              "nullable": true
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "Date To",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/official/parameters": {
       "get": {
         "tags": [
@@ -395,6 +1592,106 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/official/runs/{run_id}/suspicions": {
+      "get": {
+        "tags": [
+          "official"
+        ],
+        "summary": "Run Suspicions",
+        "description": "Гипотезы свободного поиска процесса в структуре ТЗ 9.5.",
+        "operationId": "run_suspicions_official_runs__run_id__suspicions_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/official/runs/{run_id}/suspicions/{suspicion_id}": {
+      "post": {
+        "tags": [
+          "official"
+        ],
+        "summary": "Review Suspicion",
+        "operationId": "review_suspicion_official_runs__run_id__suspicions__suspicion_id__post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "suspicion_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Suspicion Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuspicionReview"
               }
             }
           }
@@ -915,7 +2212,7 @@
           "api-v1"
         ],
         "summary": "Передача результатов во внешнюю систему",
-        "description": "Передаются только подтверждённые инспектором записи финализированного\nпротокола вместе с версиями и реестром входных файлов (ТЗ 9.3, п.4).\n\nПередача включается адресом приёма (`external_sync.URL_ENV`). Без него\nпакет формируется и возвращается, а статус честно LOCAL_ONLY: выдать его\nза отправленный значило бы скрыть, что передачи не было. Отказ приёмника\nтоже не выдаётся за отправку — статус SEND_FAILED с причиной.",
+        "description": "Передаются только подтверждённые инспектором записи финализированного\nпротокола вместе с версиями и реестром входных файлов (ТЗ 9.3, п.4).\n\nПередача включается адресом приёма (`external_sync.URL_ENV`). Без него\nпакет формируется и возвращается, а статус честно LOCAL_ONLY: выдать его\nза отправленный значило бы скрыть, что передачи не было. Недоступность\nприёмника даёт PENDING_SYNC и повторы через 1, 5 и 15 минут; окончательный\nотказ — SEND_FAILED с причиной (ТЗ 9.6).",
         "operationId": "inspection_api_v1_inspection__process_id__post",
         "parameters": [
           {
@@ -964,6 +2261,22 @@
                   "type": "object",
                   "title": "Response Health Health Get"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Метрики Prometheus (ТЗ 13, п.4–5)",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
@@ -1262,6 +2575,19 @@
         ],
         "title": "Body_upload_document_documents_post"
       },
+      "CurateInput": {
+        "properties": {
+          "approve": {
+            "type": "boolean",
+            "title": "Approve"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approve"
+        ],
+        "title": "CurateInput"
+      },
       "DecisionInput": {
         "properties": {
           "finding_id": {
@@ -1272,13 +2598,14 @@
             "type": "string",
             "title": "Status"
           },
-          "author": {
-            "type": "string",
-            "title": "Author"
-          },
           "reason": {
             "type": "string",
             "title": "Reason"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author",
+            "default": ""
           },
           "expected_version": {
             "type": "integer",
@@ -1294,7 +2621,6 @@
         "required": [
           "finding_id",
           "status",
-          "author",
           "reason",
           "expected_version"
         ],
@@ -1365,13 +2691,11 @@
         "properties": {
           "author": {
             "type": "string",
-            "title": "Author"
+            "title": "Author",
+            "default": ""
           }
         },
         "type": "object",
-        "required": [
-          "author"
-        ],
         "title": "FinalizeInput"
       },
       "HTTPValidationError": {
@@ -1439,6 +2763,24 @@
         "title": "LlmCheckOut",
         "description": "Ответ предполётной проверки связи (Г.91) для кнопки в интерфейсе."
       },
+      "LoginInput": {
+        "properties": {
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "login",
+          "password"
+        ],
+        "title": "LoginInput"
+      },
       "MetadataInput": {
         "properties": {
           "object_id": {
@@ -1492,6 +2834,251 @@
           "approval_status"
         ],
         "title": "MetadataInput"
+      },
+      "ModelInput": {
+        "properties": {
+          "model_version": {
+            "type": "string",
+            "title": "Model Version"
+          },
+          "dataset_version": {
+            "type": "string",
+            "title": "Dataset Version"
+          },
+          "precision": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Precision"
+          },
+          "recall": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Recall"
+          },
+          "f1": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "F1"
+          },
+          "false_positive_rate": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "False Positive Rate"
+          },
+          "per_category_metrics": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Per Category Metrics",
+            "default": {}
+          },
+          "training_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Training Params",
+            "default": {}
+          },
+          "code_ref": {
+            "type": "string",
+            "title": "Code Ref",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_version",
+          "dataset_version",
+          "precision",
+          "recall",
+          "f1",
+          "false_positive_rate"
+        ],
+        "title": "ModelInput"
+      },
+      "NormInput": {
+        "properties": {
+          "document_name": {
+            "type": "string",
+            "title": "Document Name"
+          },
+          "document_number": {
+            "type": "string",
+            "title": "Document Number"
+          },
+          "section": {
+            "type": "string",
+            "title": "Section",
+            "default": ""
+          },
+          "parameter_name": {
+            "type": "string",
+            "title": "Parameter Name",
+            "default": ""
+          },
+          "min_value": {
+            "type": "number",
+            "title": "Min Value",
+            "nullable": true
+          },
+          "max_value": {
+            "type": "number",
+            "title": "Max Value",
+            "nullable": true
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From",
+            "nullable": true
+          },
+          "effective_to": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective To",
+            "nullable": true
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_name",
+          "document_number"
+        ],
+        "title": "NormInput"
+      },
+      "ParamUpdate": {
+        "properties": {
+          "trigger_logic": {
+            "type": "string",
+            "title": "Trigger Logic",
+            "nullable": true
+          },
+          "review_priority": {
+            "type": "string",
+            "title": "Review Priority",
+            "nullable": true
+          },
+          "sp_reference": {
+            "type": "string",
+            "title": "Sp Reference",
+            "nullable": true
+          },
+          "gost_reference": {
+            "type": "string",
+            "title": "Gost Reference",
+            "nullable": true
+          },
+          "fz_reference": {
+            "type": "string",
+            "title": "Fz Reference",
+            "nullable": true
+          },
+          "other_normative": {
+            "type": "string",
+            "title": "Other Normative",
+            "nullable": true
+          },
+          "data_type": {
+            "type": "string",
+            "title": "Data Type",
+            "nullable": true
+          },
+          "min_value": {
+            "type": "number",
+            "title": "Min Value",
+            "nullable": true
+          },
+          "max_value": {
+            "type": "number",
+            "title": "Max Value",
+            "nullable": true
+          },
+          "regex_pattern": {
+            "type": "string",
+            "title": "Regex Pattern",
+            "nullable": true
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "nullable": true
+          },
+          "clear_min_value": {
+            "type": "boolean",
+            "title": "Clear Min Value",
+            "default": false
+          },
+          "clear_max_value": {
+            "type": "boolean",
+            "title": "Clear Max Value",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ParamUpdate"
+      },
+      "PasswordChange": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "title": "Current Password"
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "PasswordChange"
+      },
+      "RuleInput": {
+        "properties": {
+          "rule_name": {
+            "type": "string",
+            "title": "Rule Name"
+          },
+          "condition": {
+            "type": "string",
+            "title": "Condition"
+          },
+          "expected": {
+            "type": "string",
+            "title": "Expected"
+          },
+          "normative_base": {
+            "type": "string",
+            "title": "Normative Base",
+            "default": ""
+          },
+          "review_priority": {
+            "type": "string",
+            "title": "Review Priority",
+            "default": "MEDIUM"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_name",
+          "condition",
+          "expected"
+        ],
+        "title": "RuleInput"
       },
       "RunInput": {
         "properties": {
@@ -1605,28 +3192,114 @@
         ],
         "title": "SettingsUpdate"
       },
-      "UnfinalizeInput": {
+      "SuspicionReview": {
         "properties": {
-          "author": {
+          "action": {
             "type": "string",
-            "title": "Author"
+            "title": "Action"
           },
-          "reason": {
+          "comment": {
             "type": "string",
-            "title": "Reason"
+            "title": "Comment",
+            "default": ""
           },
-          "role": {
+          "reason_code": {
             "type": "string",
-            "title": "Role"
+            "title": "Reason Code",
+            "default": ""
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evidence",
+            "nullable": true
           }
         },
         "type": "object",
         "required": [
-          "author",
-          "reason",
-          "role"
+          "action"
+        ],
+        "title": "SuspicionReview"
+      },
+      "UnfinalizeInput": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author",
+            "default": ""
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
         ],
         "title": "UnfinalizeInput"
+      },
+      "UserInput": {
+        "properties": {
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "full_name": {
+            "type": "string",
+            "title": "Full Name",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "login",
+          "password",
+          "role"
+        ],
+        "title": "UserInput"
+      },
+      "UserUpdate": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "nullable": true
+          },
+          "full_name": {
+            "type": "string",
+            "title": "Full Name",
+            "nullable": true
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "nullable": true
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "nullable": true
+          }
+        },
+        "type": "object",
+        "title": "UserUpdate"
       },
       "ValidationError": {
         "properties": {
