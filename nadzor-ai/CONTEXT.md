@@ -18,7 +18,7 @@ POST /api/v1/documents/upload (файлы + реестр) -> process_id
 -> решения инспектора -> finalize -> выгрузка JSON / XML / DOCX / PDF
 ```
 
-Интерфейс — один экран «Проверка ПД–РД–ИД» (`frontend/src/pages/OfficialAnalysis.tsx`).
+Интерфейс — вход по логину и паролю и экраны по роли (`frontend/src/pages/`): «Объекты» (дашборд), «Проверка ПД–РД–ИД» (`OfficialAnalysis.tsx`), «Дообучение», «Администрирование».
 
 ## Главные файлы
 
