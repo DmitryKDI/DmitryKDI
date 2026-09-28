@@ -25,7 +25,16 @@ from fastapi import (
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from . import auth, document_convert, external_sync, models, official_api, protocol, protocol_export
+from . import (
+    auth,
+    document_convert,
+    external_sync,
+    models,
+    official_api,
+    protocol,
+    protocol_export,
+    registry_xlsx,
+)
 from .db import get_session
 from .official_pipeline import clarification_result
 
@@ -34,23 +43,40 @@ router = APIRouter(prefix="/api/v1", tags=["api-v1"])
 # Лимиты загрузки из ТЗ (9.1, «Обработка ошибок при загрузке»).
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_PACKAGE_BYTES = 200 * 1024 * 1024
-REGISTRY_FIELDS = ("file_name", "object_id", "doc_stage", "document_code", "revision",
-                   "approval_status")
+# Перечень ИД, ред. 1.1 — обязательные поля реестра. Связь редакций задаётся
+# predecessor_id и/или successor_id (идентификаторы file_id этого же реестра).
+REGISTRY_FIELDS = ("file_id", "file_name", "object_id", "doc_stage", "discipline",
+                   "document_code", "revision", "approval_status")
 
 
 def _parse_registry(data: bytes, name: str) -> list[dict]:
-    """Реестр файлов (перечень ИД): JSON-массив или CSV с заголовком."""
+    """Реестр файлов (перечень ИД): JSON-массив, CSV или XLSX с заголовком."""
+    if name.lower().endswith(".xlsx") or data.startswith(b"PK\x03\x04"):
+        try:
+            rows = registry_xlsx.read_rows(data)
+        except registry_xlsx.RegistryFormatError as exc:
+            raise HTTPException(422, f"реестр XLSX не прочитан: {exc}") from exc
+        return _check_registry(rows)
     text = data.decode("utf-8-sig")
     if name.lower().endswith(".json") or text.lstrip().startswith(("[", "{")):
         rows = json.loads(text)
         rows = rows.get("files", []) if isinstance(rows, dict) else rows
     else:
         rows = list(csv.DictReader(io.StringIO(text)))
+    return _check_registry(rows)
+
+
+def _check_registry(rows) -> list[dict]:
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise HTTPException(422, "реестр должен быть списком записей о файлах")
     missing = [field for field in REGISTRY_FIELDS if rows and field not in rows[0]]
     if missing:
         raise HTTPException(422, "в реестре нет обязательных полей: " + ", ".join(missing))
+    ids = [str(row.get("file_id") or "").strip() for row in rows]
+    if any(not file_id for file_id in ids):
+        raise HTTPException(422, "в реестре есть запись без file_id")
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "file_id в реестре повторяется")
     return rows
 
 
@@ -63,9 +89,23 @@ def _metadata(row: dict, predecessor: int | None) -> dict:
             approval_date=row.get("approval_date") or None, predecessor_id=predecessor,
             signature_status=row.get("signature_status") or None,
             sheet_page_range=row.get("sheet_page_range") or None,
+            discipline=str(row.get("discipline") or "").strip() or None,
+            file_id=str(row.get("file_id") or "").strip() or None,
         ).model_dump(mode="json")
     except ValidationError as exc:
         raise ValueError("; ".join(err["msg"] for err in exc.errors())) from exc
+
+
+def _document_by_file_id(db: Session, object_id: str, file_id: str) -> models.Document | None:
+    """Документ объекта с данным file_id реестра (последний загруженный)."""
+    if not file_id:
+        return None
+    for document in (db.query(models.Document).order_by(models.Document.id.desc())):
+        metadata = document.source_metadata or {}
+        if metadata.get("file_id") == file_id and (
+                not object_id or metadata.get("object_id") == object_id):
+            return document
+    return None
 
 
 def _payload(db: Session, run: models.OfficialRun) -> dict:
@@ -146,6 +186,17 @@ def upload(background: BackgroundTasks,
         if expected_sha and expected_sha != converted.source_sha256:
             rejected.append({"file_name": name, "reason": "SHA-256 не совпадает с реестром"})
             continue
+        # Перечень ИД: «Перезапись файла под тем же file_id запрещена».
+        # Тот же файл повторно — допустим; другое содержимое под старым
+        # file_id — отказ: исправленный файл приходит новой записью.
+        previous = _document_by_file_id(db, str((row or {}).get("object_id") or ""),
+                                        str((row or {}).get("file_id") or "").strip())
+        if previous is not None and (previous.source_metadata or {}).get(
+                "source_sha256") != converted.source_sha256:
+            rejected.append({"file_name": name, "reason": "file_id уже занят файлом с другим "
+                             "содержимым; перезапись запрещена — загрузите файл с новым "
+                             "file_id и укажите predecessor_id"})
+            continue
         try:
             doc = main.ingest_pdf(db, converted.pdf, name, "before", background)
         except HTTPException as exc:
@@ -157,10 +208,26 @@ def upload(background: BackgroundTasks,
     # их в идентификаторы документов после того, как все файлы приняты.
     registry_ids = {str(row.get("file_id")): doc.id
                     for name, (doc, row, _) in stored.items() if row and row.get("file_id")}
+    # Связь можно задать с любой стороны: predecessor_id у новой редакции или
+    # successor_id у заменённой (перечень ИД). Ссылка может вести и на файл
+    # из прежней загрузки того же объекта.
+    successors = {str(row.get("successor_id")).strip(): str(row.get("file_id")).strip()
+                  for _, (_, row, _) in stored.items() if row and row.get("successor_id")}
+
+    def document_id(file_id: str) -> int | None:
+        if not file_id:
+            return None
+        if file_id in registry_ids:
+            return registry_ids[file_id]
+        found = _document_by_file_id(db, next(iter(object_ids), ""), file_id)
+        return found.id if found is not None else None
+
     snapshot_add = []
     for name, (doc, row, converted) in stored.items():
         if row is not None:
-            predecessor = registry_ids.get(str(row.get("predecessor_id") or ""))
+            own = str(row.get("file_id") or "").strip()
+            predecessor = (document_id(str(row.get("predecessor_id") or "").strip())
+                           or document_id(successors.get(own, "")))
             try:
                 doc.source_metadata = {
                     **_metadata(row, predecessor),
@@ -311,8 +378,9 @@ def inspection(process_id: int, db: Session = Depends(get_session)):
     proto = payload["protocol"]
     package = {"process_id": process_id,
                "versions": proto["versions"],
-               "input_files": [{"file_id": f"D{item['id']}", "sha256": item["digest"],
-                                **item["metadata"]} for item in run.input_snapshot or []],
+               "input_files": [{"sha256": item["digest"], **item["metadata"],
+                                "file_id": item["metadata"].get("file_id") or f"D{item['id']}"}
+                               for item in run.input_snapshot or []],
                "confirmed_violations": proto["tables"]["confirmed_violations"]}
     key = f"nadzor-{process_id}-v{len(run.protocol_history or []) + 1}"
     if run.sync_key != key:

@@ -14,7 +14,8 @@ from collections.abc import Callable, Sequence
 
 import pymupdf
 
-from . import facts_store
+from . import facts_store, trigger_thresholds
+from .geometry import normalized_bbox
 from .lean_analysis_runtime import run_lean_analysis
 from .llm import LlmConfig, call_llm_json, model_configured
 from .llm_runtime import parallel_map
@@ -232,18 +233,16 @@ def _verified_evidence(row: dict, selected: dict[str, list], fact_map: dict,
                     continue
                 pdf_page = pdf[page - 1]
                 matches = pdf_page.search_for(quote)
-                if not matches:
-                    # OCR-текст не обязан иметь PDF-координаты. Такой источник остаётся
-                    # видимым, но не выдаётся за полное геометрическое доказательство.
-                    bbox = None
-                else:
-                    rect = matches[0]
-                    width, height = pdf_page.rect.width, pdf_page.rect.height
-                    bbox = [rect.x0 / width, rect.y0 / height, rect.x1 / width, rect.y1 / height]
+                # OCR-текст не обязан иметь PDF-координаты. Такой источник остаётся
+                # видимым, но не выдаётся за полное геометрическое доказательство.
+                bbox = normalized_bbox(pdf_page, matches[0]) if matches else None
         except Exception:  # noqa: BLE001 — источник останется без геометрии, не исчезнет
             bbox = None
         evidence.append({
-            "document_id": document.id, "file_id": f"D{document.id}",
+            # file_id — идентификатор файла из реестра (перечень ИД): по нему
+            # доказательство сверяется с эталонной разметкой.
+            "document_id": document.id,
+            "file_id": _metadata(document).get("file_id") or f"D{document.id}",
             "sha256": document.digest, "stage": stage, "page": page,
             "role": "expected" if stage == "PD" else "actual",
             "bbox": bbox, "quote": quote,
@@ -282,27 +281,39 @@ def _rule(parameter: dict) -> dict:
     return rule
 
 
-def _first_number(value) -> float | None:
-    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value or ""))
-    return float(match.group().replace(",", ".")) if match else None
+def threshold_status(parameter: dict, actual, expected=None) -> str | None:
+    """Порог проверяется кодом, а не моделью (ТЗ 8.1).
 
-
-def threshold_status(parameter: dict, actual) -> str | None:
-    """Порог из таблицы Params (min_value, max_value) проверяется кодом, а не моделью.
-
-    OUT_OF_RANGE — фактическое значение вне допустимого диапазона; WITHIN —
-    в диапазоне; None — порог не задан или значение не число. Это сигнал для
-    инспектора, а не вывод о нарушении.
+    Порог берётся из таблицы Params (min_value, max_value — их задаёт
+    администратор); если там пусто — из текста логики срабатывания
+    (`trigger_thresholds`). OUT_OF_RANGE — значение вне допустимого
+    диапазона; DELTA_EXCEEDED — расхождение с проектным значением больше
+    допустимого; WITHIN — в пределах; None — порога нет или значение не
+    число. Это сигнал для инспектора, а не вывод о нарушении.
     """
+    parsed = trigger_thresholds.parse(str(parameter.get("trigger") or
+                                          parameter.get("trigger_logic") or ""))
+    unit = str(parsed.get("unit") or "")
     low, high = parameter.get("min_value"), parameter.get("max_value")
     if low is None and high is None:
-        return None
-    number = _first_number(actual)
+        low, high = parsed.get("min_value"), parsed.get("max_value")
+    number = trigger_thresholds.measure(actual, unit)
     if number is None:
         return None
-    if (low is not None and number < low) or (high is not None and number > high):
-        return "OUT_OF_RANGE"
-    return "WITHIN"
+    verdict = None
+    if low is not None or high is not None:
+        outside = (low is not None and number < low) or (high is not None and number > high)
+        verdict = "OUT_OF_RANGE" if outside else "WITHIN"
+    base = trigger_thresholds.measure(expected, unit)
+    if base is not None and ("max_delta_pct" in parsed or "max_abs_delta" in parsed):
+        delta = abs(number - base)
+        over = (("max_delta_pct" in parsed and base
+                 and delta / abs(base) * 100 > parsed["max_delta_pct"])
+                or ("max_abs_delta" in parsed and delta > parsed["max_abs_delta"]))
+        if over:
+            return "DELTA_EXCEEDED"
+        verdict = verdict or "WITHIN"
+    return verdict
 
 
 def _ref_evidence(
@@ -627,7 +638,8 @@ NOT_APPLICABLE — только если документы прямо пока�
                 "evidence": evidence,
                 "confidence": confidence,
                 "delta": numeric_delta(row.get("expected_value"), row.get("actual_value")),
-                "threshold_status": threshold_status(parameter, row.get("actual_value")),
+                "threshold_status": threshold_status(parameter, row.get("actual_value"),
+                                                     row.get("expected_value")),
                 "approved_change_ref": str(row.get("approved_change_ref") or "NONE"),
                 "stages_compared": sorted(stages),
                 # Стадия, которой нет в комплекте, при парном сравнении

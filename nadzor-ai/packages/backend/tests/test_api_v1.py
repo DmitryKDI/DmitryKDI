@@ -7,6 +7,7 @@
 import hashlib
 import json
 import sys
+import uuid
 from pathlib import Path
 
 import pymupdf
@@ -15,7 +16,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import api_v1, models, official_api  # noqa: E402
-from app.db import get_session  # noqa: E402
+from app.db import (
+    SessionLocal,  # noqa: E402
+    get_session,  # noqa: E402
+)
 from app.main import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -39,10 +43,20 @@ def _registry(rows: list[dict]) -> tuple:
     return ("registry.json", json.dumps(rows).encode(), "application/json")
 
 
+# file_id уникален на прогон: база тестов общая, а перезапись file_id другим
+# содержимым сервис запрещает (перечень ИД).
+_IDS: dict[str, str] = {}
+
+
 def _row(name: str, stage: str, **extra) -> dict:
-    return {"file_id": name, "file_name": name, "object_id": "OBJ-1", "doc_stage": stage,
-            "document_code": f"CODE-{stage}", "revision": "1",
-            "approval_status": "APPROVED", "approval_date": "2026-01-01", **extra}
+    for key in ("predecessor_id", "successor_id"):
+        if key in extra:
+            extra[key] = _IDS[extra[key]]
+    _IDS[name] = f"{name}-{uuid.uuid4().hex[:8]}"
+    return {"file_id": _IDS[name], "file_name": name, "object_id": "OBJ-1",
+            "doc_stage": stage, "discipline": "АР", "document_code": f"CODE-{stage}",
+            "revision": "1", "approval_status": "APPROVED", "approval_date": "2026-01-01",
+            **extra}
 
 
 def _upload(files: list[tuple[str, bytes]], registry=None, **form):
@@ -194,3 +208,77 @@ def test_protocol_exports_in_every_format(fmt, magic):
     response = client.get(f"/api/v1/processes/{pid}/export?format={fmt}")
     assert response.status_code == 200, response.text
     assert response.content.startswith(magic)
+
+
+def _xlsx(rows: list[dict]) -> bytes:
+    """Минимальный XLSX с реестром (inline-строки), как его сохраняет табличный редактор."""
+    import io
+    import zipfile
+
+    header = list(rows[0])
+
+    def cell(ref: str, value: str) -> str:
+        text = str(value).replace("&", "&amp;").replace("<", "&lt;")
+        return f'<c r="{ref}" t="inlineStr"><is><t>{text}</t></is></c>'
+
+    def col(index: int) -> str:
+        return chr(ord("A") + index)
+
+    lines = []
+    for number, values in enumerate([header] + [[row[key] for key in header] for row in rows],
+                                    start=1):
+        cells = "".join(cell(f"{col(i)}{number}", value) for i, value in enumerate(values))
+        lines.append(f'<row r="{number}">{cells}</row>')
+    sheet = ('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             f'<sheetData>{"".join(lines)}</sheetData></worksheet>')
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", sheet)
+    return stream.getvalue()
+
+
+def test_registry_is_accepted_as_xlsx_with_discipline_and_file_id():
+    rows = [_row("x-pd.pdf", "PD"), _row("x-rd.pdf", "RD")]
+    body = _upload([("x-pd.pdf", _pdf("xp")), ("x-rd.pdf", _pdf("xr"))],
+                   ("registry.xlsx", _xlsx(rows),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+    assert body.status_code == 200, body.text
+    assert len(body.json()["accepted"]) == 2
+    with SessionLocal() as db:
+        doc = db.get(models.Document, body.json()["accepted"][0]["document_id"])
+        assert doc.source_metadata["discipline"] == "АР"
+        assert doc.source_metadata["file_id"] == rows[0]["file_id"]
+    print("OK: реестр в XLSX принят; раздел и file_id сохранены (перечень ИД)")
+
+
+def test_registry_without_mandatory_fields_is_refused():
+    row = _row("y.pdf", "PD")
+    del row["discipline"]
+    response = _upload([("y.pdf", _pdf("y"))], _registry([row]))
+    assert response.status_code == 422 and "discipline" in response.text
+    print("OK: реестр без обязательного поля отклонён с названием поля")
+
+
+def test_successor_id_links_revisions_like_predecessor_id():
+    old = _row("s-old.pdf", "PD", approval_status="SUPERSEDED")
+    new = _row("s-new.pdf", "PD")
+    old["successor_id"] = new["file_id"]
+    body = _upload([("s-old.pdf", _pdf("so")), ("s-new.pdf", _pdf("sn"))],
+                   _registry([old, new])).json()
+    ids = {item["file_name"]: item["document_id"] for item in body["accepted"]}
+    with SessionLocal() as db:
+        assert db.get(models.Document, ids["s-new.pdf"]).source_metadata["predecessor_id"] \
+            == ids["s-old.pdf"]
+    print("OK: связь редакций задаётся и successor_id заменённой")
+
+
+def test_file_id_cannot_be_overwritten_with_other_content():
+    row = _row("w.pdf", "PD")
+    content = _pdf("first")
+    first = _upload([("w.pdf", content)], _registry([row]))
+    assert first.status_code == 200
+    again = _upload([("w.pdf", content)], _registry([row]))
+    assert again.status_code == 200, "тот же файл повторно допустим"
+    other = _upload([("w.pdf", _pdf("changed"))], _registry([row]))
+    assert other.status_code == 422 and "перезапись запрещена" in other.text
+    print("OK: другое содержимое под прежним file_id отклоняется (перечень ИД)")

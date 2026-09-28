@@ -97,9 +97,12 @@ POST /api/v1/inspection/{process_id}          пакет для ИАИС «Ри�
 | Полнота | `COMPLETE`, `MISSING_EVIDENCE`, `NOT_APPLICABLE`, `NOT_COMPARABLE`, `CLARIFICATION_REQUIRED` |
 | Находка | `CANDIDATE`, `NEGATIVE_VERIFIED`, `CONFIRMED_VIOLATION` (только инспектор), `SUSPICION` |
 
-Реестр файлов (перечень ИД): `file_id`, `file_name`, `object_id`, `doc_stage`, `document_code`,
-`revision`, `approval_status`, `approval_date`, `predecessor_id`, необязательно `sha256`,
-`sheet_page_range`, `signature_status`. Без реестра пакет принимается, но каждый параметр
+Реестр файлов (перечень ИД, ред. 1.1) — JSON, CSV или XLSX. Обязательные поля: `file_id`,
+`file_name`, `object_id`, `doc_stage`, `discipline`, `document_code`, `revision`,
+`approval_status`; дополнительно `approval_date`, `predecessor_id` и/или `successor_id`
+(связь редакций по `file_id`, в том числе с файлами прежних загрузок объекта), `sha256`,
+`sheet_page_range`, `signature_status`. Перезапись `file_id` файлом с другим содержимым
+запрещена: исправленный файл приходит новой записью. Без реестра пакет принимается, но каждый параметр
 получает `CLARIFICATION_REQUIRED`. Лимиты: 50 МБ на файл, 200 МБ на пакет. Форматы — PDF,
 DOCX, XML (по содержимому, а не расширению): DOCX и XML при приёме приводятся к PDF, исходный
 формат и его SHA-256 сохраняются в метаданных; XML с DTD не принимается (защита от XXE).

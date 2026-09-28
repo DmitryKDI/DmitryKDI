@@ -41,6 +41,10 @@ class MetadataInput(BaseModel):
     predecessor_id: int | None = None
     signature_status: str | None = None
     sheet_page_range: str | None = None
+    # Перечень ИД, ред. 1.1: раздел/марка комплекта и идентификатор файла из
+    # реестра. file_id — ключ файла в доказательствах и эталонной разметке.
+    discipline: str | None = None
+    file_id: str | None = None
 
     @field_validator("object_id", "document_code", "revision")
     @classmethod

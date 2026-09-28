@@ -86,3 +86,33 @@ def test_normative_base_and_rules_are_validated(act_as):
         "expected": "present(M-002)"}).status_code == 403
     assert client.get("/api/v1/admin/rules").status_code == 200
     print("OK: нормы и правила заводит администратор; ошибка в выражении отклоняется")
+
+
+def test_thresholds_are_parsed_from_trigger_text():
+    from app import trigger_thresholds as t
+
+    assert t.parse("Дельта общей площади между ПД и РД (или ИД) > 1%.") == {"max_delta_pct": 1.0}
+    assert t.parse("Ширина пожарного проезда в РД менее 4.2 м.") == {"min_value": 4.2,
+                                                                     "unit": "м"}
+    assert t.parse("Сужение временных дорог < 3.5-4.5 м.")["min_value"] == 3.5
+    assert t.parse("Высота порога > 0.014 м (СП 00.00000).") == {"max_value": 0.014,
+                                                                  "unit": "м"}
+    assert t.parse("Смещение точки подключения относительно ПД > 0.5 м.")["max_abs_delta"] == 0.5
+    # Номер нормы — не порог; доля от целого — не расхождение стадий;
+    # два порога для разных элементов — не разбираются.
+    assert t.parse("Изменение диаметров (СП 60.13330).") == {}
+    assert t.parse("Уменьшение доли мест (< 10% от общего числа).") == {}
+    assert t.parse("Высота коридоров < 2.0 м или дверей < 1.9 м.") == {}
+    print("OK: пороги извлекаются из текста правила только однозначные")
+
+
+def test_trigger_thresholds_are_checked_by_code_with_units():
+    corridor = {"trigger": "Снижение ширины коридора менее 1.2 м."}
+    assert threshold_status(corridor, "1150 мм") == "OUT_OF_RANGE"
+    assert threshold_status(corridor, "1,4 м") == "WITHIN"
+    area = {"trigger": "Дельта общей площади между ПД и РД > 1%."}
+    assert threshold_status(area, "1015 м²", "1000 м²") == "DELTA_EXCEEDED"
+    assert threshold_status(area, "1005 м²", "1000 м²") == "WITHIN"
+    admin = {"trigger": "Ширина менее 1.2 м.", "min_value": 1.0}
+    assert threshold_status(admin, "1.1 м") == "WITHIN", "порог администратора приоритетнее"
+    print("OK: выход за порог и расхождение стадий проверяются кодом, с учётом единиц")

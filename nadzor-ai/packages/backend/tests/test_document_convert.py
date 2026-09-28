@@ -4,6 +4,7 @@
 тем же разбором, что и обычный PDF, — иначе приём формата был бы видимостью.
 """
 import hashlib
+import uuid
 import io
 import json
 import sys
@@ -83,8 +84,8 @@ def test_broken_docx_is_refused_with_a_reason():
 def test_api_accepts_docx_and_records_the_source(monkeypatch):
     monkeypatch.setattr(official_api, "_execute", lambda run_id: None)
     data = _docx()
-    registry = [{"file_id": "a", "file_name": "act.docx", "object_id": "OBJ-D",
-                 "doc_stage": "ID", "document_code": "ID-1", "revision": "1",
+    registry = [{"file_id": f"a-{uuid.uuid4().hex[:8]}", "file_name": "act.docx",
+                 "object_id": "OBJ-D", "doc_stage": "ID", "discipline": "АР", "document_code": "ID-1", "revision": "1",
                  "approval_status": "APPROVED",
                  "sha256": hashlib.sha256(data).hexdigest()}]
     body = client.post("/api/v1/documents/upload", files=[

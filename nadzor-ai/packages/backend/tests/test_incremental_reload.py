@@ -6,6 +6,7 @@
 """
 import json
 import sys
+import uuid
 from pathlib import Path
 
 import pymupdf
@@ -31,8 +32,8 @@ def _pdf(text: str) -> bytes:
 
 
 def _upload(name: str, stage: str, approval: str, process_id=None) -> dict:
-    registry = [{"file_id": name, "file_name": name, "object_id": "OBJ-INC",
-                 "doc_stage": stage, "document_code": f"C-{stage}-{name}", "revision": "1",
+    registry = [{"file_id": f"{name}-{uuid.uuid4().hex[:8]}", "file_name": name,
+                 "object_id": "OBJ-INC", "doc_stage": stage, "discipline": "АР", "document_code": f"C-{stage}-{name}", "revision": "1",
                  "approval_status": approval, "approval_date": "2026-01-01"}]
     data = {"process_id": str(process_id)} if process_id else {}
     return client.post("/api/v1/documents/upload", files=[

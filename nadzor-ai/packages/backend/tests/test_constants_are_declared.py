@@ -90,6 +90,8 @@ DECLARED: dict[str, str] = {
     "official_api.EXECUTE_RETRIES": BUDGET,
     # Фоновые задачи: как часто проверять сроки и каким периодом строить отчёт.
     "jobs.POLL_S": BUDGET,
+    # Реестр XLSX: сколько распаковывать одной части — защита от ZIP-бомбы.
+    "registry_xlsx.MAX_PART_BYTES": BUDGET,
     # Эксплуатация (ТЗ 12–13): сроки хранения логов и копий, периоды проверок —
     # значения из ТЗ; размеры кусков и тайм-ауты — бюджет.
     "observability.LOG_RETENTION_DAYS": BUDGET,
