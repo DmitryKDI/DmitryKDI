@@ -71,7 +71,8 @@ def test_missing_model_is_reported_for_every_parameter_and_not_as_clean_result(m
         [document(1, "PD"), document(2, "RD")],
         LlmConfig(),
     )
-    assert result["coverage"] == {"total": 106, "completed": 0, "not_run": 106}
+    # ТЗ 9.2: проверяются все 132 параметра, а не только высокого приоритета.
+    assert result["coverage"] == {"total": 132, "completed": 0, "not_run": 132}
     assert all(item["completeness_status"] == "CLARIFICATION_REQUIRED"
                for item in result["checks"])
     assert all(item["finding_status"] is None and item["technical_status"] == "not_run"

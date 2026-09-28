@@ -88,6 +88,13 @@ DECLARED: dict[str, str] = {
     "auth.SCRYPT_P": BUDGET,
     "api_v1.MAX_PACKAGE_BYTES": BUDGET,
     "official_api.EXECUTE_RETRIES": BUDGET,
+    # Свободный поиск (ТЗ 9.5): значимое слово и общий корень — правило языка;
+    # правило трёх сигм и минимум объектов для сравнения — общепринятая
+    # статистика и объём выборки, а не порог, подобранный по примеру.
+    "suspicions.SIGNIFICANT_WORD_LETTERS": LANGUAGE,
+    "suspicions.COMMON_STEM_LETTERS": LANGUAGE,
+    "suspicions.MIN_HISTORY_OBJECTS": BUDGET,
+    "suspicions.ANOMALY_SIGMAS": BUDGET,
     # Все одного устройства: число в коде — умолчание, переменная окружения
     # — способ изменить его на месте, не пересобирая программу. Вид от
     # этого не меняется: ошибка такого числа стоит времени и денег за

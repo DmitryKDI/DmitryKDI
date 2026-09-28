@@ -39,7 +39,7 @@ export interface OfficialParameter {
   name: string
   section: string
   unit: string | null
-  priority: 'HIGH' | 'MEDIUM'
+  priority: 'HIGH' | 'MEDIUM' | 'LOW'
   source_pd: string
   source_rd: string
   source_id: string
@@ -90,7 +90,7 @@ export interface OfficialCheck {
   finding_id: string
   parameter_code: string
   parameter_name: string
-  priority: 'HIGH' | 'MEDIUM'
+  priority: 'HIGH' | 'MEDIUM' | 'LOW'
   completeness_status: string
   finding_status: FindingStatus | null
   expected_value: string | null
@@ -117,6 +117,8 @@ export interface OfficialRunResult {
     candidates: OfficialCheck[]
     performance: { duration_seconds?: number }
   }
+  /** Свободный поиск гипотез (ТЗ 9.5); сами гипотезы — отдельным запросом. */
+  free_search?: { status: 'completed' | 'error'; reason: string }
 }
 
 export interface OfficialRun {
@@ -167,6 +169,27 @@ export interface DecisionInput {
   reason_code?: string
 }
 
+/** Гипотеза свободного поиска в структуре ТЗ 9.5. */
+export interface Suspicion {
+  suspicion_id: number
+  discovery_method: 'LOGICAL_ANALYSIS' | 'SEMANTIC_DISSONANCE' | 'NORMATIVE_ANALYSIS' | 'ML_PATTERN_ANALYSIS'
+  confidence: number | null
+  description: string
+  pd_reference: string
+  rd_reference: string
+  review_priority: string
+  normative_base: string
+  finding_status: 'SUSPICION' | 'CANDIDATE' | 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED'
+  inspector_status: string
+  inspector_comment: string
+}
+
+export interface SuspicionReview {
+  action: 'promote' | 'dismiss' | 'confirm' | 'reject'
+  comment?: string
+  reason_code?: string
+}
+
 export interface ProviderSettings {
   provider: string
   model: string
@@ -207,12 +230,12 @@ export const officialApi = {
   deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, {
     method: 'DELETE',
   }),
-  createRun: (object_id: string, document_ids: number[], include_medium: boolean) => request<OfficialRun>(
+  createRun: (object_id: string, document_ids: number[]) => request<OfficialRun>(
     '/official/runs',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ object_id, document_ids, include_medium }),
+      body: JSON.stringify({ object_id, document_ids }),
     },
   ),
   run: (id: number) => request<OfficialRun>(`/official/runs/${id}`),
@@ -231,6 +254,11 @@ export const officialApi = {
   unfinalize: (id: number, reason: string) => request<OfficialRun>(
     `/official/runs/${id}/unfinalize`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) },
+  ),
+  suspicions: (id: number) => request<Suspicion[]>(`/official/runs/${id}/suspicions`),
+  reviewSuspicion: (id: number, suspicionId: number, input: SuspicionReview) => request<Suspicion>(
+    `/official/runs/${id}/suspicions/${suspicionId}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
   ),
   pageImageUrl: (documentId: number, page: number) => `/backend/page-image/${documentId}/${page}`,
 }

@@ -13,7 +13,9 @@ import datetime as dt
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -134,6 +136,9 @@ class Settings(Base):
     # но в килобайтах предел можно задать и для маленького стенда, и
     # проверить тестом, не собирая гигабайтный файл ради проверки лимита.
     retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    # Номер правки матрицы администратором: версия матрицы в протоколе
+    # меняется вместе с порогами и ссылками (ТЗ 9.2, п.1).
+    matrix_revision: Mapped[int] = mapped_column(Integer, default=0)
     max_upload_kb: Mapped[int] = mapped_column(Integer, default=512 * 1024)
     max_pages: Mapped[int] = mapped_column(Integer, default=5000)
     part_kb: Mapped[int] = mapped_column(Integer, default=32 * 1024)
@@ -177,3 +182,88 @@ class AuditLog(Base):
                                                    index=True)
     ip_address: Mapped[str] = mapped_column(String, default="")
     user_agent: Mapped[str] = mapped_column(String, default="")
+
+
+class Param(Base):
+    """Параметр матрицы контроля (ТЗ 8.1, таблица Params)."""
+    __tablename__ = "params"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    section: Mapped[str] = mapped_column(String(50))
+    parameter_name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    unit: Mapped[str] = mapped_column(String(20), default="")
+    source_pd: Mapped[str] = mapped_column(Text, default="")
+    source_rd: Mapped[str] = mapped_column(Text, default="")
+    source_id: Mapped[str] = mapped_column(Text, default="")
+    trigger_logic: Mapped[str] = mapped_column(Text, default="")
+    review_priority: Mapped[str] = mapped_column(String(20), default="MEDIUM")
+    sp_reference: Mapped[str] = mapped_column(Text, default="")
+    gost_reference: Mapped[str] = mapped_column(Text, default="")
+    fz_reference: Mapped[str] = mapped_column(Text, default="")
+    other_normative: Mapped[str] = mapped_column(Text, default="")
+    data_type: Mapped[str] = mapped_column(String(20), default="string")
+    min_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    regex_pattern: Mapped[str] = mapped_column(String(255), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class NormativeBase(Base):
+    """База нормативных документов (ТЗ 10, таблица Normative_Base)."""
+    __tablename__ = "normative_base"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_name: Mapped[str] = mapped_column(Text)
+    document_number: Mapped[str] = mapped_column(String)
+    section: Mapped[str] = mapped_column(String, default="")
+    # Код параметра матрицы, к которому относится норма (пусто — общая норма).
+    parameter_name: Mapped[str] = mapped_column(String, default="")
+    min_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    effective_from: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    effective_to: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class LogicalRule(Base):
+    """База логических правил для свободного поиска (ТЗ 10, таблица Logical_Rules)."""
+    __tablename__ = "logical_rules"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rule_name: Mapped[str] = mapped_column(String)
+    condition: Mapped[str] = mapped_column(Text)
+    expected: Mapped[str] = mapped_column(Text)
+    normative_base: Mapped[str] = mapped_column(Text, default="")
+    review_priority: Mapped[str] = mapped_column(String(20), default="MEDIUM")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class Suspicion(Base):
+    """Подозрения свободного поиска (ТЗ 10, таблица Suspicions; 9.5).
+
+    Не нарушение: не входит в число нарушений и не идёт в обучающую выборку.
+    В CANDIDATE переводится только с источниками и координатами на листах
+    обеих стадий; нарушением её делает только решение инспектора.
+    """
+    __tablename__ = "suspicions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String)
+    run_id: Mapped[int] = mapped_column(ForeignKey("official_runs.id"))
+    discovery_method: Mapped[str] = mapped_column(String(40))
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    description: Mapped[str] = mapped_column(Text)
+    pd_reference: Mapped[str] = mapped_column(String, default="")
+    rd_reference: Mapped[str] = mapped_column(String, default="")
+    review_priority: Mapped[str] = mapped_column(String(20), default="MEDIUM")
+    normative_base: Mapped[str] = mapped_column(Text, default="")
+    parameter_code: Mapped[str] = mapped_column(String, default="")
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    finding_status: Mapped[str] = mapped_column(String(30), default="SUSPICION")
+    inspector_status: Mapped[str] = mapped_column(String(30), default="PENDING")
+    inspector_comment: Mapped[str] = mapped_column(Text, default="")
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)

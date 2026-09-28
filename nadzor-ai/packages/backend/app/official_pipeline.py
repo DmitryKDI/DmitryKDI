@@ -18,7 +18,7 @@ from . import facts_store
 from .lean_analysis_runtime import run_lean_analysis
 from .llm import LlmConfig, call_llm_json, model_configured
 from .llm_runtime import parallel_map
-from .parameter_catalog import CATALOG_VERSION, list_parameters
+from .parameter_catalog import current_matrix_version, list_parameters
 from .protocol import numeric_delta
 from .vision import UNTRUSTED_INPUT_RULE
 
@@ -142,17 +142,30 @@ def _relevant_facts(parameters: list[dict], facts_by_document: dict[int, list[di
         limit = max(1, int(os.environ.get("NADZOR_OFFICIAL_PAGES_PER_STAGE", "8")))
     except ValueError:
         limit = 8
+    # Шаблоны разбора из таблицы Params (ТЗ 8.1, regex_pattern): страница, где
+    # шаблон нашёл значение, ставится выше страниц, совпавших только словами.
+    patterns = []
+    for item in parameters:
+        raw = str(item.get("regex_pattern") or "").strip()
+        if not raw:
+            continue
+        try:
+            patterns.append(re.compile(raw, re.IGNORECASE))
+        except re.error:
+            continue  # ошибочный шаблон администратора не роняет проверку
     selected = {}
     for document_id, facts in facts_by_document.items():
         ranked = []
         for fact in facts:
             text = fact["text"].casefold()
             score = sum(term in text for term in terms)
+            regex_hits = sum(bool(pattern.search(fact["text"])) for pattern in patterns)
             # Нулевое совпадение не означает нерелевантность: OCR мог исказить
             # заголовок, а значение остаться читаемым. Поэтому здесь ранжирование,
             # а не отсев страниц.
-            ranked.append((score, -fact["page"], fact))
-        selected[document_id] = [item[2] for item in sorted(ranked, reverse=True)[:limit]]
+            ranked.append((regex_hits, score, -fact["page"], fact))
+        selected[document_id] = [item[-1] for item in sorted(ranked, key=lambda row: row[:3],
+                                                              reverse=True)[:limit]]
     return selected
 
 
@@ -218,7 +231,45 @@ def _empty_check(parameter: dict, completeness: str, explanation: str,
         "finding_status": None, "expected_value": None, "actual_value": None,
         "explanation": explanation, "evidence": [], "technical_status": technical,
         "review_history": [], "confidence": None,
+        "section": parameter.get("section"),
+        # Нормативное основание параметра из таблицы Params (ТЗ 8.1).
+        "normative_refs": {key: parameter.get(key) for key in (
+            "sp_reference", "gost_reference", "fz_reference", "other_normative")
+            if parameter.get(key)},
     }
+
+
+def _rule(parameter: dict) -> dict:
+    """Правило параметра для модели: поля матрицы и пороги администратора."""
+    rule = {key: parameter.get(key) for key in (
+        "code", "name", "unit", "source_pd", "source_rd", "source_id", "trigger")}
+    for key in ("data_type", "min_value", "max_value"):
+        if parameter.get(key) not in (None, ""):
+            rule[key] = parameter[key]
+    return rule
+
+
+def _first_number(value) -> float | None:
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value or ""))
+    return float(match.group().replace(",", ".")) if match else None
+
+
+def threshold_status(parameter: dict, actual) -> str | None:
+    """Порог из таблицы Params (min_value, max_value) проверяется кодом, а не моделью.
+
+    OUT_OF_RANGE — фактическое значение вне допустимого диапазона; WITHIN —
+    в диапазоне; None — порог не задан или значение не число. Это сигнал для
+    инспектора, а не вывод о нарушении.
+    """
+    low, high = parameter.get("min_value"), parameter.get("max_value")
+    if low is None and high is None:
+        return None
+    number = _first_number(actual)
+    if number is None:
+        return None
+    if (low is not None and number < low) or (high is not None and number > high):
+        return "OUT_OF_RANGE"
+    return "WITHIN"
 
 
 def _ref_evidence(
@@ -366,9 +417,14 @@ def run_official_analysis(
     cancelled: Callable[[], bool] | None = None,
     graphic_runner: Callable[..., dict] | None = run_lean_analysis,
 ) -> dict:
-    """Возвращает результат по каждому параметру; сбой пачки виден отдельно."""
-    parameters = [item for item in list_parameters()
-                  if item["priority"] == "HIGH" or include_medium]
+    """Возвращает результат по каждому параметру; сбой пачки виден отдельно.
+
+    Сверяются все активные параметры матрицы (ТЗ 9.2, п.3: «для каждого
+    параметра из 132»). Приоритет влияет только на очередность экспертной
+    проверки, а не на то, проверяется ли параметр. Флаг include_medium
+    оставлен для совместимости вызова и на состав проверки не влияет.
+    """
+    parameters = list_parameters()
     total = len(parameters)
     selected, problems = select_current_documents(documents)
     object_id = str(_metadata(documents[0]).get("object_id") or "") if documents else ""
@@ -409,6 +465,7 @@ def run_official_analysis(
     selection_note = "; ".join(
         f"{stage}: {problem}" for stage, problem in problems.items() if stage in selected
     )
+    matrix_version = current_matrix_version()
     size = _batch_size()
     batches = [(start, parameters[start:start + size]) for start in range(0, total, size)]
 
@@ -417,9 +474,7 @@ def run_official_analysis(
         batch_error = ""
         if cancelled and cancelled():
             return start, batch, {}, "проверка остановлена инспектором"
-        rules = [{key: item[key] for key in (
-            "code", "name", "unit", "source_pd", "source_rd", "source_id", "trigger"
-        )} for item in batch]
+        rules = [_rule(item) for item in batch]
         relevant = _relevant_facts(batch, facts_by_document)
         source = "\n".join(
             _source_text(str(_metadata(document).get("stage")), document,
@@ -446,7 +501,7 @@ NOT_APPLICABLE — только если документы прямо пока�
             answer = call_llm_json(
                 config, "Ты помощник инспектора. Машинный ответ — гипотеза для проверки.",
                 prompt, operation="text_verify", source_digest=digest,
-                prompt_version=f"official-matrix-{CATALOG_VERSION}",
+                prompt_version=f"official-matrix-{matrix_version}",
             )
             rows = {str(row.get("parameter_code")): row
                     for row in answer.get("checks", []) if isinstance(row, dict)}
@@ -535,6 +590,7 @@ NOT_APPLICABLE — только если документы прямо пока�
                 "evidence": evidence,
                 "confidence": confidence,
                 "delta": numeric_delta(row.get("expected_value"), row.get("actual_value")),
+                "threshold_status": threshold_status(parameter, row.get("actual_value")),
                 "approved_change_ref": str(row.get("approved_change_ref") or "NONE"),
                 "stages_compared": sorted(stages),
                 # Стадия, которой нет в комплекте, при парном сравнении
@@ -571,7 +627,7 @@ NOT_APPLICABLE — только если документы прямо пока�
 def _result(object_id: str, checks: list[dict]) -> dict:
     completed = sum(item["technical_status"] == "completed" for item in checks)
     return {
-        "matrix_version": CATALOG_VERSION, "object_id": object_id, "checks": checks,
+        "matrix_version": current_matrix_version(), "object_id": object_id, "checks": checks,
         "coverage": {"total": len(checks), "completed": completed,
                      "not_run": len(checks) - completed},
         "graphic_analysis": {
@@ -590,8 +646,7 @@ def clarification_result(object_id: str, reason: str, *, include_medium: bool = 
     (например, пакет без реестра файлов): отчёт по каждому параметру
     говорит, почему сравнения не было, а не выглядит пустым.
     """
-    parameters = [item for item in list_parameters()
-                  if item["priority"] == "HIGH" or include_medium]
+    parameters = list_parameters()
     checks = [_empty_check(item, "CLARIFICATION_REQUIRED", reason) for item in parameters]
     result = _result(object_id, checks)
     result["document_selection"] = {"selected": {}, "problems": {"ALL": reason}}

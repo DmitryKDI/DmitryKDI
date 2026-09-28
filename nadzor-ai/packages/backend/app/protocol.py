@@ -93,10 +93,19 @@ def _all_findings(result: dict | None) -> list[dict]:
         (result.get("graphic_analysis") or {}).get("candidates") or [])
 
 
+def _free_items(result: dict | None) -> list[dict]:
+    return list(((result or {}).get("free_search") or {}).get("items") or [])
+
+
 def pending_candidates(result: dict | None) -> list[str]:
-    """Кандидаты без решения инспектора — финализация без них запрещена."""
+    """Кандидаты без решения инспектора — финализация без них запрещена.
+
+    Гипотеза свободного поиска, переведённая в CANDIDATE, — такой же кандидат.
+    """
     return [item["finding_id"] for item in _all_findings(result)
-            if item.get("finding_status") == "CANDIDATE"]
+            if item.get("finding_status") == "CANDIDATE"] + [
+        f"S-{item.get('suspicion_id')}" for item in _free_items(result)
+        if item.get("finding_status") == "CANDIDATE"]
 
 
 def process_status(run_status: str, finalized: bool, result: dict | None,
@@ -206,6 +215,27 @@ def evidence_card(item: dict, documents: dict[int, dict]) -> dict:
     }
 
 
+def suspicion_card(item: dict, documents: dict[int, dict]) -> dict:
+    """Гипотеза свободного поиска в структуре ТЗ 9.5 и в форме карточки протокола."""
+    return {
+        "finding_id": f"S-{item.get('suspicion_id')}",
+        "suspicion_id": item.get("suspicion_id"),
+        "discovery_method": item.get("discovery_method"),
+        "parameter_code": item.get("parameter_code"),
+        "parameter_name": item.get("description"),
+        "description": item.get("description"),
+        "finding_status": item.get("finding_status"),
+        "pd_reference": item.get("pd_reference"),
+        "rd_reference": item.get("rd_reference"),
+        "normative_base": item.get("normative_base"),
+        "review_priority": item.get("review_priority"),
+        "confidence": item.get("confidence"),
+        "sources": [_source(evidence, documents) for evidence in item.get("evidence") or []],
+        "inspector_decision": item.get("inspector_status"),
+        "inspector_comment": item.get("inspector_comment"),
+    }
+
+
 def build(result: dict | None, snapshot: list[dict], *, run_status: str,
           finalized: bool, decisions: int, model_version: str) -> dict:
     """Протокол целиком: загрузка, сценарий, пять таблиц, версии."""
@@ -219,6 +249,10 @@ def build(result: dict | None, snapshot: list[dict], *, run_status: str,
 
     def cards(status: str) -> list[dict]:
         return [evidence_card(item, documents) for item in findings
+                if item.get("finding_status") == status]
+
+    def free(status: str) -> list[dict]:
+        return [suspicion_card(item, documents) for item in _free_items(result)
                 if item.get("finding_status") == status]
 
     status = process_status(run_status, finalized, result, decisions)
@@ -237,11 +271,16 @@ def build(result: dict | None, snapshot: list[dict], *, run_status: str,
                 "technical_status": item.get("technical_status"),
                 "reason": item.get("explanation"),
             } for item in findings],
-            "candidates": cards("CANDIDATE"),
-            "confirmed_violations": cards("CONFIRMED_VIOLATION"),
-            "negative_verified": cards("NEGATIVE_VERIFIED"),
-            "suspicions": cards("SUSPICION"),
+            "candidates": cards("CANDIDATE") + free("CANDIDATE"),
+            "confirmed_violations": cards("CONFIRMED_VIOLATION") + free("CONFIRMED_VIOLATION"),
+            "negative_verified": cards("NEGATIVE_VERIFIED") + free("NEGATIVE_VERIFIED"),
+            # Графические находки без полного набора доказательств и гипотезы
+            # свободного поиска (ТЗ 9.5) — одна таблица, ни то ни другое не нарушение.
+            "suspicions": cards("SUSPICION") + free("SUSPICION"),
         },
+        "free_search": {key: value for key, value in
+                        ((result or {}).get("free_search") or {"status": "not_run"}).items()
+                        if key != "items"},
         # Покрываемость распознавания по документам: доля и номера листов,
         # которые машина не прочитала или прочитала плохо.
         "ocr_quality": (result or {}).get("ocr_quality") or {},

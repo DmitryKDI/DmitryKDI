@@ -13,11 +13,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from . import auth, models, protocol
+from . import auth, free_search, models, protocol
 from .db import SessionLocal, get_session
 from .llm import LlmConfig, local_config
 from .official_pipeline import run_official_analysis, select_current_documents
-from .parameter_catalog import CATALOG_VERSION, list_parameters
+from .parameter_catalog import current_matrix_version, list_parameters
 
 router = APIRouter(prefix="/official", tags=["official"])
 STAGES = {"PD", "RD", "ID"}
@@ -64,6 +64,8 @@ class MetadataInput(BaseModel):
 class RunInput(BaseModel):
     object_id: str
     document_ids: list[int]
+    # Не влияет на проверку: ТЗ 9.2 требует все активные параметры матрицы.
+    # Поле оставлено, чтобы прежние клиенты не получали ошибку.
     include_medium: bool = False
 
 
@@ -77,6 +79,16 @@ class DecisionInput(BaseModel):
     expected_version: int
     # Кодированная причина (ТЗ 9.3): обязательна при отклонении кандидата.
     reason_code: str = ""
+
+
+class SuspicionReview(BaseModel):
+    # promote — перевести в CANDIDATE (нужны источники с координатами в ПД и
+    # в РД/ИД); dismiss — отклонить гипотезу; confirm / reject — решение по
+    # уже переведённому кандидату (ТЗ 9.5).
+    action: str
+    comment: str = ""
+    reason_code: str = ""
+    evidence: list[dict] | None = None
 
 
 class FinalizeInput(BaseModel):
@@ -167,7 +179,7 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
 
 @router.get("/parameters")
 def parameters():
-    return {"matrix_version": CATALOG_VERSION, "parameters": list_parameters()}
+    return {"matrix_version": current_matrix_version(), "parameters": list_parameters()}
 
 
 @router.get("/documents")
@@ -328,6 +340,8 @@ def _execute(run_id: int) -> None:
                 "reason": "изменился состав актуальных редакций; каждый параметр "
                           "матрицы читает все три стадии, поэтому затронуты все",
             }
+        # Свободный поиск гипотез вне матрицы (ТЗ 9.5) — по тем же редакциям.
+        result["free_search"] = free_search.run(db, run, documents, result)
         run.result = result
         run.completed = result["coverage"]["total"]
         run.total = result["coverage"]["total"]
@@ -498,6 +512,65 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session),
     db.commit()
     db.refresh(row)
     return _run_dict(db, row)
+
+
+SUSPICION_ACTIONS = {
+    # действие: (допустимый текущий статус находки, новый статус, статус инспектора)
+    "promote": ("SUSPICION", "CANDIDATE", "PROMOTED"),
+    "dismiss": ("SUSPICION", "SUSPICION", "DISMISSED"),
+    "confirm": ("CANDIDATE", "CONFIRMED_VIOLATION", "CONFIRMED"),
+    "reject": ("CANDIDATE", "NEGATIVE_VERIFIED", "REJECTED"),
+}
+
+
+@router.get("/runs/{run_id}/suspicions")
+def run_suspicions(run_id: int, db: Session = Depends(get_session)):
+    """Гипотезы свободного поиска процесса в структуре ТЗ 9.5."""
+    rows = (db.query(models.Suspicion).filter_by(run_id=run_id)
+            .order_by(models.Suspicion.id).all())
+    return [free_search.suspicion_dict(row) for row in rows]
+
+
+@router.post("/runs/{run_id}/suspicions/{suspicion_id}")
+def review_suspicion(run_id: int, suspicion_id: int, body: SuspicionReview,
+                     db: Session = Depends(get_session),
+                     user: auth.Principal = Depends(auth.require(*auth.VERIFIERS))):
+    run_row = db.get(models.OfficialRun, run_id)
+    item = db.get(models.Suspicion, suspicion_id)
+    if run_row is None or item is None or item.run_id != run_id:
+        raise HTTPException(404, "гипотеза не найдена")
+    if run_row.finalized_at is not None:
+        raise HTTPException(409, "протокол финализирован: решения изменить нельзя")
+    if body.action not in SUSPICION_ACTIONS:
+        raise HTTPException(422, "действие: " + ", ".join(SUSPICION_ACTIONS))
+    required, finding_status, inspector_status = SUSPICION_ACTIONS[body.action]
+    if item.finding_status != required or item.inspector_status == "DISMISSED":
+        raise HTTPException(409, f"действие недоступно для статуса {item.finding_status}")
+    reason_code = body.reason_code.strip().upper()
+    if body.action == "reject" and reason_code not in protocol.REASON_CODES:
+        raise HTTPException(422, "при отклонении нужна кодированная причина: "
+                                 + ", ".join(protocol.REASON_CODES))
+    if body.action in {"dismiss", "confirm", "reject"} and not body.comment.strip():
+        raise HTTPException(422, "укажите основание решения")
+    evidence = body.evidence if body.evidence is not None else list(item.evidence or [])
+    if body.action == "promote" and not free_search.has_coordinates(evidence):
+        raise HTTPException(422, "для перевода в кандидаты нужны источники с листом и "
+                                 "координатами в ПД и в РД или ИД")
+    item.evidence = evidence
+    item.finding_status, item.inspector_status = finding_status, inspector_status
+    item.inspector_comment = " ".join(part for part in (reason_code, body.comment.strip())
+                                      if part)
+    item.reviewed_by, item.reviewed_at = user.user_id, dt.datetime.utcnow()
+    # Протокол читает гипотезы из результата процесса — обновляем и его.
+    result = copy.deepcopy(run_row.result or {})
+    free = result.setdefault("free_search", {"status": "completed", "items": []})
+    free["items"] = [free_search.suspicion_dict(item) if entry.get("suspicion_id") == item.id
+                     else entry for entry in free.get("items") or []]
+    run_row.result = result
+    db.add(models.ProtocolEvent(run_id=run_id, action=f"SUSPICION_{body.action.upper()}",
+                                author=user.display, reason=item.inspector_comment))
+    db.commit()
+    return free_search.suspicion_dict(item)
 
 
 @router.get("/runs/{run_id}/export")
