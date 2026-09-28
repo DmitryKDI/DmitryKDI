@@ -79,6 +79,7 @@ DECLARED: dict[str, str] = {
     # Лимиты загрузки и число повторов при сбое заданы ТЗ (9.1) — это
     # бюджет приёма и работы, а не порог истины о документе.
     "api_v1.MAX_FILE_BYTES": BUDGET,
+    "external_sync.SEND_TIMEOUT_S": BUDGET,
     "api_v1.MAX_PACKAGE_BYTES": BUDGET,
     "official_api.EXECUTE_RETRIES": BUDGET,
     # Все одного устройства: число в коде — умолчание, переменная окружения

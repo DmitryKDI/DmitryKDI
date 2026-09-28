@@ -25,7 +25,7 @@ from fastapi import (
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from . import document_convert, models, official_api, protocol, protocol_export
+from . import document_convert, external_sync, models, official_api, protocol, protocol_export
 from .db import get_session
 from .official_pipeline import clarification_result
 
@@ -268,20 +268,25 @@ def inspection(process_id: int, db: Session = Depends(get_session)):
     """Передаются только подтверждённые инспектором записи финализированного
     протокола вместе с версиями и реестром входных файлов (ТЗ 9.3, п.4).
 
-    В закрытом контуре адреса внешней системы нет, поэтому пакет
-    формируется и возвращается, а статус синхронизации честно LOCAL_ONLY:
-    выдать его за отправленный значило бы скрыть, что передачи не было.
+    Передача включается адресом приёма (`external_sync.URL_ENV`). Без него
+    пакет формируется и возвращается, а статус честно LOCAL_ONLY: выдать его
+    за отправленный значило бы скрыть, что передачи не было. Отказ приёмника
+    тоже не выдаётся за отправку — статус SEND_FAILED с причиной.
     """
     run = _run(db, process_id)
     payload = _payload(db, run)
     if payload["status"] != protocol.FINALIZED:
         raise HTTPException(409, "передача возможна только для финализированного протокола")
-    run.sync_status = "LOCAL_ONLY"
-    db.add(models.ProtocolEvent(run_id=run.id, action="EXPORT_EXTERNAL"))
-    db.commit()
     proto = payload["protocol"]
-    return {"process_id": process_id, "sync_status": "LOCAL_ONLY",
-            "versions": proto["versions"],
-            "input_files": [{"file_id": f"D{item['id']}", "sha256": item["digest"],
-                             **item["metadata"]} for item in run.input_snapshot or []],
-            "confirmed_violations": proto["tables"]["confirmed_violations"]}
+    package = {"process_id": process_id,
+               "versions": proto["versions"],
+               "input_files": [{"file_id": f"D{item['id']}", "sha256": item["digest"],
+                                **item["metadata"]} for item in run.input_snapshot or []],
+               "confirmed_violations": proto["tables"]["confirmed_violations"]}
+    result = external_sync.send(
+        package, idempotency_key=f"nadzor-{process_id}-v{len(run.protocol_history or []) + 1}")
+    run.sync_status = result.status
+    db.add(models.ProtocolEvent(run_id=run.id, action="EXPORT_EXTERNAL",
+                                reason=f"{result.status}: {result.detail}"))
+    db.commit()
+    return {**package, "sync_status": result.status, "sync_detail": result.detail}

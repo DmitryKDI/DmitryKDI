@@ -131,7 +131,7 @@ def _completed(process_id: int, finding_status: str) -> None:
         db.close()
 
 
-def test_reload_keeps_the_previous_protocol_version_and_finalize_locks_it():
+def test_reload_keeps_the_previous_protocol_version_and_finalize_locks_it(monkeypatch):
     body = _upload([("pd.pdf", _pdf("p"))], _registry([_row("pd.pdf", "PD")])).json()
     pid = body["process_id"]
     _completed(pid, "CANDIDATE")
@@ -162,6 +162,22 @@ def test_reload_keeps_the_previous_protocol_version_and_finalize_locks_it():
     assert sent["sync_status"] == "LOCAL_ONLY"
     assert [c["finding_id"] for c in sent["confirmed_violations"]] == ["M-001:matrix"]
     assert {f["stage"] for f in sent["input_files"]} == {"PD", "RD"}
+
+    # Передача включается адресом приёма; результат виден в статусе процесса.
+    from app import external_sync
+    monkeypatch.setenv(external_sync.URL_ENV, "http://rin-gateway:8080/inbox")
+    received = []
+
+    def fake_post(url, json, headers, timeout):
+        received.append((json, headers))
+        return external_sync.httpx.Response(202, request=external_sync.httpx.Request("POST", url))
+
+    monkeypatch.setattr(external_sync.httpx, "post", fake_post)
+    delivered = client.post(f"/api/v1/inspection/{pid}").json()
+    assert delivered["sync_status"] == "SENT", delivered
+    assert received[0][0]["confirmed_violations"] == sent["confirmed_violations"]
+    assert received[0][1]["Idempotency-Key"] == f"nadzor-{pid}-v2"
+    assert client.get(f"/api/v1/processes/{pid}/status").json()["sync_status"] == "SENT"
 
 
 @pytest.mark.parametrize("fmt,magic", [("json", b"{"), ("xml", b"<?xml"),
