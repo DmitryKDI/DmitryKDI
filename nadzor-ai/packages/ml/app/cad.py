@@ -50,6 +50,9 @@ class CadFacts:
     mismatches: list[dict] = field(default_factory=list)
     truncated: bool = False
     units: str = ""
+    # Объекты, геометрию которых построить нельзя (вырожденная система
+    # координат, битый блок). Не роняют лист, но и не пропадают молча.
+    skipped: int = 0
 
 
 def _font() -> str | None:
@@ -65,7 +68,7 @@ def _plain(entity) -> str:
     return ""
 
 
-def _flatten(entities, stop: int):
+def _flatten(entities, stop: int, facts: CadFacts):
     """Все объекты пространства модели, с раскрытием блоков и размеров."""
     count = 0
     stack = list(entities)
@@ -84,6 +87,8 @@ def _flatten(entities, stop: int):
                     parts = list(entity.virtual_entities())
                 stack.extend(parts)
             except Exception:  # noqa: BLE001, S112 — нераскрываемый блок пропускается, а не роняет лист
+                if kind != "DIMENSION":  # у размера длина уже взята из самого объекта
+                    facts.skipped += 1
                 continue
             continue
         count += 1
@@ -104,7 +109,21 @@ def render(dxf: bytes) -> tuple[bytes, CadFacts]:
         raise ValueError(f"DXF не читается: {type(exc).__name__}: {exc}") from exc
     space = document.modelspace()
     facts = CadFacts(units=str(document.header.get("$INSUNITS", "")))
-    extents = bbox.extents(space, fast=True)
+    extents = bbox.BoundingBox()
+    for entity in space:
+        try:
+            extents.extend(bbox.extents([entity], fast=True))
+        except Exception:  # noqa: BLE001 — объект считается пропущенным, а не роняет лист
+            # Размер с битым блоком геометрии всё равно даёт границы
+            # определяющими точками; иной объект — пропущенный.
+            points = []
+            if entity.dxftype() == "DIMENSION":
+                points = [entity.dxf.get(name) for name in ("defpoint", "defpoint2", "defpoint3")]
+                points = [point for point in points if point is not None]
+            if points:
+                extents.extend(points)
+            else:
+                facts.skipped += 1
     pdf = pymupdf.open()
     page = pdf.new_page(width=PAGE_WIDTH_PT, height=PAGE_HEIGHT_PT)
     if not extents.has_data:
@@ -124,7 +143,7 @@ def render(dxf: bytes) -> tuple[bytes, CadFacts]:
     shape = page.new_shape()
     distance = max(width, height) * FLATTEN_SHARE
     facts.entities = len(space)
-    for entity in _flatten(space, MAX_ENTITIES):
+    for entity in _flatten(space, MAX_ENTITIES, facts):
         kind = entity.dxftype()
         if kind == "DIMENSION":
             try:
@@ -185,6 +204,8 @@ def summary_line(facts: CadFacts) -> str:
         )
     if facts.truncated:
         parts.append(f"отрисовано не более {MAX_ENTITIES} объектов")
+    if facts.skipped:
+        parts.append(f"не отрисовано объектов с неразрешимой геометрией: {facts.skipped}")
     return "; ".join(parts)
 
 

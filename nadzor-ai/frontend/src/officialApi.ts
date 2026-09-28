@@ -1,7 +1,6 @@
 /**
- * Контракт официальной проверки. Он намеренно отделён от старого клиента:
- * здесь три стадии комплекта и результат по параметрам матрицы, а не только
- * пара «до/после».
+ * Клиент официальной проверки: REST API сервера `/api/v1` (ТЗ 1.3–1.5).
+ * Три стадии комплекта и результат по параметрам матрицы.
  */
 /** Событие «сессия закончилась»: любой запрос, получивший 401, сообщает о нём. */
 export const SESSION_EXPIRED = 'inspector:session-expired'
@@ -19,8 +18,10 @@ export class OfficialApiError extends Error {
   }
 }
 
+export const API = '/api/v1'
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/backend${path}`, init)
+  const response = await fetch(`${API}${path}`, init)
   if (response.status === 401) notifySessionExpired()
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: 'Сервер недоступен.' }))
@@ -121,10 +122,16 @@ export interface OfficialRunResult {
   free_search?: { status: 'completed' | 'error'; reason: string }
 }
 
+/** Внутреннее состояние задачи проверки (в ответе сервера — run_state). */
+export type RunState = 'queued' | 'parsing' | 'running' | 'completed' | 'cancelled' | 'error'
+
+export const isActive = (run: { status: RunState } | null | undefined): boolean =>
+  Boolean(run && ['queued', 'parsing', 'running'].includes(run.status))
+
 export interface OfficialRun {
   id: number
   object_id: string
-  status: 'queued' | 'running' | 'completed' | 'cancelled' | 'error'
+  status: RunState
   stage: string
   completed: number
   total: number
@@ -217,54 +224,60 @@ export interface ProviderCheck {
   models_message?: string
 }
 
+/** Ответ сервера о процессе: status — словарь ТЗ, run_state — состояние задачи. */
+type ProcessPayload = Omit<OfficialRun, 'status'> & { status: string; run_state: RunState }
+
+/** Экраны работают с состоянием задачи, словарь ТЗ — в process_status. */
+function toRun(body: ProcessPayload): OfficialRun {
+  return { ...body, status: body.run_state, process_status: body.status }
+}
+
+const json = (body: unknown, method = 'POST'): RequestInit =>
+  ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+interface LlmCheckPayload {
+  reachable: boolean
+  message: string
+  model: string
+  served_models?: string[]
+  model_served?: boolean | null
+}
+
 export const officialApi = {
-  parameters: () => request<{ matrix_version: string; parameters: OfficialParameter[] }>('/official/parameters'),
-  documents: () => request<OfficialDocument[]>('/official/documents'),
-  settings: () => request<ProviderSettings>('/settings'),
-  checkProvider: () => request<ProviderCheck>('/llm-check'),
-  upload: (side: 'before' | 'after', file: File) => {
+  parameters: () => request<{ matrix_version: string; parameters: OfficialParameter[] }>('/parameters'),
+  documents: () => request<OfficialDocument[]>('/documents'),
+  /** Контур поддерживает только локальную модель (ТЗ 12): внешних провайдеров нет. */
+  settings: async (): Promise<ProviderSettings> => ({ provider: 'local', model: '', base_url: '' }),
+  checkProvider: async (): Promise<ProviderCheck> => {
+    const body = await request<LlmCheckPayload>('/llm-check')
+    return { reachable: body.reachable, provider: 'local', message: body.message, model: body.model,
+      model_available: body.model_served ?? null, models_available: body.served_models ?? [],
+      models_message: body.reachable ? undefined : 'связи с моделью нет' }
+  },
+  upload: (file: File) => {
     const form = new FormData()
     form.append('file', file)
-    return request<{ id: number }>(`/documents?side=${side}`, { method: 'POST', body: form })
+    return request<OfficialDocument>('/documents', { method: 'POST', body: form })
   },
-  saveMetadata: (id: number, metadata: OfficialDocumentMetadata) => request<OfficialDocument>(
-    `/official/documents/${id}/metadata`,
-    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) },
-  ),
-  deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, {
-    method: 'DELETE',
-  }),
-  createRun: (object_id: string, document_ids: number[]) => request<OfficialRun>(
-    '/official/runs',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ object_id, document_ids }),
-    },
-  ),
-  run: (id: number) => request<OfficialRun>(`/official/runs/${id}`),
-  runs: () => request<OfficialRun[]>('/official/runs'),
-  cancelRun: (id: number) => request<OfficialRun>(`/official/runs/${id}/cancel`, { method: 'POST' }),
-  decide: (id: number, input: DecisionInput) => request<OfficialRun>(
-    `/official/runs/${id}/decisions`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
-  ),
-  exportUrl: (id: number, format: 'json' | 'csv') => `/backend/official/runs/${id}/export?format=${format}`,
-  protocolUrl: (id: number, format: 'pdf' | 'docx' | 'xml') => `/backend/api/v1/processes/${id}/export?format=${format}`,
-  finalize: (id: number) => request<OfficialRun>(
-    `/official/runs/${id}/finalize`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
-  ),
-  unfinalize: (id: number, reason: string) => request<OfficialRun>(
-    `/official/runs/${id}/unfinalize`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) },
-  ),
-  suspicions: (id: number) => request<Suspicion[]>(`/official/runs/${id}/suspicions`),
-  reviewSuspicion: (id: number, suspicionId: number, input: SuspicionReview) => request<Suspicion>(
-    `/official/runs/${id}/suspicions/${suspicionId}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
-  ),
-  pageImageUrl: (documentId: number, page: number) => `/backend/page-image/${documentId}/${page}`,
+  saveMetadata: (id: number, metadata: OfficialDocumentMetadata) =>
+    request<OfficialDocument>(`/documents/${id}/metadata`, json(metadata, 'PUT')),
+  deleteDocument: (id: number) => request<{ ok: boolean }>(`/documents/${id}`, { method: 'DELETE' }),
+  createRun: async (object_id: string, document_ids: number[]) =>
+    toRun(await request<ProcessPayload>('/processes', json({ object_id, document_ids }))),
+  run: async (id: number) => toRun(await request<ProcessPayload>(`/processes/${id}`)),
+  runs: async () => (await request<ProcessPayload[]>('/processes')).map(toRun),
+  cancelRun: async (id: number) => toRun(await request<ProcessPayload>(`/processes/${id}/cancel`, json({}))),
+  decide: async (id: number, input: DecisionInput) =>
+    toRun(await request<ProcessPayload>(`/processes/${id}/decisions`, json(input))),
+  exportUrl: (id: number, format: 'json' | 'csv') => `${API}/processes/${id}/export?format=${format}`,
+  protocolUrl: (id: number, format: 'pdf' | 'docx' | 'xml') => `${API}/processes/${id}/export?format=${format}`,
+  finalize: async (id: number) => toRun(await request<ProcessPayload>(`/processes/${id}/finalize`, json({}))),
+  unfinalize: async (id: number, reason: string) =>
+    toRun(await request<ProcessPayload>(`/processes/${id}/unfinalize`, json({ reason }))),
+  suspicions: (id: number) => request<Suspicion[]>(`/processes/${id}/suspicions`),
+  reviewSuspicion: (id: number, suspicionId: number, input: SuspicionReview) =>
+    request<Suspicion>(`/processes/${id}/suspicions/${suspicionId}`, json(input)),
+  pageImageUrl: (documentId: number, page: number) => `${API}/documents/${documentId}/pages/${page}/image`,
 }
 
 export function findingLabel(status: FindingStatus | null, technical: TechnicalStatus): string {

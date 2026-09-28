@@ -42,10 +42,28 @@ import(workerData.module).then((A) => {
 }, (error) => parentPort.postMessage({ ok: false, error: String(error) }))
 `
 
+// Версии DXF, текст которых по спецификации всегда в UTF-8 (AutoCAD 2007+).
+const UTF8_DXF_VERSIONS = new Set(['AC1021', 'AC1024', 'AC1027', 'AC1032'])
+
+/**
+ * DXF 2007+ хранит текст в UTF-8 независимо от $DWGCODEPAGE, а acad-ts
+ * декодирует его по кодовой странице из заголовка (обычно ANSI_1252) — и
+ * кириллица превращается в «ÐŸÐ»Ð°Ð½». Для таких файлов кодовая страница в
+ * заголовке заменяется меткой utf-8 до чтения; байты текста не меняются.
+ */
+export function normalizeDxfEncoding(data: Buffer): Buffer {
+  if (data.subarray(0, 22).toString('latin1').startsWith('AutoCAD Binary DXF')) return data
+  const text = data.toString('latin1')
+  const version = /\$ACADVER\s*\r?\n\s*1\s*\r?\n\s*(AC\d{4})/.exec(text.slice(0, 65_536))?.[1]
+  if (!version || !UTF8_DXF_VERSIONS.has(version)) return data
+  return Buffer.from(text.replace(/(\$DWGCODEPAGE\s*\r?\n\s*3\s*\r?\n)[^\r\n]*/, '$1utf-8'), 'latin1')
+}
+
 export function convertCad(data: Buffer, format: 'DWG' | 'DXF'): Promise<CadConversion> {
+  const source = format === 'DXF' ? normalizeDxfEncoding(data) : data
   return new Promise((resolve, reject) => {
     const worker = new Worker(WORKER_SOURCE, { eval: true,
-      workerData: { data, format, module: import.meta.resolve('@node-projects/acad-ts') } })
+      workerData: { data: source, format, module: import.meta.resolve('@node-projects/acad-ts') } })
     const timer = setTimeout(() => {
       void worker.terminate()
       reject(new Error(`чертёж не прочитан за ${CONVERT_TIMEOUT_MS / 1000} с`))

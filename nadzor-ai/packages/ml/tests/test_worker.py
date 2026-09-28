@@ -160,7 +160,8 @@ def test_inspect_reuses_previous_protocol_when_current_revisions_did_not_change(
     previous = {"version": 1, "result": _result({"PD": [1]}, [])}
     task = _inspect_task([pd], previous)
     answer = worker.inspect(task, lambda *_: None,
-                            analysis=lambda *a, **k: pytest.fail("модель не должна вызываться"))
+                            analysis=lambda *a, **k: pytest.fail("модель не должна вызываться"),
+                            preflight=lambda _config: pytest.fail("связь не нужна"))
     assert answer["result"]["incremental"]["reused_from_version"] == 1
     print("OK: дозагрузка без новой актуальной редакции не гоняет модель")
 
@@ -179,7 +180,7 @@ def test_inspect_recomputes_only_parameters_with_new_data(files):
         return _result({"PD": [1], "RD": [2]},
                        [{**_check(p, 1), "explanation": "новый"} for p in parameters if p["code"] in codes])
 
-    answer = worker.inspect(_inspect_task([pd, rd], previous), lambda *_: None, analysis=analysis)
+    answer = worker.inspect(_inspect_task([pd, rd], previous), lambda *_: None, analysis=analysis, preflight=lambda _config: (True, ""))
     result = answer["result"]
     assert target["code"] in seen["codes"] and len(seen["codes"]) < len(parameters)
     fresh = next(c for c in result["checks"] if c["parameter_code"] == target["code"])
@@ -200,7 +201,7 @@ def test_inspect_reports_progress_and_reads_cancel_flag(files):
         return _result({"PD": [1]}, [])
 
     answer = worker.inspect(_inspect_task([pd]), lambda q, m: published.append((q, m)),
-                            analysis=analysis)
+                            analysis=analysis, preflight=lambda _config: (True, ""))
     assert published == [(contracts.QUEUE_PROGRESS, contracts.progress(7, "Сверка параметров", 1, 2))]
     assert answer["model_version"]
     print("OK: ход проверки публикуется, остановка читается из Redis")
@@ -221,3 +222,13 @@ def test_contract_matches_server():
     for field in contracts.INSPECT_FIELDS:
         assert f"  {field}:" in text or field in ("task_id", "kind", "attempt"), field
     print("OK: имена очередей и полей задачи совпадают с сервером")
+
+
+def test_unreachable_model_is_a_retryable_error_not_an_empty_protocol(files, monkeypatch):
+    """Без связи с моделью процесс не выглядит завершённым: сервер повторит
+    задачу и после повторов уведомит администратора (ТЗ 9.1)."""
+    pd = _ref(files, _pdf("ПД"), id_=1, stage="PD")
+    monkeypatch.setattr(worker, "check_llm_reachable", lambda config: (False, "модель не отвечает"))
+    answer = worker.handle(_inspect_task([pd]), lambda *_: None)
+    assert answer["status"] == "error" and answer["permanent"] is False
+    assert "модель не отвечает" in answer["error"]

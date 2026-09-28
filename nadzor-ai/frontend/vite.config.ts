@@ -53,10 +53,10 @@ export default defineConfig({
         clientsClaim: true,
         skipWaiting: true,
         cleanupOutdatedCaches: true,
-        // Обращения к бэкенду сервис-воркер не перехватывает: это данные
-        // разбора, а не оболочка приложения, и отдавать их из кэша значит
+        // Обращения к серверу сервис-воркер не перехватывает: это данные
+        // проверки, а не оболочка приложения, и отдавать их из кэша значит
         // показывать инспектору вчерашний результат как сегодняшний.
-        navigateFallbackDenylist: [/^\/backend/],
+        navigateFallbackDenylist: [/^\/api\//],
       },
       manifest: {
         name: 'Инспектор ИИ — сверка ПД, РД и ИД',
@@ -74,14 +74,10 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      // Г.85 удалил второй сервер (порт 8000) вместе со всей витриной CRM.
-      // Проксирование на него оставалось и вело в никуда: обращение по /api
-      // упиралось в закрытый порт и показывало «не удалось выполнить запрос»
-      // вместо понятной причины. Осталась одна цель — движок разбора.
-      '/backend': {
-        target: process.env.VITE_BACKEND_URL || 'http://localhost:8010',
+      // REST API сервера (ТЗ 1.5). В контуре тот же путь проксирует nginx.
+      '/api': {
+        target: process.env.VITE_SERVER_URL || 'http://localhost:8010',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/backend/, ''),
       },
     },
   },

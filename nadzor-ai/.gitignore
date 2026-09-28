@@ -38,3 +38,6 @@ initial-admin-password.txt
 certs/*
 !certs/.gitkeep
 deploy/monitoring/metrics-token
+
+# Ключи и токены контура (scripts/make-secrets.sh) — только на стенде.
+secrets/

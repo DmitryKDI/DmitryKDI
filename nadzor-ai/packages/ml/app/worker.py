@@ -40,7 +40,7 @@ from .contracts import (
     ok,
     progress,
 )
-from .llm import LlmConfig, local_config, model_configured
+from .llm import LlmConfig, check_llm_reachable, local_config, model_configured
 from .official_pipeline import (
     parameters_with_new_data,
     run_official_analysis,
@@ -258,13 +258,24 @@ def free_search(task: dict, documents, result: dict) -> dict:
 # --- проверка комплекта -----------------------------------------------------------
 
 
+class ModelUnavailableError(RuntimeError):
+    """Модель не отвечает: проверка не начиналась, повтор может помочь."""
+
+
 def inspect(
     task: dict,
     publish: Publish,
     config: LlmConfig | None = None,
     analysis: Callable[..., dict] = run_official_analysis,
+    preflight: Callable[[LlmConfig], tuple[bool, str]] | None = None,
 ) -> dict:
-    """Проверка комплекта по матрице; результат — протокол для сервера."""
+    """Проверка комплекта по матрице; результат — протокол для сервера.
+
+    Связь с моделью проверяется ДО проверки: иначе каждый из 132 параметров
+    вернулся бы «не выполнено», а процесс выглядел бы завершённым. Отказ
+    уходит серверу ошибкой — он повторит задачу и после двух повторов
+    уведомит администратора (ТЗ 9.1).
+    """
     config = config or local_config()
     process_id = int(task["process_id"])
     parameters = list(task.get("parameters") or [])
@@ -282,6 +293,10 @@ def inspect(
         reused = reuse_previous(previous, documents, matrix_version)
         if reused is not None:
             return {"model_version": config.resolved_model(), "result": reused}
+        if model_configured(config):
+            reachable, message = (preflight or check_llm_reachable)(config)
+            if not reachable:
+                raise ModelUnavailableError(message)
         active = [item for item in parameters if item.get("is_active", True)]
         codes = affected_codes(previous, documents, active, matrix_version)
         result = analysis(

@@ -44,9 +44,13 @@ MAX_DPI = 300
 RENDER_CACHE_TTL_S = 24 * 3600
 
 
-def require_token(x_internal_token: str = Header(default="")) -> None:
+def require_token(
+    x_internal_token: str = Header(default=""), authorization: str = Header(default="")
+) -> None:
+    """Служебный токен контура: заголовок X-Internal-Token или Bearer (Prometheus)."""
     expected = config.internal_token()
-    if not expected or not hmac.compare_digest(x_internal_token.encode(), expected.encode()):
+    given = x_internal_token or authorization.removeprefix("Bearer ").strip()
+    if not expected or not hmac.compare_digest(given.encode(), expected.encode()):
         raise HTTPException(403, "внутренний доступ запрещён")
 
 
@@ -77,21 +81,21 @@ async def _observe(request: Request, call_next):
 
 
 @app.get("/health")
-def health() -> dict:
+def health(response: Response) -> dict:
+    """Состояние модулей; недоступный кэш — 503 с причиной, а не трассировка."""
     llm = local_config()
     embedding = semantic.status()
-    return {
-        "status": "ok",
-        "cache": kv.store().backend,
-        "facts": facts_store.stats(),
-        "ocr": "configured" if local_ocr.is_configured() else "not_configured",
-        "semantic": {
-            "available": embedding.available,
-            "model": embedding.model,
-            "reason": embedding.reason,
-        },
-        "llm": {"configured": model_configured(llm), "model": llm.resolved_model()},
-    }
+    body = {"status": "ok", "ocr": "configured" if local_ocr.is_configured() else "not_configured",
+            "semantic": {"available": embedding.available, "model": embedding.model,
+                         "reason": embedding.reason},
+            "llm": {"configured": model_configured(llm), "model": llm.resolved_model()}}
+    try:
+        body["cache"] = kv.store().backend
+        body["facts"] = facts_store.stats()
+    except Exception as exc:  # noqa: BLE001 — состояние, а не падение проверки здоровья
+        response.status_code = 503
+        body.update(status="degraded", cache=f"недоступен: {exc}")
+    return body
 
 
 def _pdf(sha256: str, source_format: str, derived: str | None) -> bytes:

@@ -63,7 +63,7 @@ export default function Dashboard() {
           <td className="px-3 py-2 text-xs">{item.sections.join(', ') || '—'}</td>
           <td className="px-3 py-2 text-xs">{item.created_at.slice(0, 10)}</td>
           <td className="px-3 py-2"><div className="flex gap-1">{(['pdf', 'docx', 'xml'] as const).map((format) =>
-            <a key={format} className="btn-ghost px-2 py-1 text-xs" href={`/backend/api/v1/processes/${item.process_id}/export?format=${format}`}>{format.toUpperCase()}</a>)}</div></td>
+            <a key={format} className="btn-ghost px-2 py-1 text-xs" href={`/api/v1/processes/${item.process_id}/export?format=${format}`}>{format.toUpperCase()}</a>)}</div></td>
         </tr>)}</tbody>
       </table></div>)}
   </div>

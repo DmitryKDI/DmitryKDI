@@ -28,6 +28,7 @@ import logging.handlers
 import os
 import resource
 import shutil
+import socket
 import threading
 import time
 import uuid
@@ -97,12 +98,14 @@ def configure() -> None:
     log_dir = os.environ.get("INSPECTOR_LOG_DIR", "").strip()
     if log_dir:
         Path(log_dir).mkdir(parents=True, exist_ok=True)
+        # Реплики воркера пишут в общий том логов: у каждой свой файл.
+        name = f"{SERVICE}-{socket.gethostname()}"
         general = logging.handlers.TimedRotatingFileHandler(
-            Path(log_dir) / "service.log", when="midnight", backupCount=LOG_RETENTION_DAYS,
+            Path(log_dir) / f"{name}.log", when="midnight", backupCount=LOG_RETENTION_DAYS,
             encoding="utf-8")
         general.setFormatter(formatter)
         security = logging.handlers.TimedRotatingFileHandler(
-            Path(log_dir) / "security.log", when="midnight",
+            Path(log_dir) / f"{name}.security.log", when="midnight",
             backupCount=SECURITY_LOG_RETENTION_DAYS, encoding="utf-8")
         security.setFormatter(formatter)
         security.addFilter(_SecurityFilter())

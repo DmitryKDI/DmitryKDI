@@ -29,10 +29,17 @@ VISION_MAX_DIM = 2200
 # примеры подставляются в системный промпт, чтобы она искала нарушения того
 # же рода, а не произвольные различия оформления. Файл пополняется вручную,
 # см. комментарий внутри самого файла.
-KNOWN_VIOLATIONS_PATH = Path(
-    os.environ.get("KNOWN_VIOLATIONS_PATH")
-    or Path(__file__).resolve().parents[3] / "data" / "known_violations.json"
-)
+def _known_violations_default() -> Path:
+    """data/known_violations.json в ближайшем родительском каталоге: в
+    репозитории и в образе ML глубина вложенности разная."""
+    for folder in Path(__file__).resolve().parents:
+        candidate = folder / "data" / "known_violations.json"
+        if candidate.is_file():
+            return candidate
+    return Path("data/known_violations.json")
+
+
+KNOWN_VIOLATIONS_PATH = Path(os.environ.get("KNOWN_VIOLATIONS_PATH") or _known_violations_default())
 
 
 def load_known_violations() -> list[dict]:

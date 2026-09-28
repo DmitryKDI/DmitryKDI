@@ -27,7 +27,7 @@ export class AuthError extends Error {
 export { SESSION_EXPIRED, notifySessionExpired } from './officialApi'
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/backend/api/v1${path}`, {
+  const response = await fetch(`/api/v1${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
   })

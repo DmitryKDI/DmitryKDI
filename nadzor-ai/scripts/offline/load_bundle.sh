@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Запуск на стенде БЕЗ Интернета: загрузить образы, сверить с манифестом,
-# поднять систему. Повторный запуск безопасен.
+# создать секреты, поднять систему. Повторный запуск безопасен.
 #
-# Требования к стенду: Linux, Docker с compose, NVIDIA-драйвер и
-# NVIDIA Container Toolkit. Драйвер в комплект не входит.
+# Требования к стенду: Linux, Docker с compose, NVIDIA-драйвер на хосте и
+# NVIDIA Container Toolkit. Драйвер в комплект не входит; CUDA runtime — в
+# образе vLLM.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -14,13 +15,12 @@ MANIFEST=bundle/MANIFEST.txt
 value() { grep -m1 "^$1=" "$MANIFEST" | cut -d= -f2-; }
 
 MODEL_DIR="$(value model_dir)"
-[ -f "models/${MODEL_DIR}/config.json" ] || {
-  echo "веса модели не найдены: models/${MODEL_DIR}" >&2; exit 1; }
+[ -f "models/${MODEL_DIR}/config.json" ] || { echo "веса модели не найдены: models/${MODEL_DIR}" >&2; exit 1; }
 
-echo "1/3 Загрузка образов"
-docker load -i bundle/nadzor-images.tar
+echo "1/4 Загрузка образов"
+docker load -i bundle/inspector-images.tar
 
-echo "2/3 Сверка образов с манифестом"
+echo "2/4 Сверка образов с манифестом"
 # Загружен ровно тот образ, что собран и проверен, а не одноимённый.
 grep '^image_id ' "$MANIFEST" | while read -r _ pair; do
   image="${pair%%=*}"; expected="${pair#*=}"
@@ -28,7 +28,14 @@ grep '^image_id ' "$MANIFEST" | while read -r _ pair; do
   [ "$actual" = "$expected" ] || { echo "образ $image не совпадает с манифестом" >&2; exit 1; }
 done
 
-echo "3/3 Запуск"
-NADZOR_MODEL_DIR="$MODEL_DIR" docker compose up -d --no-build
-echo "Интерфейс: http://localhost:5173  API: http://localhost:8010/docs"
+echo "3/4 Секреты и базы антивируса"
+scripts/make-secrets.sh
+docker volume create inspector-ai_clamav-db >/dev/null
+docker run --rm -v inspector-ai_clamav-db:/target -v "$ROOT/bundle/clamav:/source:ro" \
+  --entrypoint sh clamav/clamav:1.4 -c 'cp -n /source/* /target/ 2>/dev/null || true'
+
+echo "4/4 Запуск"
+INSPECTOR_MODEL_DIR="$MODEL_DIR" docker compose up -d --no-build
+echo "Интерфейс: http://localhost:5173 (HTTPS 5443 с сертификатом в ./certs)"
+echo "API: http://localhost:8010/api/v1, схема: /api/v1/openapi.json"
 echo "Первый запуск модели — несколько минут (загрузка весов в GPU): docker compose ps"
