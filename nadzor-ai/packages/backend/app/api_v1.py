@@ -100,9 +100,13 @@ def upload(background: BackgroundTasks,
         raise HTTPException(413, f"пакет {total / 1048576:.1f} МБ больше допустимых "
                                  f"{MAX_PACKAGE_BYTES // 1048576} МБ")
     run = _run(db, process_id) if process_id is not None else None
+    finalized = False
     if run is not None:
         status = _payload(db, run)["status"]
-        if not protocol.can_upload(status):
+        # В финализированный протокол документы принимаются, но проверку не
+        # запускают: инспектор получает уведомление (ТЗ 9.6).
+        finalized = status == protocol.FINALIZED
+        if not finalized and not protocol.can_upload(status):
             raise HTTPException(409, f"дозагрузка невозможна в статусе {status}")
 
     rows = _parse_registry(registry.file.read(), registry.filename or "") if registry else []
@@ -169,6 +173,20 @@ def upload(background: BackgroundTasks,
     if not snapshot_add:
         db.rollback()
         raise HTTPException(422, {"message": "ни один файл не принят", "rejected": rejected})
+
+    if finalized:
+        run.pending_documents = [*(run.pending_documents or []), *snapshot_add]
+        db.add(models.ProtocolEvent(
+            run_id=run.id, action="NEW_DOCUMENTS_AFTER_FINALIZATION",
+            reason=", ".join(item["file_name"] for item in accepted)))
+        db.commit()
+        body = _payload(db, run)
+        return {"process_id": run.id, "status": body["status"],
+                "upload_status": body["protocol"]["upload_status"],
+                "scenario": body["protocol"]["scenario"],
+                "accepted": accepted, "rejected": rejected,
+                "notice": "протокол финализирован: новые документы сохранены, проверка не "
+                          "запускалась; для их проверки создайте новый процесс"}
 
     object_id = next(iter(object_ids), "")
     if run is None:
@@ -275,8 +293,9 @@ def inspection(process_id: int, db: Session = Depends(get_session)):
 
     Передача включается адресом приёма (`external_sync.URL_ENV`). Без него
     пакет формируется и возвращается, а статус честно LOCAL_ONLY: выдать его
-    за отправленный значило бы скрыть, что передачи не было. Отказ приёмника
-    тоже не выдаётся за отправку — статус SEND_FAILED с причиной.
+    за отправленный значило бы скрыть, что передачи не было. Недоступность
+    приёмника даёт PENDING_SYNC и повторы через 1, 5 и 15 минут; окончательный
+    отказ — SEND_FAILED с причиной (ТЗ 9.6).
     """
     run = _run(db, process_id)
     payload = _payload(db, run)
@@ -288,10 +307,12 @@ def inspection(process_id: int, db: Session = Depends(get_session)):
                "input_files": [{"file_id": f"D{item['id']}", "sha256": item["digest"],
                                 **item["metadata"]} for item in run.input_snapshot or []],
                "confirmed_violations": proto["tables"]["confirmed_violations"]}
-    result = external_sync.send(
-        package, idempotency_key=f"nadzor-{process_id}-v{len(run.protocol_history or []) + 1}")
-    run.sync_status = result.status
-    db.add(models.ProtocolEvent(run_id=run.id, action="EXPORT_EXTERNAL",
-                                reason=f"{result.status}: {result.detail}"))
-    db.commit()
-    return {**package, "sync_status": result.status, "sync_detail": result.detail}
+    key = f"nadzor-{process_id}-v{len(run.protocol_history or []) + 1}"
+    if run.sync_key != key:
+        # Новая версия протокола — новый отсчёт попыток.
+        run.sync_attempts, run.sync_next_at = 0, None
+    run.sync_package, run.sync_key = package, key
+    result = external_sync.attempt(db, run)
+    return {**package, "sync_status": result.status, "sync_detail": result.detail,
+            "sync_attempts": run.sync_attempts,
+            "sync_next_at": run.sync_next_at.isoformat() if run.sync_next_at else None}

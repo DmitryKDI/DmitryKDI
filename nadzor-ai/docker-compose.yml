@@ -95,6 +95,9 @@ services:
       # Передача результатов во внешнюю систему: пусто — выключена (LOCAL_ONLY).
       NADZOR_RIN_URL: ${NADZOR_RIN_URL:-}
       NADZOR_RIN_TOKEN: ${NADZOR_RIN_TOKEN:-}
+      NADZOR_RIN_CLIENT_CERT: ${NADZOR_RIN_CLIENT_CERT:-}
+      NADZOR_RIN_CLIENT_KEY: ${NADZOR_RIN_CLIENT_KEY:-}
+      NADZOR_RIN_CA: ${NADZOR_RIN_CA:-}
       NADZOR_ALLOWED_HOSTS: ${NADZOR_ALLOWED_HOSTS:-}
     volumes:
       # База, загруженные документы и результаты переживают пересборку и

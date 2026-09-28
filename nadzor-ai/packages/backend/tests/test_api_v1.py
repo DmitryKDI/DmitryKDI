@@ -154,9 +154,15 @@ def test_reload_keeps_the_previous_protocol_version_and_finalize_locks_it(monkey
 
     final = client.post(f"/api/v1/processes/{pid}/finalize", json={"author": "insp"}).json()
     assert final["status"] == "FINALIZED"
-    blocked = _upload([("id.pdf", _pdf("i"))], _registry([_row("id.pdf", "ID")]),
-                      process_id=str(pid))
-    assert blocked.status_code == 409
+    # ТЗ 9.6: документы в финализированный протокол принимаются, но проверку не
+    # запускают — инспектор получает уведомление.
+    late = _upload([("id.pdf", _pdf("i"))], _registry([_row("id.pdf", "ID")]),
+                   process_id=str(pid))
+    assert late.status_code == 200, late.text
+    assert late.json()["status"] == "FINALIZED" and "notice" in late.json()
+    after = client.get(f"/api/v1/processes/{pid}").json()
+    assert after["status"] == "FINALIZED" and after["protocol_version"] == 2
+    assert [item["metadata"]["stage"] for item in after["pending_documents"]] == ["ID"]
 
     sent = client.post(f"/api/v1/inspection/{pid}").json()
     assert sent["sync_status"] == "LOCAL_ONLY"

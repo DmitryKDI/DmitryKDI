@@ -36,6 +36,15 @@ const APPROVALS: Array<{ value: ApprovalStatus; label: string }> = [
 
 type MetadataDraft = Omit<OfficialDocumentMetadata, 'stage' | 'predecessor_id'> & { predecessor_id: string }
 
+const SYNC_TITLES: Record<string, string> = {
+  NOT_SENT: 'не выполнялась',
+  LOCAL_ONLY: 'не включена, пакет сформирован локально',
+  SENT: 'принято внешней системой',
+  PENDING_SYNC: 'внешняя система недоступна, отправка будет повторена',
+  SEND_FAILED: 'не выполнена',
+  SEND_REFUSED: 'адрес приёма вне контура',
+}
+
 function blankMetadata(): MetadataDraft {
   return {
     object_id: '', document_code: '', revision: '', approval_status: 'DRAFT', approval_date: null,
@@ -401,6 +410,8 @@ function ModelAvailability({ check }: { check: ProviderCheck }) {
       {run.process_status !== 'FINALIZED'
         ? (can(user, 'inspector', 'supervisor') && <div className="mt-2 flex flex-wrap gap-2"><button className="btn-primary px-3 py-1.5 text-xs" disabled={run.protocol.pending_candidates.length > 0} onClick={() => void finalize()}>Завершить</button></div>)
         : <div className="mt-2"><p className="text-xs text-accent">Протокол финализирован {run.finalized_at || ''}{run.finalized_by ? ` · ${run.finalized_by}` : ''}.</p>
+          <p className="mt-1 text-xs text-ink-muted">Передача во внешнюю систему: {SYNC_TITLES[run.sync_status || ''] || run.sync_status}{run.sync_next_at ? `, повтор в ${run.sync_next_at}` : ''}.</p>
+          {(run.pending_documents?.length ?? 0) > 0 && <p className="mt-1 rounded-lg bg-surface-muted px-2 py-1 text-xs">Поступили новые документы ({run.pending_documents!.map((item) => `${item.metadata.stage || '?'} ${item.metadata.document_code || ''}`.trim()).join(', ')}). Проверка по ним не запускалась: создайте новую проверку.</p>}
           {can(user, 'supervisor') && <div className="mt-2 flex flex-wrap gap-2"><input className="rounded-lg border border-surface-line px-2 py-1.5 text-xs" value={unfinalizeReason} onChange={(event) => setUnfinalizeReason(event.target.value)} placeholder="Причина отмены финализации *" /><button className="btn-ghost px-3 py-1.5 text-xs" disabled={!unfinalizeReason.trim()} onClick={() => void unfinalize()}>Отменить финализацию</button></div>}</div>}
     </SectionCard>}
     {run?.result && <SectionCard title="Текстовая сверка по матрице" subtitle={`Покрытие: выполнено ${run.result.coverage.completed} из ${run.result.coverage.total}; не выполнено ${run.result.coverage.not_run}.`} right={<div className="flex gap-2"><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'json')}>JSON</a><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'csv')}>CSV</a></div>}>{checks.length === 0 ? <Empty title="Завершённых параметров пока нет" hint={run.result.coverage.not_run > 0 ? 'Часть проверки не выполнялась или требует уточнения. Это не означает отсутствие расхождений.' : 'Сервер не вернул параметров для выбранного комплекта; проверьте статус прогона и метаданные.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Код</th><th className="px-3 py-2">Параметр</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{checks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}

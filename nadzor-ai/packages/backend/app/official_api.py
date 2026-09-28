@@ -170,6 +170,10 @@ def _run_dict(db: Session, run: models.OfficialRun) -> dict:
         "finalized_at": run.finalized_at.isoformat() if run.finalized_at else None,
         "finalized_by": run.finalized_by or None,
         "sync_status": run.sync_status,
+        "sync_attempts": run.sync_attempts or 0,
+        "sync_next_at": run.sync_next_at.isoformat() if run.sync_next_at else None,
+        # Документы после финализации: уведомление инспектору (ТЗ 9.6).
+        "pending_documents": run.pending_documents or [],
         "protocol_version": len(run.protocol_history or []) + 1,
         "completed": run.completed, "total": run.total, "result": result,
         "protocol": built,

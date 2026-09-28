@@ -85,6 +85,15 @@ class OfficialRun(Base):
     # Передача во внешнюю систему. В закрытом контуре внешнего адреса нет,
     # поэтому состояние честно «не отправлялось», а не «отправлено».
     sync_status: Mapped[str] = mapped_column(String, default="NOT_SENT")
+    # Повторы передачи (ТЗ 9.6): пакет, ключ идемпотентности, число попыток и
+    # срок следующей — в самом процессе, чтобы пережить перезапуск сервиса.
+    sync_package: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sync_key: Mapped[str] = mapped_column(String, default="")
+    sync_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    sync_next_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # Документы, пришедшие после финализации (ТЗ 9.6): проверку не запускают,
+    # инспектор получает уведомление и сам решает, создавать ли новую.
+    pending_documents: Mapped[list] = mapped_column(JSON, default=list)
     # Прежние версии протокола при дозагрузке: новая версия не затирает
     # предыдущую (ТЗ 9.2, инкрементальное обновление).
     protocol_history: Mapped[list] = mapped_column(JSON, default=list)

@@ -137,6 +137,10 @@ export interface OfficialRun {
   finalized_at?: string | null
   finalized_by?: string | null
   sync_status?: string
+  sync_attempts?: number
+  sync_next_at?: string | null
+  /** Документы, пришедшие после финализации: проверку не запускают (ТЗ 9.6). */
+  pending_documents?: { id: number; metadata: { stage?: string; document_code?: string } }[]
   /** Системный комментарий к последнему решению (ТЗ 9.4). */
   system_comment?: string
   protocol?: {
