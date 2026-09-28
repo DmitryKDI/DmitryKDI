@@ -9,7 +9,7 @@
 В выпуск набора (dataset_version) попадают только записи, одобренные
 куратором, из финализированных протоколов. Разбиение — по объектам: объект
 получает набор один раз и навсегда, поэтому ни одна стройка не окажется в
-train и test одновременно ни в одном выпуске.
+TRAIN и HIDDEN_TEST одновременно ни в одном выпуске.
 
 Модель допускается к публикации только после приёмки по порогам раздела 14.3
 и без ухудшения относительно действующей модели более чем на 2 п.п.;
@@ -39,7 +39,7 @@ MAX_FALSE_POSITIVE_RATE = 0.10
 MAX_RECALL_DROP = 0.02
 MAX_FPR_GROWTH = 0.02
 
-# Доли разбиения объектов на train / validation / test, в процентах.
+# Доли разбиения объектов на TRAIN / VALIDATION / HIDDEN_TEST, в процентах.
 SPLIT_TRAIN_PERCENT = 70
 SPLIT_VALIDATION_PERCENT = 15
 
@@ -74,9 +74,64 @@ def system_comment(status: str, reason_code: str = "") -> str:
     return "Решение инспектора сохранено отдельной версией."
 
 
+TRAIN, VALIDATION, HIDDEN_TEST = "TRAIN", "VALIDATION", "HIDDEN_TEST"
+SPLITS = (TRAIN, VALIDATION, HIDDEN_TEST)
+_LEGACY_SPLITS = {"train": TRAIN, "validation": VALIDATION, "test": HIDDEN_TEST}
+
+
+def _source(evidence: list[dict], stages: set[str], documents: dict[int, dict]) -> dict:
+    """Источник значения в полях схемы GOLD: файл, редакция, страница, bbox."""
+    items = [item for item in evidence if item.get("stage") in stages]
+    first = items[0] if items else {}
+    meta = documents.get(first.get("document_id"), {})
+    return {
+        "file_id": first.get("file_id"), "sha256": first.get("sha256"),
+        "stage": first.get("stage"), "code": meta.get("document_code"),
+        "revision": meta.get("revision"), "approval": meta.get("approval_status"),
+        "page": first.get("page"),
+        "bbox_polygon": [item.get("bbox") for item in items if item.get("page") ==
+                         first.get("page") and item.get("bbox") is not None],
+    }
+
+
+def evidence_group_id(object_id: str, matrix_code: str, evidence: list[dict]) -> str:
+    """Объект + параметр + актуальные источники (схема GOLD): один ключ группы."""
+    sources = sorted(f"{item.get('file_id')}:{item.get('page')}" for item in evidence)
+    raw = "|".join([object_id, matrix_code, *sources])
+    return "EG-" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def gold_record(run: models.OfficialRun, check: dict, *, status: str, reason: str,
+                reason_code: str, user_id: int | None, source_versions: dict) -> dict:
+    documents = {item.get("id"): item.get("metadata") or {}
+                 for item in run.input_snapshot or []}
+    evidence = list(check.get("evidence") or [])
+    matrix_code = check.get("parameter_code") or ""
+    expected = _source(evidence, {"PD"}, documents)
+    actual = _source(evidence, {"RD", "ID"}, documents)
+    record = {
+        "evidence_group_id": evidence_group_id(run.object_id, matrix_code, evidence),
+        "finding_id": check.get("finding_id"), "object_id": run.object_id,
+        "matrix_code": matrix_code, "rule_version": source_versions.get("matrix_version"),
+        "expected_value": check.get("expected_value"), "actual_value": check.get("actual_value"),
+        "approved_change_ref": check.get("approved_change_ref") or "NONE",
+        "completeness_status": check.get("completeness_status"),
+        "finding_status": status, "review_priority": check.get("priority"),
+        "expert_id": user_id, "timestamp": dt.datetime.utcnow().isoformat(),
+        "expert_reason_code": reason_code, "expert_comment": reason,
+        "matrix_version": source_versions.get("matrix_version"),
+        "model_version": source_versions.get("model_version"),
+        "input_manifest_hash": source_versions.get("input_manifest_hash"),
+    }
+    for prefix, source in (("source_expected", expected), ("source_actual", actual)):
+        for key, value in source.items():
+            record[f"{prefix}_{key}"] = value
+    return record
+
+
 def record_decision(db: Session, run: models.OfficialRun, check: dict, *, status: str,
                     version: int, reason: str, reason_code: str,
-                    source_versions: dict) -> None:
+                    source_versions: dict, user_id: int | None = None) -> None:
     """Разметка по решению инспектора (вызывается в транзакции решения)."""
     finding_id = check.get("finding_id") or ""
     item = db.query(models.DatasetItem).filter_by(run_id=run.id, finding_id=finding_id).first()
@@ -96,6 +151,10 @@ def record_decision(db: Session, run: models.OfficialRun, check: dict, *, status
         item.machine_status = check.get("machine_status") or check.get("finding_status") or ""
         item.evidence = list(check.get("evidence") or [])
         item.source_versions = source_versions
+        item.record = gold_record(run, check, status=status, reason=reason,
+                                  reason_code=reason_code, user_id=user_id,
+                                  source_versions=source_versions)
+        item.evidence_group_id = item.record["evidence_group_id"]
         item.status, item.curated_by, item.curated_at = "DRAFT", None, None
     if status == "NEGATIVE_VERIFIED":
         db.add(models.RejectionLog(
@@ -145,13 +204,13 @@ def split_of(db: Session, object_id: str) -> str:
     row = db.get(models.ObjectSplit, object_id)
     if row is None:
         bucket = int(hashlib.sha256(object_id.encode()).hexdigest(), 16) % 100
-        split = ("train" if bucket < SPLIT_TRAIN_PERCENT else
-                 "validation" if bucket < SPLIT_TRAIN_PERCENT + SPLIT_VALIDATION_PERCENT
-                 else "test")
+        split = (TRAIN if bucket < SPLIT_TRAIN_PERCENT else
+                 VALIDATION if bucket < SPLIT_TRAIN_PERCENT + SPLIT_VALIDATION_PERCENT
+                 else HIDDEN_TEST)
         row = models.ObjectSplit(object_id=object_id, split=split)
         db.add(row)
         db.flush()
-    return row.split
+    return _LEGACY_SPLITS.get(row.split, row.split)
 
 
 def _hash(items: list[dict]) -> str:
@@ -168,12 +227,12 @@ def release(db: Session, *, user_id: int, matrix_version: str) -> models.Dataset
             .order_by(models.DatasetItem.id).all())
     if not rows:
         raise ValueError("нет одобренных куратором записей из финализированных протоколов")
-    splits: dict[str, list[dict]] = {"train": [], "validation": [], "test": []}
+    splits: dict[str, list[dict]] = {name: [] for name in SPLITS}
     for row in rows:
         splits[split_of(db, row.object_id)].append(
             {"id": row.id, "object_id": row.object_id, "finding_id": row.finding_id,
              "label": row.label, "evidence": row.evidence,
-             "source_versions": row.source_versions})
+             "source_versions": row.source_versions, "record": row.record})
     number = db.query(models.DatasetVersion).count() + 1
     version = models.DatasetVersion(
         version=f"ds-{number:04d}", matrix_version=matrix_version,
@@ -184,6 +243,28 @@ def release(db: Session, *, user_id: int, matrix_version: str) -> models.Dataset
         created_by=user_id)
     db.add(version)
     return version
+
+
+def gold_rows(db: Session, version: models.DatasetVersion) -> list[dict]:
+    """Выпуск набора в полях листа «Схема GOLD»: по строке на evidence_group."""
+    rows = (db.query(models.DatasetItem)
+            .filter(models.DatasetItem.id.in_(version.item_ids or []))
+            .order_by(models.DatasetItem.id).all())
+    result = []
+    for row in rows:
+        # Записи, размеченные до появления полей схемы, получают то, что
+        # известно из основных колонок; недостающие поля остаются пустыми.
+        base = {"evidence_group_id": row.evidence_group_id or f"EG-legacy-{row.id}",
+                "finding_id": row.finding_id, "object_id": row.object_id,
+                "matrix_code": row.parameter_code,
+                "finding_status": ("CONFIRMED_VIOLATION" if row.label == POSITIVE
+                                   else "NEGATIVE_VERIFIED"),
+                "expert_reason_code": row.reason_code, "expert_comment": row.reason,
+                **{key: (row.source_versions or {}).get(key)
+                   for key in ("matrix_version", "model_version")}}
+        result.append({**base, **(row.record or {}), "dataset_version": version.version,
+                       "split": split_of(db, row.object_id)})
+    return result
 
 
 def acceptance(metrics: dict, per_category: dict, current: models.ModelVersion | None) -> dict:

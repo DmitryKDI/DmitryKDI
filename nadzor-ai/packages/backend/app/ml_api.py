@@ -6,18 +6,28 @@ dataset_version и регистрирует результаты обучени�
 """
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
+import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from . import auth, feedback, models, parameter_catalog
+from . import auth, evaluation, feedback, models, parameter_catalog
 from .db import get_session
 
 router = APIRouter(prefix="/api/v1/ml", tags=["ml"])
 ML = auth.require("ml_engineer")
 READ = Depends(auth.require("ml_engineer", "supervisor"))
+
+
+class EvaluateInput(BaseModel):
+    # Эталон в полях листа «Схема GOLD»: {"groups": [...], "ocr": [...],
+    # "key_fields": [...]} или просто список групп.
+    reference: dict | list
+    process_ids: list[int]
 
 
 class CurateInput(BaseModel):
@@ -96,7 +106,8 @@ def versions(db: Session = Depends(get_session)):
 
 @router.get("/dataset/versions/{version}/evaluate", dependencies=[READ],
             summary="Метрики текущих машинных результатов на выборке выпуска")
-def evaluate(version: str, split: str = Query("test", pattern="^(train|validation|test)$"),
+def evaluate(version: str,
+             split: str = Query("HIDDEN_TEST", pattern="^(TRAIN|VALIDATION|HIDDEN_TEST)$"),
              db: Session = Depends(get_session)):
     """Precision / Recall / F1 / FPR по evidence_group (ТЗ 14.3).
 
@@ -131,6 +142,50 @@ def _metrics(items: list[models.DatasetItem]) -> dict:
     return {"size": len(items), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "precision": precision, "recall": recall, "f1": f1,
             "false_positive_rate": fp / (fp + tn) if fp + tn else None}
+
+
+GOLD_COLUMNS = (
+    "evidence_group_id", "finding_id", "object_id", "matrix_code", "rule_version",
+    "expected_value", "actual_value",
+    "source_expected_file_id", "source_expected_sha256", "source_expected_stage",
+    "source_expected_code", "source_expected_revision", "source_expected_approval",
+    "source_expected_page", "source_expected_bbox_polygon",
+    "source_actual_file_id", "source_actual_sha256", "source_actual_stage",
+    "source_actual_code", "source_actual_revision", "source_actual_approval",
+    "source_actual_page", "source_actual_bbox_polygon",
+    "approved_change_ref", "completeness_status", "finding_status", "review_priority",
+    "expert_id", "timestamp", "expert_reason_code", "expert_comment",
+    "dataset_version", "matrix_version", "model_version", "split",
+)
+
+
+@router.get("/dataset/versions/{version}/export", dependencies=[READ],
+            summary="Выпуск набора в полях листа «Схема GOLD» (JSON или CSV)")
+def export_version(version: str, output_format: str = Query("json", alias="format",
+                                                             pattern="^(json|csv)$"),
+                   db: Session = Depends(get_session)):
+    row = db.query(models.DatasetVersion).filter_by(version=version).first()
+    if row is None:
+        raise HTTPException(404, "выпуск не найден")
+    rows = feedback.gold_rows(db, row)
+    if output_format == "json":
+        return rows
+    stream = io.StringIO()
+    writer = csv.DictWriter(stream, fieldnames=GOLD_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for item in rows:
+        writer.writerow({key: json.dumps(value, ensure_ascii=False)
+                         if isinstance(value, list | dict) else value
+                         for key, value in item.items()})
+    return Response(stream.getvalue().encode("utf-8-sig"), media_type="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="gold-{version}.csv"'})
+
+
+@router.post("/evaluate", summary="Метрики по эталонной разметке (лист «Метрики», ТЗ 14.3)")
+def evaluate_reference(body: EvaluateInput, db: Session = Depends(get_session),
+                       _: auth.Principal = Depends(ML)):
+    """Эталон читается только на время расчёта: он не сохраняется и не пишется в журнал."""
+    return evaluation.evaluate(db, body.reference, body.process_ids)
 
 
 @router.get("/rejections", summary="Лог отклонений", dependencies=[READ])

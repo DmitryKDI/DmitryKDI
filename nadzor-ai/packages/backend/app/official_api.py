@@ -594,7 +594,7 @@ def decide(run_id: int, body: DecisionInput, db: Session = Depends(get_session),
     # Разметка для GOLD-набора, лог отклонений и спорных случаев (ТЗ 9.4).
     feedback.record_decision(db, row, check, status=body.status, version=current + 1,
                              reason=body.reason.strip(), reason_code=reason_code,
-                             source_versions=_source_versions(db, row))
+                             source_versions=_source_versions(db, row), user_id=user.user_id)
     db.commit()
     db.refresh(row)
     return _run_dict(db, row)
@@ -660,7 +660,8 @@ def review_suspicion(run_id: int, suspicion_id: int, body: SuspicionReview,
                           "finding_status": "CANDIDATE", "explanation": item.description,
                           "evidence": evidence},
             status=finding_status, version=_version(db, run_id), reason=body.comment.strip(),
-            reason_code=reason_code, source_versions=_source_versions(db, run_row))
+            reason_code=reason_code, source_versions=_source_versions(db, run_row),
+            user_id=user.user_id)
     # Протокол читает гипотезы из результата процесса — обновляем и его.
     result = copy.deepcopy(run_row.result or {})
     free = result.setdefault("free_search", {"status": "completed", "items": []})

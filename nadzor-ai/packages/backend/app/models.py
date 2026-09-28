@@ -300,6 +300,10 @@ class DatasetItem(Base):
     machine_status: Mapped[str] = mapped_column(String, default="")
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     source_versions: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Запись в полях листа «Схема GOLD» матрицы: evidence_group_id, источники
+    # ожидаемого и фактического значения, эксперт и время решения.
+    evidence_group_id: Mapped[str] = mapped_column(String, default="")
+    record: Mapped[dict] = mapped_column(JSON, default=dict)
     # DRAFT → APPROVED | EXCLUDED (решение куратора); SUPERSEDED — решение изменено.
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
     curated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -311,7 +315,7 @@ class ObjectSplit(Base):
     """Разбиение по объектам (ТЗ 14.2): объект навсегда в одном наборе."""
     __tablename__ = "object_splits"
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
-    split: Mapped[str] = mapped_column(String(10))  # train | validation | test
+    split: Mapped[str] = mapped_column(String(12))  # TRAIN | VALIDATION | HIDDEN_TEST
     assigned_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 

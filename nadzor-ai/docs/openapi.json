@@ -814,12 +814,103 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(train|validation|test)$",
-              "default": "test",
+              "pattern": "^(TRAIN|VALIDATION|HIDDEN_TEST)$",
+              "default": "HIDDEN_TEST",
               "title": "Split"
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/dataset/versions/{version}/export": {
+      "get": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Выпуск набора в полях листа «Схема GOLD» (JSON или CSV)",
+        "operationId": "export_version_api_v1_ml_dataset_versions__version__export_get",
+        "parameters": [
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(json|csv)$",
+              "default": "json",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ml/evaluate": {
+      "post": {
+        "tags": [
+          "ml"
+        ],
+        "summary": "Метрики по эталонной разметке (лист «Метрики», ТЗ 14.3)",
+        "description": "Эталон читается только на время расчёта: он не сохраняется и не пишется в журнал.",
+        "operationId": "evaluate_reference_api_v1_ml_evaluate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateInput"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2687,6 +2778,36 @@
         ],
         "title": "DocumentOut"
       },
+      "EvaluateInput": {
+        "properties": {
+          "reference": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Reference"
+          },
+          "process_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Process Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reference",
+          "process_ids"
+        ],
+        "title": "EvaluateInput"
+      },
       "FinalizeInput": {
         "properties": {
           "author": {
@@ -2822,6 +2943,16 @@
           "sheet_page_range": {
             "type": "string",
             "title": "Sheet Page Range",
+            "nullable": true
+          },
+          "discipline": {
+            "type": "string",
+            "title": "Discipline",
+            "nullable": true
+          },
+          "file_id": {
+            "type": "string",
+            "title": "File Id",
             "nullable": true
           }
         },

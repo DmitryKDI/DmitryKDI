@@ -62,7 +62,7 @@ export default function Ml() {
 
     <SectionCard title="Выпуски набора данных" subtitle="Разбиение по объектам; SHA-256 каждого набора фиксируется при выпуске.">
       {versions.length === 0 ? <Empty title="Выпусков нет" /> : <ul className="space-y-1 text-xs">{versions.map((row) =>
-        <li key={row.version}><span className="font-medium">{row.version}</span> · матрица {row.matrix_version} · записей {row.items} · {Object.entries(row.counts).map(([split, counts]) => `${split}: ${JSON.stringify(counts)}`).join('; ')}</li>)}</ul>}
+        <li key={row.version}><span className="font-medium">{row.version}</span> · матрица {row.matrix_version} · записей {row.items} · {Object.entries(row.counts).map(([split, counts]) => `${split}: ${JSON.stringify(counts)}`).join('; ')} · выгрузка по схеме GOLD: <a className="text-accent" href={`/backend/api/v1/ml/dataset/versions/${row.version}/export?format=json`}>JSON</a> / <a className="text-accent" href={`/backend/api/v1/ml/dataset/versions/${row.version}/export?format=csv`}>CSV</a></li>)}</ul>}
     </SectionCard>
 
     <SectionCard title="Модели" subtitle={`Опубликована: ${models.published ?? 'нет'}. Публикация — только после приёмки по ТЗ 14.3 и подписи администратора; откат возвращает предыдущую.`}>

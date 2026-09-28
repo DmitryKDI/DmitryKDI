@@ -90,6 +90,12 @@ DECLARED: dict[str, str] = {
     "official_api.EXECUTE_RETRIES": BUDGET,
     # Фоновые задачи: как часто проверять сроки и каким периодом строить отчёт.
     "jobs.POLL_S": BUDGET,
+    # Оценка по эталону (ТЗ 14.3): порог IoU — из ТЗ; z — квантиль нормального
+    # распределения для 95%; бутстреп — сколько повторов и с каким зерном.
+    "evaluation.IOU_THRESHOLD": BUDGET,
+    "evaluation.Z_95": LANGUAGE,
+    "evaluation.BOOTSTRAP_ROUNDS": BUDGET,
+    "evaluation.BOOTSTRAP_SEED": BUDGET,
     # Реестр XLSX: сколько распаковывать одной части — защита от ZIP-бомбы.
     "registry_xlsx.MAX_PART_BYTES": BUDGET,
     # Эксплуатация (ТЗ 12–13): сроки хранения логов и копий, периоды проверок —

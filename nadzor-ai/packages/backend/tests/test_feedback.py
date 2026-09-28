@@ -101,7 +101,7 @@ def test_release_takes_only_curated_items_of_finalized_protocols(act_as):
         released = [db.get(models.DatasetItem, item) for item in row.item_ids]
     runs = {item.run_id for item in released}
     assert final_run in runs and open_run not in runs, "запись нефинализированного протокола"
-    assert set(version["split_hashes"]) == {"train", "validation", "test"}
+    assert set(version["split_hashes"]) == {"TRAIN", "VALIDATION", "HIDDEN_TEST"}
     assert sorted(item.label for item in released if item.run_id == final_run) == [
         feedback.NEGATIVE, feedback.POSITIVE]
     assert object_id in {item.object_id for item in released}
@@ -120,7 +120,7 @@ def test_object_keeps_its_split_forever():
 def test_model_is_published_only_after_acceptance_and_can_be_rolled_back(act_as):
     with SessionLocal() as db:
         dataset = models.DatasetVersion(version=f"ds-test-{uuid.uuid4().hex[:6]}",
-                                        item_ids=[], split_hashes={"test": "x"})
+                                        item_ids=[], split_hashes={"HIDDEN_TEST": "x"})
         db.add(dataset)
         db.commit()
         dataset_version = dataset.version
@@ -167,3 +167,32 @@ def test_weekly_report_is_generated_automatically():
     assert jobs.weekly_report_due(future)
     assert not jobs.weekly_report_due(future + dt.timedelta(days=1))
     print("OK: еженедельный отчёт со статистикой отклонений и рекомендациями")
+
+
+def test_release_exports_rows_in_gold_schema_fields(act_as):
+    run_id, object_id = _run()
+    _decide(run_id, "M-001:matrix", "CONFIRMED_VIOLATION")
+    with SessionLocal() as db:
+        db.get(models.OfficialRun, run_id).finalized_at = dt.datetime.utcnow()
+        db.commit()
+    item = next(row for row in client.get("/api/v1/ml/dataset/items?status=DRAFT").json()
+                if row["run_id"] == run_id)
+    act_as("ml_engineer")
+    client.post(f"/api/v1/ml/dataset/items/{item['id']}/curate", json={"approve": True})
+    version = client.post("/api/v1/ml/dataset/versions").json()["version"]
+    rows = client.get(f"/api/v1/ml/dataset/versions/{version}/export").json()
+    row = next(r for r in rows if r["object_id"] == object_id)
+    for field in ("evidence_group_id", "finding_id", "matrix_code", "expected_value",
+                  "actual_value", "source_expected_file_id", "source_expected_page",
+                  "source_expected_bbox_polygon", "source_actual_file_id",
+                  "source_actual_stage", "approved_change_ref", "completeness_status",
+                  "finding_status", "expert_id", "timestamp", "expert_reason_code",
+                  "dataset_version", "matrix_version", "model_version", "split"):
+        assert field in row, field
+    assert row["finding_status"] == "CONFIRMED_VIOLATION" and row["expert_id"] is not None
+    assert row["split"] in {"TRAIN", "VALIDATION", "HIDDEN_TEST"}
+    assert row["source_expected_stage"] == "PD" and row["source_actual_stage"] == "RD"
+    assert row["evidence_group_id"].startswith("EG-")
+    csv_text = client.get(f"/api/v1/ml/dataset/versions/{version}/export?format=csv").text
+    assert csv_text.lstrip("\ufeff").startswith("evidence_group_id,finding_id,object_id")
+    print("OK: выпуск набора выгружается в полях листа «Схема GOLD» (JSON и CSV)")
