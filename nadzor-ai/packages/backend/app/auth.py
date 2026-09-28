@@ -25,13 +25,12 @@ import hmac
 import os
 import secrets
 from dataclasses import dataclass
-from pathlib import Path
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from . import models
-from .db import DB_PATH, SessionLocal, get_session
+from .db import SessionLocal, get_session
 
 ROLES = ("inspector", "supervisor", "admin", "ml_engineer", "service")
 ROLE_TITLES = {
@@ -53,7 +52,11 @@ SCRYPT_N = 2 ** 14
 SCRYPT_R = 8
 SCRYPT_P = 1
 
-INITIAL_PASSWORD_FILE = Path(DB_PATH).resolve().parent / "initial-admin-password.txt"
+# Учётная запись по умолчанию на время проверки: admin / admin. Переменные
+# NADZOR_ADMIN_LOGIN и NADZOR_ADMIN_PASSWORD её заменяют; в промышленном
+# контуре пароль задаётся окружением или меняется сразу после первого входа.
+DEFAULT_ADMIN_LOGIN = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin"  # noqa: S105 — известный пароль стенда проверки, не секрет
 
 
 @dataclass(frozen=True)
@@ -152,25 +155,20 @@ def require(*roles: str):
 def ensure_initial_admin() -> None:
     """Первый запуск: создать администратора, если пользователей нет.
 
-    Пароль берётся из NADZOR_ADMIN_PASSWORD. Если он не задан, генерируется
-    случайный и записывается в файл рядом с базой (только для владельца): в
-    журнал пароль не пишется. После первого входа его следует сменить.
+    Логин и пароль — из NADZOR_ADMIN_LOGIN / NADZOR_ADMIN_PASSWORD, иначе
+    admin / admin. Если пользователи уже есть, переменные не читаются.
     """
     db = SessionLocal()
     try:
         if db.query(models.User).count():
             return
-        login = os.environ.get("NADZOR_ADMIN_LOGIN", "admin").strip() or "admin"
-        password = os.environ.get("NADZOR_ADMIN_PASSWORD", "")
-        generated = not password
-        if generated:
-            password = secrets.token_urlsafe(12)
+        login = os.environ.get("NADZOR_ADMIN_LOGIN", "").strip() or DEFAULT_ADMIN_LOGIN
+        password = os.environ.get("NADZOR_ADMIN_PASSWORD", "") or DEFAULT_ADMIN_PASSWORD
         db.add(models.User(login=login, password_hash=hash_password(password), role="admin",
                            full_name="Администратор"))
         db.commit()
-        if generated:
-            INITIAL_PASSWORD_FILE.write_text(f"{login}\n{password}\n", encoding="utf-8")
-            INITIAL_PASSWORD_FILE.chmod(0o600)
-            print(f"создан администратор «{login}»; пароль записан в {INITIAL_PASSWORD_FILE}")
+        if password == DEFAULT_ADMIN_PASSWORD:
+            print(f"создан администратор «{login}» с паролем по умолчанию; "
+                  "в промышленном контуре задайте NADZOR_ADMIN_PASSWORD")
     finally:
         db.close()

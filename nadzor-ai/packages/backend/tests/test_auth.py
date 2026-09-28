@@ -124,3 +124,20 @@ def test_every_change_is_audited_with_user_ip_and_agent():
     assert rows[0]["user_agent"] == "audit-test"
     assert rows[0]["user_id"] is not None and rows[0]["status_code"] == 200
     print("OK: действие записано с пользователем, IP-адресом и агентом")
+
+
+def test_default_administrator_is_admin_admin(monkeypatch):
+    """Пока пароль не задан окружением, первый администратор — admin / admin."""
+    monkeypatch.delenv("NADZOR_ADMIN_LOGIN", raising=False)
+    monkeypatch.delenv("NADZOR_ADMIN_PASSWORD", raising=False)
+    with SessionLocal() as db:
+        existing = db.query(models.User).count()
+    if existing:
+        # На общей тестовой базе пользователи уже есть — проверяем значения по умолчанию.
+        assert (auth.DEFAULT_ADMIN_LOGIN, auth.DEFAULT_ADMIN_PASSWORD) == ("admin", "admin")
+        return
+    auth.ensure_initial_admin()
+    response = TestClient(app).post("/api/v1/auth/login",
+                                    json={"login": "admin", "password": "admin"})
+    assert response.status_code == 200
+    print("OK: вход по умолчанию — admin / admin")

@@ -87,8 +87,8 @@ services:
       NADZOR_LOCAL_LLM_MODEL: ${NADZOR_LOCAL_LLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
       NADZOR_LLM_CONCURRENCY: ${NADZOR_LLM_CONCURRENCY:-8}
       NADZOR_OCR_LANGUAGE: ${NADZOR_OCR_LANGUAGE:-rus+eng}
-      # Первый администратор (ТЗ 12): пароль из окружения; если не задан —
-      # генерируется и записывается в /app/state/initial-admin-password.txt.
+      # Первый администратор (ТЗ 12): по умолчанию admin / admin; в промышленном
+      # контуре пароль задаётся в .env (NADZOR_ADMIN_PASSWORD).
       NADZOR_ADMIN_LOGIN: ${NADZOR_ADMIN_LOGIN:-admin}
       NADZOR_ADMIN_PASSWORD: ${NADZOR_ADMIN_PASSWORD:-}
       NADZOR_COOKIE_SECURE: ${NADZOR_COOKIE_SECURE:-0}

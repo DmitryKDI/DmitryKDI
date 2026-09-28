@@ -191,7 +191,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=600.0,
                         help="сколько ждать протокол, секунд")
     parser.add_argument("--login", default=os.environ.get("NADZOR_ADMIN_LOGIN", "admin"))
-    parser.add_argument("--password", default=os.environ.get("NADZOR_ADMIN_PASSWORD", ""))
+    parser.add_argument("--password", default=os.environ.get("NADZOR_ADMIN_PASSWORD", "admin"))
     args = parser.parse_args()
     run(args.base_url, args.timeout, args.login, args.password)
 
