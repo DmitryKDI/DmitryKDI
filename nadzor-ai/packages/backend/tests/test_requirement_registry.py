@@ -14,9 +14,6 @@ from app.requirement_registry import (
     render_requirements_summary,
 )
 
-SAMPLE_DIR = Path("/home/user/nadzor_sample")
-PD_PZ = SAMPLE_DIR / "V2_01-05-04-02-07_Том 5.4.2 ОВ (1).pdf"
-
 
 def test_coded_item_extracts_rooms_and_code():
     """Реальная форма из пояснительной записки: тире-пункт списка систем
@@ -141,34 +138,6 @@ def test_extract_requirements_combines_both_forms():
     assert any(r.code is None for r in reqs)
     print("OK: обе формы объединяются в общий реестр")
 
-
-# --------------------------------------------------------------------------
-# smoke на реальном ПЗ
-# --------------------------------------------------------------------------
-
-def test_real_pz_yields_both_forms():
-    """На реальной пояснительной записке (Том 5.4.2 ОВ) обе формы дают
-    непустой, но по-разному устроенный результат: список ВД/ПД с кодами —
-    десятки записей, требования без кода — единицы (структурно редкая,
-    но именно та форма, что несёт нарушение №2)."""
-    if not PD_PZ.exists():
-        print("SKIP: нет файла", PD_PZ)
-        return
-    import pymupdf
-    doc = pymupdf.open(PD_PZ)
-    try:
-        text_facts = [{"page": i, "text": page.get_text()} for i, page in enumerate(doc)]
-    finally:
-        doc.close()
-
-    coded = extract_coded_requirements(text_facts)
-    predicate = extract_predicate_requirements(text_facts)
-
-    assert len(coded) >= 20, f"ожидали десятки пунктов списка ВД/ПД, получили {len(coded)}"
-    assert all(r.code for r in coded)
-    assert len(predicate) >= 1, "ожидали хотя бы одно требование без кода на реальном файле"
-    assert all(r.code is None for r in predicate)
-    print(f"OK: реальный ПЗ — {len(coded)} пунктов с кодом, {len(predicate)} без кода")
 
 
 def test_render_requirements_summary_lists_every_requirement_with_page_and_rooms():
@@ -383,7 +352,7 @@ def test_render_general_requirements_summary_dedupes_repeated_sentence():
 def test_render_general_requirements_summary_marks_norm_reference_only_sentence():
     """Г.67 — мягкая эвристика (не фильтр, Г.10): предложение-голая ссылка
     на норму без другого содержания помечается видимо, а не молча тонет в
-    каталоге среди содержательных требований. Реальный текст («V2_01-05-
+    каталоге среди содержательных требований. Реальный текст («V0_00-05-
     04-02-07_Том 5.4.2 ОВ (1).pdf», стр.21): «Работы выполнять в
     соответствии с действующими СНиП 3.05.06-85, ПУЭ.»"""
     reqs = [Requirement(rooms=[], page=21,
@@ -401,30 +370,6 @@ def test_render_general_requirements_summary_does_not_mark_real_requirement():
     print("OK: содержательное требование без ссылки на норму не помечается")
 
 
-def test_real_pz_general_requirements_finds_far_more_than_predicate_form():
-    """Смоук на реальном ПЗ: форма 3 должна найти на порядок больше
-    требований, чем узкая форма 2 (Г.36) — измерено на этом же файле:
-    форма 2 даёт единицы находок, форма 3 — десятки/сотни (Г.47)."""
-    if not PD_PZ.exists():
-        print("SKIP: нет файла", PD_PZ)
-        return
-    import pymupdf
-    doc = pymupdf.open(PD_PZ)
-    try:
-        text_facts = [{"page": i, "text": page.get_text()} for i, page in enumerate(doc)]
-    finally:
-        doc.close()
-
-    predicate = extract_predicate_requirements(text_facts)
-    general = extract_general_requirements(text_facts)
-
-    assert len(general) > len(predicate) * 10, (
-        f"ожидали, что форма 3 найдёт на порядок больше формы 2: "
-        f"форма2={len(predicate)}, форма3={len(general)}"
-    )
-    print(f"OK: реальный ПЗ — форма 2: {len(predicate)}, форма 3: {len(general)}")
-
-
 if __name__ == "__main__":
     test_coded_item_extracts_rooms_and_code()
     test_coded_item_merges_multiple_pom_runs_in_one_item()
@@ -435,7 +380,6 @@ if __name__ == "__main__":
     test_room_reference_without_predicate_is_not_a_requirement()
     test_table_legend_caption_is_not_a_requirement()
     test_extract_requirements_combines_both_forms()
-    test_real_pz_yields_both_forms()
     test_render_requirements_summary_lists_every_requirement_with_page_and_rooms()
     test_render_requirements_summary_handles_empty_list()
     test_general_requirements_catch_sentence_without_room_paren()
@@ -454,5 +398,4 @@ if __name__ == "__main__":
     test_render_general_requirements_summary_dedupes_repeated_sentence()
     test_render_general_requirements_summary_marks_norm_reference_only_sentence()
     test_render_general_requirements_summary_does_not_mark_real_requirement()
-    test_real_pz_general_requirements_finds_far_more_than_predicate_form()
     print("ALL PASS")

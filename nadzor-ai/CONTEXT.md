@@ -27,7 +27,6 @@ POST /api/v1/documents/upload (файлы + реестр) -> process_id
 - `packages/backend/app/protocol.py`, `protocol_export.py` — протокол и выгрузки
 - `packages/backend/app/llm.py` — единственная точка обращения к модели, запрет внешней сети
 - `packages/backend/app/local_ocr.py`, `document_convert.py` — OCR и приём DOCX/XML
-- `scripts/smoke/` — проверка запуска без GPU (`make smoke`)
 
 ## Постоянные правила
 
