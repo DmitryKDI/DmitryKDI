@@ -36,6 +36,7 @@ from .admin_api import router as admin_router
 from .api_v1 import router as api_v1_router
 from .auth_api import router as auth_router
 from .classification import classify_document
+from .dashboard import router as dashboard_router
 from .db import DB_PATH, get_session, init_db
 from .document_split import split_pdf
 from .llm import LlmConfig, available_models, check_llm_reachable, local_config, model_configured
@@ -55,6 +56,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(ml_router)
+app.include_router(dashboard_router)
 app.include_router(official_router, dependencies=[Depends(auth.require(*auth.READERS))])
 app.include_router(api_v1_router, dependencies=[Depends(auth.require(*auth.READERS))])
 

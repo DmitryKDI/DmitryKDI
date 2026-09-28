@@ -1,14 +1,20 @@
 import { type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { authApi } from '../authApi'
+import { authApi, can, type Role } from '../authApi'
 import { useApp } from '../store'
 
-const MENU = [
+const MENU: { to: string; label: string; icon: string; roles?: Role[] }[] = [
+  { to: '/objects', label: 'Объекты', icon: '◉' },
   { to: '/', label: 'Проверка ПД–РД–ИД', icon: '▤' },
+  { to: '/ml', label: 'Дообучение', icon: '◈', roles: ['ml_engineer', 'supervisor'] },
+  { to: '/admin', label: 'Администрирование', icon: '⚙', roles: [] },
 ]
 
 const TITLES: Record<string, string> = {
   '/': 'Проверка комплекта по матрице ТЗ',
+  '/objects': 'Дашборд объектов',
+  '/ml': 'Обратная связь и дообучение',
+  '/admin': 'Администрирование',
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -47,7 +53,7 @@ export default function Shell({ children }: { children: ReactNode }) {
 
         <nav className="p-3">
           <ul className="space-y-1">
-            {MENU.map((item) => (
+            {MENU.filter((item) => !item.roles || can(user, ...item.roles)).map((item) => (
               <li key={item.to}>
                 <NavLink
                   to={item.to}

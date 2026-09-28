@@ -330,7 +330,8 @@ export default function OfficialAnalysis() {
       return current.filter((id) => documentData.some((item) => item.id === id))
     })
   }
-  useEffect(() => { void reload().catch((cause) => setMessage(cause instanceof Error ? cause.message : 'Не удалось получить данные.')).finally(() => setLoading(false)) }, [])
+  // Переход с дашборда: объект передаётся в адресе (?object=…).
+  useEffect(() => { void reload(new URLSearchParams(window.location.search).get('object') ?? '').catch((cause) => setMessage(cause instanceof Error ? cause.message : 'Не удалось получить данные.')).finally(() => setLoading(false)) }, [])
   useEffect(() => {
     if (!run || !['running', 'queued'].includes(run.status)) return
     const timer = window.setTimeout(() => { void officialApi.run(run.id).then(setRun).catch((cause) => setMessage(cause instanceof Error ? cause.message : 'Не удалось обновить ход проверки.')) }, 1500)

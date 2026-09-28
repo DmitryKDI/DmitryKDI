@@ -67,7 +67,7 @@ export function FreeSearchCard({ runId, finalized, user, status, reason, onChang
             {Object.entries(REASON_CODES).map(([code, title]) => <option key={code} value={code}>{title}</option>)}
           </select>
         </div>}
-        {message && <p className="mb-2 text-xs text-danger">{message}</p>}
+        {message && <p className="mb-2 text-xs text-critical">{message}</p>}
         <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left text-sm">
           <thead className="bg-surface-muted text-xs text-ink-muted"><tr>
             <th className="px-3 py-2">Подход</th><th className="px-3 py-2">Гипотеза</th><th className="px-3 py-2">Источники</th><th className="px-3 py-2">Статус</th><th className="px-3 py-2">Действие</th>

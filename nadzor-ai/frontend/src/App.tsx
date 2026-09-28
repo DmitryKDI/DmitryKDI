@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { SESSION_EXPIRED, authApi } from './authApi'
+import { SESSION_EXPIRED, authApi, can } from './authApi'
 import Shell from './layout/Shell'
+import Admin from './pages/Admin'
+import Dashboard from './pages/Dashboard'
 import Login from './pages/Login'
+import Ml from './pages/Ml'
 import OfficialAnalysis from './pages/OfficialAnalysis'
 import { useApp } from './store'
 
@@ -28,6 +31,9 @@ export default function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<OfficialAnalysis />} />
+        <Route path="/objects" element={<Dashboard />} />
+        {can(user) && <Route path="/admin" element={<Admin />} />}
+        {can(user, 'ml_engineer', 'supervisor') && <Route path="/ml" element={<Ml />} />}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>
