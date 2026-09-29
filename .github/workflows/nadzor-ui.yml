@@ -64,3 +64,15 @@ jobs:
           pip install -r requirements-dev.txt
       - run: ruff check packages/ml/app/worker.py packages/ml/app/service.py packages/ml/app/kv.py packages/ml/app/cad.py packages/ml/app/cv.py packages/ml/app/semantic.py packages/ml/app/sources.py
       - run: PYTHONPATH=packages/ml pytest -q packages/ml/tests
+
+  docker:
+    # Образы стенда собираются так же, как у проверяющих: docker compose build.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/make-secrets.sh
+      - run: docker compose config -q
+      - run: docker compose build server ml-worker frontend
