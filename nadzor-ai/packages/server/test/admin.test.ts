@@ -17,6 +17,18 @@ describe('вход и роли (ТЗ 12, п.1–2)', () => {
       .toBe(401)
   })
 
+  it('подбор пароля: после 5 неудач вход закрыт на 15 минут', async () => {
+    const attempt = (password: string) => s.call('POST', '/api/v1/auth/login', null, { login: 'admin', password })
+    for (let i = 0; i < 5; i += 1) expect((await attempt('неверный')).statusCode).toBe(401)
+    const locked = await attempt('admin')
+    expect(locked.statusCode).toBe(429)
+    expect(locked.body).toMatch(/повторите через/)
+    s.clock.now = new Date(s.clock.now.getTime() + 16 * 60_000)
+    expect((await attempt('admin')).statusCode).toBe(200)
+    expect((await attempt('неверный')).statusCode).toBe(401) // успешный вход обнулил счётчик
+    expect((await attempt('admin')).statusCode).toBe(200)
+  })
+
   it('пароль хранится только хешем с солью', async () => {
     await s.as('inspector')
     const row = s.ctx.db.prepare("SELECT password_hash FROM users WHERE login = 'user-inspector'").get() as

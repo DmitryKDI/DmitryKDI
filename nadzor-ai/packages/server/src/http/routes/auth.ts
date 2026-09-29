@@ -5,6 +5,7 @@ import {
   COOKIE_NAME, createSession, dropSession, authenticate, requestToken, requireRole, ROLE_TITLES, ROLES,
   SESSION_TTL_HOURS, type Role,
 } from '../../auth/auth.js'
+import { LoginLockout } from '../../auth/lockout.js'
 import { hashPassword, MIN_PASSWORD_LENGTH, verifyPassword } from '../../auth/passwords.js'
 import type { Context } from '../../context.js'
 import { bool, fromJson, nowIso } from '../../db/database.js'
@@ -29,6 +30,7 @@ function checkPassword(password: string): void {
 
 export function authRoutes(app: FastifyInstance, ctx: Context): void {
   const user = (userId: number) => ctx.db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow
+  const lockout = new LoginLockout()
 
   app.post('/api/v1/auth/login', {
     schema: { tags: ['auth'], summary: 'Вход по логину и паролю',
@@ -38,11 +40,19 @@ export function authRoutes(app: FastifyInstance, ctx: Context): void {
     const body = request.body as { login: string; password: string }
     const login = body.login.trim()
     note(request, { login })
+    const key = `${login.toLowerCase()}|${request.ip}`
+    const wait = lockout.lockedFor(key, ctx.now())
+    if (wait) throw new HttpError(429, `слишком много неудачных попыток входа: повторите через ${wait} мин.`)
     const row = ctx.db.prepare('SELECT * FROM users WHERE login = ?').get(login) as UserRow | undefined
     if (!row || !bool(row.is_active) || !verifyPassword(body.password, row.password_hash)) {
       ctx.log.warning(`неудачная попытка входа: ${login}`, { event: 'login_failed', security: true })
+      if (lockout.fail(key, ctx.now())) {
+        ctx.log.warning(`вход временно закрыт после серии неудач: ${login}, ${request.ip}`,
+          { event: 'login_locked', security: true })
+      }
       throw new HttpError(401, 'неверный логин или пароль')
     }
+    lockout.succeed(key)
     const token = createSession(ctx, row.id)
     request.principal = { userId: row.id, login: row.login, role: row.role, fullName: row.full_name }
     reply.setCookie(COOKIE_NAME, token, { httpOnly: true, sameSite: 'strict', secure: ctx.config.cookieSecure,
