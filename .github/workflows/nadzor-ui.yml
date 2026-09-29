@@ -1,0 +1,92 @@
+name: Inspector AI
+
+on:
+  push:
+    paths:
+      - 'nadzor-ai/**'
+      - '.github/workflows/nadzor-ui.yml'
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai/frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nadzor-ai/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai/packages/server
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nadzor-ai/packages/server/package-lock.json
+      - name: Шрифт с кириллицей для выгрузки PDF
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+
+  ml:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: nadzor-ai/requirements-dev.txt
+      - name: Tesseract с русским словарём и шрифт
+        # Тест распознавания должен реально читать страницу, а не
+        # пропускаться из-за отсутствия движка.
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng fonts-dejavu-core
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - run: ruff check packages/ml/app/worker.py packages/ml/app/service.py packages/ml/app/kv.py packages/ml/app/cad.py packages/ml/app/cv.py packages/ml/app/semantic.py packages/ml/app/sources.py
+      - run: PYTHONPATH=packages/ml pytest -q packages/ml/tests
+
+  docker:
+    # Образы стенда собираются так же, как у проверяющих: docker compose build.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nadzor-ai
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/make-secrets.sh
+      - run: docker compose config -q
+      - run: docker compose build server ml-worker frontend
+      - name: Веса на Яндекс.Диске находятся, эмбеддинги скачиваются
+        run: |
+          python3 - <<'PY'
+          import importlib.util, pathlib
+          spec = importlib.util.spec_from_file_location("f", "scripts/fetch_models.py")
+          m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          found = m._yandex_models(m.Http(), m.DEFAULT_URL)
+          print("папки моделей:", found)
+          assert set(found) == set(m.MODELS), found
+          root = pathlib.Path("/tmp/models")
+          m.from_yandex(m.Http(), root, m.DEFAULT_URL, ["paraphrase-multilingual-MiniLM-L12-v2"])
+          assert "paraphrase-multilingual-MiniLM-L12-v2" not in m.missing(root)
+          print("эмбеддинги скачаны:", sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()))
+          PY

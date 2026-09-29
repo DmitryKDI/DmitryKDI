@@ -1,0 +1,14 @@
+# Windows-ярлык обязан иметь CRLF: cmd.exe спотыкается на метках и goto
+# в файле с юниксовыми переводами строк.
+*.bat text eol=crlf
+
+# Обратная причина того же рода: эти скрипты выполняются внутри WSL/bash,
+# который ломается на CRLF (символ \r попадает в последний аргумент строки,
+# например `cd: $'./scripts/..\r': No such file or directory`). На машине
+# с git core.autocrlf=true без этого правила чекаут молча портит скрипты.
+*.sh text eol=lf
+
+# Все текстовые файлы — с LF: стенд на Linux, а выгрузка с Windows иначе
+# получает CRLF (ломает Dockerfile, Makefile, конфигурации).
+* text=auto eol=lf
+*.bat text eol=crlf
