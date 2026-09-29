@@ -42,8 +42,11 @@
 
 ## Запуск
 
+Веса моделей (≈ 17 ГБ): **https://disk.yandex.ru/d/fRWLLBTKeV1CXw** — скачать и
+положить обе папки в `./models` (раскладка — [docs/ЗАПУСК.md](docs/ЗАПУСК.md)).
+
 ```bash
-scripts/make-secrets.sh          # ключи шифрования и пароли очереди/кэша (один раз)
+scripts/make-secrets.sh          # ключи шифрования, пароли очереди/кэша, TLS-сертификат (один раз)
 docker compose up -d             # нужен GPU и веса в ./models
 ```
 
