@@ -26,3 +26,21 @@ def test_onnx_in_hugging_face_subfolder_is_found(tmp_path):
 
 def test_missing_files_report_the_folder(tmp_path):
     assert semantic.model_files(tmp_path / "absent") is None
+
+
+def test_token_vectors_are_mean_pooled_over_the_mask():
+    import numpy as np
+
+    hidden = np.array([[[1.0, 0.0], [3.0, 0.0], [100.0, 100.0]]], dtype=np.float32)
+    mask = np.array([[1, 1, 0]], dtype=np.int64)
+    pooled = semantic.pool(hidden, mask)
+    assert np.allclose(pooled, [[1.0, 0.0]])
+
+
+def test_sentence_vector_export_is_used_as_is():
+    # Часть ONNX-выгрузок sentence-transformers отдаёт уже готовый вектор предложения.
+    import numpy as np
+
+    sentence = np.array([[3.0, 4.0]], dtype=np.float32)
+    pooled = semantic.pool(sentence, np.array([[1, 1, 1]], dtype=np.int64))
+    assert np.allclose(pooled, [[0.6, 0.8]])

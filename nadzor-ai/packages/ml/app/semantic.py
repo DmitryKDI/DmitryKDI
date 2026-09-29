@@ -81,13 +81,16 @@ class Encoder:
             feed = {"input_ids": ids, "attention_mask": mask}
             if "token_type_ids" in self.inputs:
                 feed["token_type_ids"] = np.zeros_like(ids)
-            hidden = self.session.run(None, feed)[0]
-            weights = mask[..., None].astype(np.float32)
-            pooled = (hidden * weights).sum(axis=1) / np.clip(weights.sum(axis=1), 1e-9, None)
-            vectors.append(
-                pooled / np.clip(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-9, None)
-            )
+            vectors.append(pool(self.session.run(None, feed)[0], mask))
         return np.vstack(vectors) if vectors else np.zeros((0, 1), dtype=np.float32)
+
+
+def pool(output: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Нормированный вектор предложения: среднее по токенам маски или готовый вектор выгрузки."""
+    if output.ndim == 3:
+        weights = mask[..., None].astype(np.float32)
+        output = (output * weights).sum(axis=1) / np.clip(weights.sum(axis=1), 1e-9, None)
+    return output / np.clip(np.linalg.norm(output, axis=1, keepdims=True), 1e-9, None)
 
 
 _ENCODER: Encoder | None = None
