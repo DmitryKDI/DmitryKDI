@@ -124,6 +124,56 @@ describe('решения по гипотезам (ТЗ 9.5)', () => {
     expect(status.status).toBe('COMPLETED')
   })
 
+  it('дозагрузка не сбрасывает решения по гипотезам (ТЗ 9.3, п.3)', async () => {
+    const token = await s.as('inspector')
+    const pd = await pdf(['PD'])
+    const rd = await pdf(['RD'])
+    const first = multipart([
+      { name: 'files', filename: 'pd.pdf', data: pd },
+      { name: 'files', filename: 'rd.pdf', data: rd },
+      { name: 'registry', filename: 'r.json', data: registry([
+        { file_id: 'PD-K', file_name: 'pd.pdf', object_id: 'OBJ-K', doc_stage: 'PD', discipline: 'АР',
+          document_code: 'K-PD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-10' },
+        { file_id: 'RD-K', file_name: 'rd.pdf', object_id: 'OBJ-K', doc_stage: 'RD', discipline: 'АР',
+          document_code: 'K-RD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-11' }],
+      { 'pd.pdf': pd, 'rd.pdf': rd }) },
+    ])
+    const processId = (await s.call('POST', '/api/v1/documents/upload', token, first.payload, first.headers))
+      .json().process_id
+    await answerParse(s)
+    const hypothesis = (description: string) => ({ discovery_method: 'LOGICAL_RULE', confidence: 0.7, description,
+      pd_reference: 'K-PD', rd_reference: 'K-RD', review_priority: 'HIGH', normative_base: '',
+      parameter_code: 'M-001', evidence: check('M-001', 'CANDIDATE').evidence })
+    await answerInspect(s, [check('M-001', 'NEGATIVE_VERIFIED')], [hypothesis('Если A, то B'),
+      hypothesis('Если C, то D')])
+    const before = (await s.call('GET', `/api/v1/processes/${processId}/suspicions`, token)).json()
+    const reviewed = before.find((item: { description: string }) => item.description === 'Если A, то B')
+    const promoted = await s.call('POST', `/api/v1/processes/${processId}/suspicions/${reviewed.suspicion_id}`,
+      token, { action: 'promote' })
+    expect(promoted.statusCode, promoted.body).toBe(200)
+
+    const idPdf = await pdf(['ID'])
+    const more = multipart([
+      { name: 'files', filename: 'id.pdf', data: idPdf },
+      { name: 'registry', filename: 'r.json', data: registry([{ file_id: 'ID-K', file_name: 'id.pdf',
+        object_id: 'OBJ-K', doc_stage: 'ID', discipline: 'АР', document_code: 'K-ID', revision: '1',
+        approval_status: 'APPROVED', approval_date: '2026-01-12' }], { 'id.pdf': idPdf }) },
+      { name: 'process_id', data: String(processId) },
+    ])
+    expect((await s.call('POST', '/api/v1/documents/upload', token, more.payload, more.headers)).statusCode)
+      .toBe(200)
+    await answerParse(s)
+    await answerInspect(s, [check('M-001', 'NEGATIVE_VERIFIED')], [hypothesis('Если A, то B'),
+      hypothesis('Если C, то D'), hypothesis('Если E, то F')])
+
+    const after = (await s.call('GET', `/api/v1/processes/${processId}/suspicions`, token)).json()
+    expect(after.map((item: { description: string }) => item.description).sort())
+      .toEqual(['Если A, то B', 'Если C, то D', 'Если E, то F'])
+    const kept = after.find((item: { description: string }) => item.description === 'Если A, то B')
+    expect(kept).toMatchObject({ suspicion_id: reviewed.suspicion_id, finding_status: 'CANDIDATE',
+      inspector_status: 'PROMOTED' })
+  })
+
   it('координаты РД и ИД достаточны для сценария RD_ID_ONLY', async () => {
     const { hasCoordinates } = await import('../src/domain/processes.js')
     expect(hasCoordinates([

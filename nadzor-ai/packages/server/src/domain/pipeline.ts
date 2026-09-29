@@ -258,20 +258,24 @@ export function applyInspection(ctx: Context, processId: number, payload: Json):
   ctx.db.transaction(() => {
     // Гипотезы свободного поиска (ТЗ 9.5) — в таблицу Suspicions.
     const free = result.free_search ?? { status: 'not_run', reason: 'свободный поиск не выполнялся', items: [] }
-    ctx.db.prepare('DELETE FROM suspicions WHERE process_id = ?').run(processId)
+    // Дозагрузка не сбрасывает верификацию (ТЗ 9.3, п.3): гипотезы с решением
+    // инспектора остаются, заменяются только нерассмотренные.
+    ctx.db.prepare(`DELETE FROM suspicions WHERE process_id = ? AND inspector_status = 'PENDING'`).run(processId)
+    const reviewed = new Set((ctx.db.prepare('SELECT discovery_method, description FROM suspicions WHERE process_id = ?')
+      .all(processId) as { discovery_method: string; description: string }[])
+      .map((row) => `${row.discovery_method}\u0000${row.description}`))
     const insert = ctx.db.prepare(`INSERT INTO suspicions (object_id, process_id, discovery_method,
       confidence, description, pd_reference, rd_reference, review_priority, normative_base,
       parameter_code, evidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    const ids: number[] = []
     for (const item of free.items ?? []) {
-      const info = insert.run(proc.object_id, processId, item.discovery_method, item.confidence ?? null,
+      if (reviewed.has(`${item.discovery_method}\u0000${item.description ?? ''}`)) continue
+      insert.run(proc.object_id, processId, item.discovery_method, item.confidence ?? null,
         item.description ?? '', item.pd_reference ?? '', item.rd_reference ?? '',
         item.review_priority ?? 'MEDIUM', item.normative_base ?? '', item.parameter_code ?? '',
         toJson(item.evidence ?? []), now)
-      ids.push(Number(info.lastInsertRowid))
     }
-    free.items = ids.map((id) => processes.suspicionDict(ctx.db.prepare('SELECT * FROM suspicions WHERE id = ?')
-      .get(id) as Parameters<typeof processes.suspicionDict>[0]))
+    free.items = (ctx.db.prepare('SELECT * FROM suspicions WHERE process_id = ? ORDER BY id').all(processId) as
+      Parameters<typeof processes.suspicionDict>[0][]).map(processes.suspicionDict)
     result.free_search = free
     const cancelled = proc.cancelled_at !== null
     const total = Number(result.coverage?.total ?? (result.checks ?? []).length)
