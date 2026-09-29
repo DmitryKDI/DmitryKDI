@@ -3,6 +3,7 @@ import { can } from '../authApi'
 import { Chip, Empty, SectionCard, Skeleton } from '../components/ui'
 import { useApp } from '../store'
 import { FreeSearchCard } from './FreeSearchCard'
+import { SplitFindingForm } from './SplitFindingForm'
 import {
   type DecisionStatus,
   findingLabel,
@@ -18,6 +19,7 @@ import {
   type OfficialRun,
   type OfficialStage,
   type ProviderCheck,
+  type SplitPart,
   type ProviderSettings,
 } from '../officialApi'
 
@@ -263,9 +265,10 @@ function runForObject(runs: OfficialRun[], objectId: string): OfficialRun | null
     ?? matching[0] ?? null
 }
 
-function CheckRow({ check, run, onDecision, onEvidence }: {
+function CheckRow({ check, run, onDecision, onSplit, onEvidence }: {
   check: OfficialCheck; run: OfficialRun
   onDecision: (check: OfficialCheck, status: DecisionStatus, reason: string, reasonCode: string) => Promise<void>
+  onSplit: (check: OfficialCheck, parts: SplitPart[], reason: string) => Promise<boolean>
   onEvidence: (evidence: OfficialEvidence[]) => void
 }) {
   const user = useApp((state) => state.user)
@@ -273,6 +276,7 @@ function CheckRow({ check, run, onDecision, onEvidence }: {
   const [reason, setReason] = useState('')
   const [reasonCode, setReasonCode] = useState('')
   const [saving, setSaving] = useState(false)
+  const [splitting, setSplitting] = useState(false)
   // ТЗ 9.3: три действия инспектора, не более трёх кликов на нарушение.
   // Решение подписывается учётной записью, выполнившей вход.
   const save = async (status: DecisionStatus) => {
@@ -281,10 +285,11 @@ function CheckRow({ check, run, onDecision, onEvidence }: {
     try { await onDecision(check, status, reason, reasonCode); setReason(''); setReasonCode('') } finally { setSaving(false) }
   }
   const mayDecide = can(user, 'inspector', 'supervisor') && run.process_status !== 'FINALIZED'
+  const maySplit = mayDecide && check.finding_status === 'CANDIDATE' && !check.split_from && check.evidence.length > 1
   return <>
     <tr className="border-t border-surface-line text-sm">
       <td className="px-3 py-2 align-top font-medium text-ink">{check.parameter_code}</td>
-      <td className="px-3 py-2 align-top"><div className="font-medium text-ink">{check.parameter_name}</div><div className="mt-1 text-xs text-ink-faint">{check.completeness_status}</div></td>
+      <td className="px-3 py-2 align-top"><div className="font-medium text-ink">{check.parameter_name}</div><div className="mt-1 text-xs text-ink-faint">{check.completeness_status}{check.split_from && ` · часть кандидата ${check.split_from}`}</div></td>
       <td className="px-3 py-2 align-top"><Chip tone={check.priority === 'HIGH' ? 'warn' : 'neutral'}>{check.priority}</Chip></td>
       <td className="px-3 py-2 align-top"><Chip tone={statusTone(check.technical_status)}>{findingLabel(check.finding_status, check.technical_status)}</Chip></td>
       <td className="px-3 py-2 align-top"><button className="text-xs text-accent hover:underline" onClick={() => setExpanded(!expanded)}>{expanded ? 'Свернуть' : 'Подробнее'}</button></td>
@@ -301,7 +306,10 @@ function CheckRow({ check, run, onDecision, onEvidence }: {
             <button className="btn-primary px-3 py-1.5 text-xs" disabled={saving || !reason.trim()} onClick={() => void save('CONFIRMED_VIOLATION')}>Подтвердить нарушение</button>
             <button className="btn-ghost px-3 py-1.5 text-xs" disabled={saving || !reason.trim() || !reasonCode} onClick={() => void save('NEGATIVE_VERIFIED')}>Отклонить</button>
             <button className="btn-ghost px-3 py-1.5 text-xs" disabled={saving || !reason.trim()} onClick={() => void save('CLARIFICATION_REQUIRED')}>Требует уточнения</button>
+            {maySplit && !splitting && <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => setSplitting(true)}>Разделить…</button>}
           </div>
+          {splitting && <SplitFindingForm check={check} onCancel={() => setSplitting(false)}
+            onSplit={async (parts, splitReason) => { if (await onSplit(check, parts, splitReason)) setSplitting(false) }} />}
         </> : <p className="mt-2 text-xs text-ink-faint">{run.process_status === 'FINALIZED' ? 'Протокол финализирован: решения закрыты.' : 'Решения принимает инспектор.'}</p>}
         {check.review_history.length > 0 && <details className="mt-3 text-xs"><summary className="cursor-pointer text-ink-muted">История решений ({check.review_history.length})</summary><ul className="mt-2 space-y-1 text-ink-faint">{check.review_history.map((item, index) => <li key={`${item.author}-${index}`}>{item.created_at || 'время не указано'} · {item.author}: {findingLabel(item.status, 'completed')} — {item.reason}</li>)}</ul></details>}
       </div>}
@@ -383,6 +391,18 @@ export default function OfficialAnalysis() {
   const verifyProvider = async () => { setCheckingProvider(true); try { setProviderCheck(await officialApi.checkProvider()) } catch (cause) { setProviderCheck({ reachable: false, provider: provider?.provider ?? 'local', message: cause instanceof Error ? cause.message : 'Проверка связи не выполнена.' }) } finally { setCheckingProvider(false) } }
   const launch = async () => { setBusy(true); try { const created = await officialApi.createRun(selectedObject, selected); setRun(created); setMessage('Официальная проверка запущена. Машинные кандидаты требуют подтверждения инспектором.') } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Не удалось запустить проверку.') } finally { setBusy(false) } }
   const cancel = async () => { if (!run) return; setBusy(true); try { setRun(await officialApi.cancelRun(run.id)); setMessage('Остановка запрошена: обработка завершится на безопасной точке.') } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Не удалось остановить проверку.') } finally { setBusy(false) } }
+  const split = async (check: OfficialCheck, parts: SplitPart[], reason: string): Promise<boolean> => {
+    if (!run) return false
+    try {
+      const updated = await officialApi.split(run.id, check.finding_id, { reason, parts, expected_version: run.version ?? 0 })
+      setRun(updated)
+      setMessage(`Кандидат ${check.finding_id} разделён на ${parts.length} части: решение принимается по каждой.`)
+      return true
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : 'Не удалось разделить кандидата.')
+      return false
+    }
+  }
   const decide = async (check: OfficialCheck, status: DecisionStatus, reason: string, reasonCode: string) => { if (!run) return; try { const updated = await officialApi.decide(run.id, { finding_id: check.finding_id, status, reason, expected_version: run.version ?? 0, reason_code: status === 'NEGATIVE_VERIFIED' ? reasonCode : undefined }); setRun(updated); setMessage(updated.system_comment || 'Решение инспектора сохранено отдельной версией.') } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Не удалось сохранить решение.') } }
   const user = useApp((state) => state.user)
   const [unfinalizeReason, setUnfinalizeReason] = useState('')
@@ -431,8 +451,8 @@ function ModelAvailability({ check }: { check: ProviderCheck }) {
           {(run.pending_documents?.length ?? 0) > 0 && <p className="mt-1 rounded-lg bg-surface-muted px-2 py-1 text-xs">Поступили новые документы ({run.pending_documents!.map((item) => `${item.metadata.stage || '?'} ${item.metadata.document_code || ''}`.trim()).join(', ')}). Проверка по ним не запускалась: создайте новую проверку.</p>}
           {can(user, 'supervisor') && <div className="mt-2 flex flex-wrap gap-2"><input className="rounded-lg border border-surface-line px-2 py-1.5 text-xs" value={unfinalizeReason} onChange={(event) => setUnfinalizeReason(event.target.value)} placeholder="Причина отмены финализации *" /><button className="btn-ghost px-3 py-1.5 text-xs" disabled={!unfinalizeReason.trim()} onClick={() => void unfinalize()}>Отменить финализацию</button></div>}</div>}
     </SectionCard>}
-    {run?.result && <SectionCard title="Текстовая сверка по матрице" subtitle={`Покрытие: выполнено ${run.result.coverage.completed} из ${run.result.coverage.total}; не выполнено ${run.result.coverage.not_run}.`} right={<div className="flex gap-2"><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'json')}>JSON</a><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'csv')}>CSV</a></div>}>{checks.length === 0 ? <Empty title="Завершённых параметров пока нет" hint={run.result.coverage.not_run > 0 ? 'Часть проверки не выполнялась или требует уточнения. Это не означает отсутствие расхождений.' : 'Сервер не вернул параметров для выбранного комплекта; проверьте статус прогона и метаданные.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Код</th><th className="px-3 py-2">Параметр</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{checks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}
-    {run?.result && <SectionCard title="Графическая сверка листов" subtitle={`Статус: ${graphicAnalysis.status}. ${graphicAnalysis.reason || 'Кандидаты формируются отдельно от текстовой матрицы и требуют решения инспектора.'}`}>{graphicChecks.length === 0 ? <Empty title="Графические кандидаты не сформированы" hint={graphicAnalysis.status === 'completed' ? 'Просмотр завершён без наблюдаемых кандидатов. Это не является выводом об отсутствии нарушения.' : 'Графическая проверка не завершена; отсутствие кандидатов нельзя считать чистым результатом.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Вид</th><th className="px-3 py-2">Кандидат</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{graphicChecks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}
+    {run?.result && <SectionCard title="Текстовая сверка по матрице" subtitle={`Покрытие: выполнено ${run.result.coverage.completed} из ${run.result.coverage.total}; не выполнено ${run.result.coverage.not_run}.`} right={<div className="flex gap-2"><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'json')}>JSON</a><a className="btn-ghost px-2 py-1 text-xs" href={officialApi.exportUrl(run.id, 'csv')}>CSV</a></div>}>{checks.length === 0 ? <Empty title="Завершённых параметров пока нет" hint={run.result.coverage.not_run > 0 ? 'Часть проверки не выполнялась или требует уточнения. Это не означает отсутствие расхождений.' : 'Сервер не вернул параметров для выбранного комплекта; проверьте статус прогона и метаданные.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Код</th><th className="px-3 py-2">Параметр</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{checks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onSplit={split} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}
+    {run?.result && <SectionCard title="Графическая сверка листов" subtitle={`Статус: ${graphicAnalysis.status}. ${graphicAnalysis.reason || 'Кандидаты формируются отдельно от текстовой матрицы и требуют решения инспектора.'}`}>{graphicChecks.length === 0 ? <Empty title="Графические кандидаты не сформированы" hint={graphicAnalysis.status === 'completed' ? 'Просмотр завершён без наблюдаемых кандидатов. Это не является выводом об отсутствии нарушения.' : 'Графическая проверка не завершена; отсутствие кандидатов нельзя считать чистым результатом.'} /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-surface-muted text-xs text-ink-muted"><tr><th className="px-3 py-2">Вид</th><th className="px-3 py-2">Кандидат</th><th className="px-3 py-2">Приоритет</th><th className="px-3 py-2">Состояние</th><th className="px-3 py-2">Действие</th></tr></thead><tbody>{graphicChecks.map((check) => <CheckRow key={check.finding_id} check={check} run={run} onDecision={decide} onSplit={split} onEvidence={setEvidence} />)}</tbody></table></div>}</SectionCard>}
     {run?.result && run.status === 'completed' && <FreeSearchCard runId={run.id} finalized={run.process_status === 'FINALIZED'} user={user} status={run.result.free_search?.status} reason={run.result.free_search?.reason} onChanged={() => { void officialApi.run(run.id).then(setRun) }} />}
     {evidence && <EvidencePreview evidence={evidence} onClose={() => setEvidence(null)} />}
   </div>

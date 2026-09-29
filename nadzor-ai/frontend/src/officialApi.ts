@@ -103,6 +103,7 @@ export interface OfficialCheck {
   technical_status: TechnicalStatus
   review_history: ReviewHistoryItem[]
   confidence?: number | null
+  split_from?: string
 }
 
 export interface OfficialRunResult {
@@ -173,6 +174,19 @@ export const REASON_CODES: Record<string, string> = {
 
 /** Действия инспектора по ТЗ 9.3: подтвердить, отклонить, запросить уточнение. */
 export type DecisionStatus = Extract<FindingStatus, 'CONFIRMED_VIOLATION' | 'NEGATIVE_VERIFIED' | 'CLARIFICATION_REQUIRED'>
+
+/** Часть составного кандидата: свои значения и доказательства из его карточки (ТЗ 9.3, п.2). */
+export interface SplitPart {
+  expected_value: string
+  actual_value: string
+  evidence_indexes: number[]
+}
+
+export interface SplitInput {
+  reason: string
+  expected_version: number
+  parts: SplitPart[]
+}
 
 export interface DecisionInput {
   finding_id: string
@@ -271,6 +285,9 @@ export const officialApi = {
   cancelRun: async (id: number) => toRun(await request<ProcessPayload>(`/processes/${id}/cancel`, json({}))),
   decide: async (id: number, input: DecisionInput) =>
     toRun(await request<ProcessPayload>(`/processes/${id}/decisions`, json(input))),
+  split: async (id: number, findingId: string, input: SplitInput) =>
+    toRun(await request<ProcessPayload>(`/processes/${id}/findings/${encodeURIComponent(findingId)}/split`,
+      json(input))),
   exportUrl: (id: number, format: 'json' | 'csv') => `${API}/processes/${id}/export?format=${format}`,
   protocolUrl: (id: number, format: 'pdf' | 'docx' | 'xml') => `${API}/processes/${id}/export?format=${format}`,
   finalize: async (id: number) => toRun(await request<ProcessPayload>(`/processes/${id}/finalize`, json({}))),

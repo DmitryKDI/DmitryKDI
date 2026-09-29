@@ -104,6 +104,27 @@ export function processRoutes(app: FastifyInstance, ctx: Context): void {
     return current(pid(request))
   })
 
+  app.post('/api/v1/processes/:process_id/findings/:finding_id/split', {
+    ...verify, schema: { tags: ['api-v1'], summary: 'Разделить составной кандидат на атомарные findings',
+      description: 'ТЗ 9.3, п.2: каждая часть получает свои expected/actual и доказательства из карточки ' +
+        'кандидата (индексы evidence) с координатами в двух стадиях; решение принимается по каждой части.',
+      params: { type: 'object', required: ['process_id', 'finding_id'], properties: {
+        process_id: { type: 'integer', minimum: 1 }, finding_id: nonEmpty } },
+      body: { type: 'object', required: ['reason', 'expected_version', 'parts'], properties: {
+        reason: text, expected_version: { type: 'integer', minimum: 0 },
+        parts: { type: 'array', minItems: 2, items: { type: 'object',
+          required: ['expected_value', 'actual_value', 'evidence_indexes'], properties: {
+            expected_value: text, actual_value: text,
+            evidence_indexes: { type: 'array', minItems: 1, items: { type: 'integer', minimum: 0 } } } } } } } },
+  }, async (request) => {
+    const status = current(pid(request)).status
+    if (!protocol.canVerify(status)) throw conflict(`верификация невозможна в статусе ${status}`)
+    const { finding_id: findingId } = request.params as { finding_id: string }
+    processes.split(ctx, pid(request), findingId, request.body as Parameters<typeof processes.split>[3],
+      actor(request.principal!))
+    return current(pid(request))
+  })
+
   app.post('/api/v1/processes/:process_id/finalize', {
     ...verify, schema: { tags: ['api-v1'], summary: 'Финализировать протокол («Завершить»)', params: processParams,
       body: { type: ['object', 'null'], properties: { author: text } } },

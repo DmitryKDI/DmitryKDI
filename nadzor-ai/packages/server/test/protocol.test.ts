@@ -77,6 +77,70 @@ describe('правила протокола', () => {
   })
 })
 
+describe('составной кандидат делится на атомарные findings (ТЗ 9.3, п.2)', () => {
+  let s: Stand
+  beforeEach(async () => { s = await stand() })
+  afterEach(async () => { await s.close() })
+
+  it('каждая часть получает собственное решение и доказательства', async () => {
+    const token = await s.as('inspector')
+    const pd = await pdf(['PD'])
+    const rd = await pdf(['RD'])
+    const body = multipart([
+      { name: 'files', filename: 'pd.pdf', data: pd },
+      { name: 'files', filename: 'rd.pdf', data: rd },
+      { name: 'registry', filename: 'r.json', data: registry([
+        { file_id: 'PD-A', file_name: 'pd.pdf', object_id: 'OBJ-A', doc_stage: 'PD', discipline: 'АР',
+          document_code: 'A-PD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-10' },
+        { file_id: 'RD-A', file_name: 'rd.pdf', object_id: 'OBJ-A', doc_stage: 'RD', discipline: 'АР',
+          document_code: 'A-RD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-11' }],
+      { 'pd.pdf': pd, 'rd.pdf': rd }) },
+    ])
+    const processId = (await s.call('POST', '/api/v1/documents/upload', token, body.payload, body.headers))
+      .json().process_id
+    await answerParse(s)
+    await answerInspect(s, [check('M-001', 'CANDIDATE')])
+    const url = `/api/v1/processes/${processId}/findings/${encodeURIComponent('M-001:matrix')}/split`
+    const part = (expected: string, actual: string, evidence = [0, 1]) =>
+      ({ expected_value: expected, actual_value: actual, evidence_indexes: evidence })
+
+    const single = await s.call('POST', url, token, { reason: 'два расхождения', expected_version: 0,
+      parts: [part('100', '120')] })
+    expect(single.statusCode).toBe(422)
+    const oneSide = await s.call('POST', url, token, { reason: 'два расхождения', expected_version: 0,
+      parts: [part('100', '120'), part('50', '40', [0])] })
+    expect(oneSide.statusCode).toBe(422)
+    const split = await s.call('POST', url, token, { reason: 'два расхождения в одной находке',
+      expected_version: 0, parts: [part('100', '120'), part('50', '40')] })
+    expect(split.statusCode, split.body).toBe(200)
+    const checks = split.json().result.checks
+    expect(checks.map((item: { finding_id: string }) => item.finding_id))
+      .toEqual(['M-001:matrix/1', 'M-001:matrix/2'])
+    expect(checks[1]).toMatchObject({ split_from: 'M-001:matrix', expected_value: '50', actual_value: '40',
+      finding_status: 'CANDIDATE' })
+    expect(checks[1].evidence).toHaveLength(2)
+    expect((await s.call('POST', url, token, { reason: 'ещё раз', expected_version: 0,
+      parts: [part('1', '2'), part('3', '4')] })).statusCode).toBe(409)
+
+    const decide = (findingId: string, status: string, extra: Record<string, unknown> = {}) =>
+      s.call('POST', `/api/v1/processes/${processId}/decisions`, token,
+        { finding_id: findingId, status, reason: 'проверено', expected_version: 0, ...extra })
+    let finalize = await s.call('POST', `/api/v1/processes/${processId}/finalize`, token, {})
+    expect(finalize.statusCode).toBe(409)
+    expect(finalize.json().detail ?? finalize.body).toMatch(/M-001:matrix\/1.*M-001:matrix\/2/)
+    expect((await decide('M-001:matrix/1', 'CONFIRMED_VIOLATION')).statusCode).toBe(200)
+    expect((await decide('M-001:matrix/2', 'NEGATIVE_VERIFIED', { reason_code: 'OCR_ERROR',
+      expected_version: 1 })).statusCode).toBe(200)
+    finalize = await s.call('POST', `/api/v1/processes/${processId}/finalize`, token, {})
+    expect(finalize.statusCode, finalize.body).toBe(200)
+    const tables = finalize.json().protocol.tables
+    expect(tables.confirmed_violations.map((item: { finding_id: string }) => item.finding_id))
+      .toEqual(['M-001:matrix/1'])
+    expect(tables.negative_verified.map((item: { finding_id: string }) => item.finding_id))
+      .toEqual(['M-001:matrix/2'])
+  })
+})
+
 describe('решения по гипотезам (ТЗ 9.5)', () => {
   let s: Stand
   beforeEach(async () => { s = await stand() })

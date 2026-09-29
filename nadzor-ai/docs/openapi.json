@@ -1158,6 +1158,92 @@
         }
       }
     },
+    "/api/v1/processes/{process_id}/findings/{finding_id}/split": {
+      "post": {
+        "summary": "Разделить составной кандидат на атомарные findings",
+        "tags": [
+          "api-v1"
+        ],
+        "description": "ТЗ 9.3, п.2: каждая часть получает свои expected/actual и доказательства из карточки кандидата (индексы evidence) с координатами в двух стадиях; решение принимается по каждой части.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reason",
+                  "expected_version",
+                  "parts"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "expected_version": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "parts": {
+                    "type": "array",
+                    "minItems": 2,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "expected_value",
+                        "actual_value",
+                        "evidence_indexes"
+                      ],
+                      "properties": {
+                        "expected_value": {
+                          "type": "string"
+                        },
+                        "actual_value": {
+                          "type": "string"
+                        },
+                        "evidence_indexes": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "in": "path",
+            "name": "process_id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in": "path",
+            "name": "finding_id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/processes/{process_id}/finalize": {
       "post": {
         "summary": "Финализировать протокол («Завершить»)",

@@ -444,4 +444,17 @@ export const MIGRATIONS: string[] = [
     read_at TEXT
   );
   `,
+  `
+  -- Разделение составного кандидата на атомарные findings (ТЗ 9.3, п.2)
+  CREATE TABLE finding_splits (
+    process_id INTEGER NOT NULL REFERENCES processes(id),
+    finding_id TEXT NOT NULL,
+    parts TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    author TEXT NOT NULL,
+    user_id INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (process_id, finding_id)
+  );
+  `,
 ]

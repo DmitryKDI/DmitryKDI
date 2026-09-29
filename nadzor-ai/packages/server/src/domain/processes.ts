@@ -83,6 +83,19 @@ export function resultChecks(result: Json | null): Json[] {
   return protocol.allFindings(result)
 }
 
+function splits(ctx: Context, processId: number): protocol.FindingSplit[] {
+  return (ctx.db.prepare('SELECT finding_id, parts FROM finding_splits WHERE process_id = ?').all(processId) as
+    { finding_id: string; parts: string }[]).map((row) => ({ finding_id: row.finding_id,
+    parts: fromJson<protocol.SplitPart[]>(row.parts, []) }))
+}
+
+/** Результат проверки с разделёнными составными кандидатами (копия, исходный не меняется). */
+function expandedResult(ctx: Context, proc: ProcessRecord): Json | null {
+  const result: Json | null = proc.result ? structuredClone(proc.result) : null
+  protocol.applySplits(result, splits(ctx, proc.id))
+  return result
+}
+
 function protocolVersion(ctx: Context, processId: number): number {
   const row = ctx.db.prepare('SELECT max(version) AS v FROM protocols WHERE process_id = ?')
     .get(processId) as { v: number | null }
@@ -95,7 +108,7 @@ export function datasetVersion(ctx: Context): string {
 
 /** Процесс целиком для интерфейса и внешнего контракта (результат + решения + протокол). */
 export function view(ctx: Context, proc: ProcessRecord): Json {
-  const result: Json | null = proc.result ? structuredClone(proc.result) : null
+  const result = expandedResult(ctx, proc)
   const history = decisions(ctx, proc.id)
   if (result) {
     const checks = new Map<string, Json>(resultChecks(result).map((item) => [item.finding_id, item]))
@@ -161,7 +174,7 @@ export function decide(ctx: Context, processId: number, input: {
   if (!reason) throw invalid('укажите основание решения')
   const current = decisionVersion(ctx, processId)
   if (input.expected_version !== current) throw conflict('протокол уже изменён; обновите страницу')
-  const check = resultChecks(proc.result).find((item) => item.finding_id === input.finding_id)
+  const check = resultChecks(expandedResult(ctx, proc)).find((item) => item.finding_id === input.finding_id)
   if (!check) throw notFound('проверка параметра не найдена')
   const evidence: Json[] = check.evidence ?? []
   if (['CONFIRMED_VIOLATION', 'NEGATIVE_VERIFIED'].includes(input.status) &&
@@ -177,6 +190,51 @@ export function decide(ctx: Context, processId: number, input: {
     // Разметка для GOLD, лог отклонений и спорных случаев (ТЗ 9.4).
     feedback.recordDecision(ctx, proc, check, { status: input.status, version: current + 1, reason,
       reasonCode, sourceVersions: versions, userId: actor.userId })
+  })()
+}
+
+/**
+ * Разделить составной кандидат на атомарные findings (ТЗ 9.3, п.2): у каждой
+ * части свои expected/actual и доказательства с координатами в двух стадиях,
+ * решение принимается по каждой части отдельно.
+ */
+export function split(ctx: Context, processId: number, findingId: string, input: {
+  reason: string; expected_version: number
+  parts: { expected_value: string; actual_value: string; evidence_indexes: number[] }[]
+}, actor: Actor): void {
+  const proc = load(ctx, processId, 'прогон не найден')
+  if (proc.run_state !== 'completed' || !proc.result) {
+    throw conflict('разделить можно только кандидата завершённой проверки')
+  }
+  if (proc.finalized_at) throw conflict('протокол финализирован: решения изменить нельзя')
+  if (input.expected_version !== decisionVersion(ctx, processId)) {
+    throw conflict('протокол уже изменён; обновите страницу')
+  }
+  const reason = input.reason.trim()
+  if (!reason) throw invalid('укажите основание разделения')
+  if (ctx.db.prepare('SELECT 1 FROM finding_splits WHERE process_id = ? AND finding_id = ?')
+    .get(processId, findingId)) throw conflict('кандидат уже разделён')
+  const item = resultChecks(view(ctx, proc).result).find((entry) => entry.finding_id === findingId)
+  if (!item) throw notFound('кандидат не найден')
+  if (item.split_from) throw conflict('часть уже разделённого кандидата не делится повторно')
+  if (item.finding_status !== 'CANDIDATE') throw conflict('разделить можно только кандидата без решения')
+  const source: Json[] = item.evidence ?? []
+  const parts = input.parts.map((part, index) => {
+    const indexes = [...new Set(part.evidence_indexes)]
+    if (!indexes.length || indexes.some((at) => !Number.isInteger(at) || at < 0 || at >= source.length)) {
+      throw invalid(`часть ${index + 1}: укажите доказательства из карточки кандидата`)
+    }
+    const evidence = indexes.map((at) => source[at])
+    if (!hasCoordinates(evidence) || !evidence.every((entry) => entry.bbox)) {
+      throw invalid(`часть ${index + 1}: нужны источники с листом и координатами в двух сопоставляемых стадиях`)
+    }
+    return { expected_value: part.expected_value.trim(), actual_value: part.actual_value.trim(), evidence }
+  })
+  ctx.db.transaction(() => {
+    ctx.db.prepare(`INSERT INTO finding_splits (process_id, finding_id, parts, reason, author, user_id,
+      created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(processId, findingId, toJson(parts), reason, actor.display,
+      actor.userId, nowIso(ctx.now()))
+    event(ctx, processId, 'SPLIT', actor.display, `${findingId} → ${parts.length} частей: ${reason}`)
   })()
 }
 

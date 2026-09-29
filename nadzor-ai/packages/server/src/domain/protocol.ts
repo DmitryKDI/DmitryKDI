@@ -86,6 +86,28 @@ export function allFindings(result: Json | null | undefined): Json[] {
   return [...(result.checks ?? []), ...((result.graphic_analysis ?? {}).candidates ?? [])]
 }
 
+export interface SplitPart { expected_value: string; actual_value: string; evidence: Json[] }
+export interface FindingSplit { finding_id: string; parts: SplitPart[] }
+
+export const partId = (findingId: string, index: number): string => `${findingId}/${index + 1}`
+
+/** Заменить составные находки их атомарными частями (ТЗ 9.3, п.2); результат меняется на месте. */
+export function applySplits(result: Json | null, splits: FindingSplit[]): void {
+  if (!result || !splits.length) return
+  const byId = new Map(splits.map((split) => [split.finding_id, split]))
+  const expand = (items: Json[]): Json[] => items.flatMap((item) => {
+    const split = byId.get(item.finding_id)
+    if (!split) return [item]
+    return split.parts.map((part, index) => ({ ...item, finding_id: partId(item.finding_id, index),
+      split_from: item.finding_id, expected_value: part.expected_value, actual_value: part.actual_value,
+      evidence: part.evidence, finding_status: 'CANDIDATE', review_history: [] }))
+  })
+  if (result.checks) result.checks = expand(result.checks)
+  if (result.graphic_analysis?.candidates) {
+    result.graphic_analysis.candidates = expand(result.graphic_analysis.candidates)
+  }
+}
+
 function freeItems(result: Json | null | undefined): Json[] {
   return [...(((result ?? {}).free_search ?? {}).items ?? [])]
 }
