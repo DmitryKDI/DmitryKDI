@@ -76,3 +76,17 @@ jobs:
       - run: scripts/make-secrets.sh
       - run: docker compose config -q
       - run: docker compose build server ml-worker frontend
+      - name: Веса на Яндекс.Диске находятся, эмбеддинги скачиваются
+        run: |
+          python3 - <<'PY'
+          import importlib.util, pathlib
+          spec = importlib.util.spec_from_file_location("f", "scripts/fetch_models.py")
+          m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+          found = m._yandex_models(m.Http(), m.DEFAULT_URL)
+          print("папки моделей:", found)
+          assert set(found) == set(m.MODELS), found
+          root = pathlib.Path("/tmp/models")
+          m.from_yandex(m.Http(), root, m.DEFAULT_URL, ["paraphrase-multilingual-MiniLM-L12-v2"])
+          assert "paraphrase-multilingual-MiniLM-L12-v2" not in m.missing(root)
+          print("эмбеддинги скачаны:", sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()))
+          PY

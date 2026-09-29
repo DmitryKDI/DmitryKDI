@@ -42,13 +42,18 @@
 
 ## Запуск
 
-Веса моделей (≈ 17 ГБ): **https://disk.yandex.ru/d/fRWLLBTKeV1CXw** — скачать и
-положить обе папки в `./models` (раскладка — [docs/ЗАПУСК.md](docs/ЗАПУСК.md)).
+Одна команда (нужны Docker, GPU NVIDIA и NVIDIA Container Toolkit):
 
 ```bash
-scripts/make-secrets.sh          # ключи шифрования, пароли очереди/кэша, TLS-сертификат (один раз)
-docker compose up -d             # нужен GPU и веса в ./models
+scripts/start.sh                 # или: make up
 ```
+
+Она создаёт ключи шифрования, пароли и TLS-сертификат, а затем поднимает
+состав. Веса моделей (≈ 17 ГБ) при первом запуске скачивает сервис `models`
+в `./models`: с Яндекс.Диска команды
+(**https://disk.yandex.ru/d/fRWLLBTKeV1CXw**), при его недоступности — с
+Hugging Face. Уже скачанные веса повторно не загружаются. Ход загрузки —
+`docker compose logs -f models`.
 
 На стенде без Интернета — офлайн-комплект: `scripts/offline/prepare_bundle.sh`
 (на машине с сетью) и `scripts/offline/load_bundle.sh` (на стенде). Подробно,

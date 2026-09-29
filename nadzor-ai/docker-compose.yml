@@ -18,7 +18,8 @@ name: inspector-ai
 #
 # Сети: `contour` — internal, выхода наружу нет ни у одного контейнера в ней.
 # Наружу (сеть `edge`) публикуется только интерфейс и, для внешних систем,
-# REST API сервера.
+# REST API сервера. Разовый сервис `models` в сети `edge` скачивает веса в
+# ./models, только если их там нет, и завершается до старта модели.
 #
 # Стенд проверки: 1× H100 80 ГБ (может быть общим для нескольких команд),
 # 24 ядра / 48 потоков, до 640 ГБ ОЗУ. Лимиты ниже в сумме укладываются в
@@ -45,6 +46,19 @@ x-ml-env: &ml-env
   INSPECTOR_LOG_DIR: /app/logs/ml
 
 services:
+  models:
+    # Веса моделей: Яндекс.Диск команды, при недоступности — Hugging Face.
+    # Полные веса в ./models не качаются повторно (стенд без сети тоже работает).
+    image: python:3.12-slim-bookworm
+    command: ["python", "/fetch_models.py", "/models"]
+    environment:
+      INSPECTOR_MODELS_URL: ${INSPECTOR_MODELS_URL:-}
+    volumes:
+      - ./models:/models
+      - ./scripts/fetch_models.py:/fetch_models.py:ro
+    networks: [edge]
+    restart: "no"
+
   llm:
     # Версия закреплена; prepare_bundle.sh скачивает образ по дайджесту.
     image: vllm/vllm-openai:v0.28.0
@@ -73,6 +87,8 @@ services:
     environment:
       <<: *offline-env
       NVIDIA_VISIBLE_DEVICES: ${INSPECTOR_GPU:-0}
+    depends_on:
+      models: { condition: service_completed_successfully }
     volumes:
       - ./models:/models:ro
     ipc: host
@@ -148,6 +164,7 @@ services:
       # Расшифрованные файлы задачи — только в памяти и только на время задачи.
       - /tmp/inspector-ml:size=8g,uid=10001
     depends_on:
+      models: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
       redis: { condition: service_healthy }
     deploy:
@@ -170,6 +187,7 @@ services:
     tmpfs:
       - /tmp/inspector-ml:size=2g,uid=10001
     depends_on:
+      models: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       ml-worker: { condition: service_started }
     deploy:

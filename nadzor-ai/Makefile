@@ -18,8 +18,8 @@ ml:              ## Запустить ML-модули: воркер очере�
 web:             ## Запустить интерфейс
 	cd frontend && npm run dev
 
-up:              ## Поднять всё одной командой (нужны GPU и веса в models/)
-	docker compose up -d
+up:              ## Поднять всё одной командой: ключи, веса моделей, состав (нужен GPU)
+	scripts/start.sh
 
 openapi:         ## Выгрузить схему API (OpenAPI 3.0) в docs/openapi.json
 	cd packages/server && npm run openapi
