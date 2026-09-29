@@ -2,8 +2,6 @@ name: Inspector AI
 
 on:
   push:
-    branches:
-      - 'claude/**'
     paths:
       - 'nadzor-ai/**'
       - '.github/workflows/nadzor-ui.yml'

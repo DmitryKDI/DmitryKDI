@@ -14,8 +14,9 @@ import { XMLParser } from 'fast-xml-parser'
 import { invalid } from '../errors.js'
 
 /** Обязательные поля реестра (перечень ИД, ред. 1.1). */
-export const REGISTRY_FIELDS = ['file_id', 'file_name', 'object_id', 'doc_stage', 'discipline',
-  'document_code', 'revision', 'approval_status'] as const
+export const REGISTRY_FIELDS = ['file_id', 'file_name', 'sha256', 'object_id', 'doc_stage', 'discipline',
+  'document_code', 'revision', 'approval_status', 'approval_date', 'sheet_page_range',
+  'signature_status'] as const
 export const STAGES = new Set(['PD', 'RD', 'ID'])
 export const APPROVAL_STATUSES = new Set(['DRAFT', 'APPROVED', 'FOR_CONSTRUCTION', 'SUPERSEDED',
   'CANCELLED'])
@@ -24,6 +25,11 @@ export const APPROVAL_STATUSES = new Set(['DRAFT', 'APPROVED', 'FOR_CONSTRUCTION
 const MAX_PART_BYTES = 20 * 1024 * 1024
 
 export type RegistryRow = Record<string, string>
+
+function registryKey(name: string): string {
+  const key = name.trim().toLowerCase()
+  return ['sha-256', 'sha_256'].includes(key) ? 'sha256' : key
+}
 
 function parseCsv(text: string): RegistryRow[] {
   // Разделитель — по строке заголовка: выгрузки Excel на русской локали пишут «;».
@@ -153,11 +159,17 @@ export function checkRegistry(rows: unknown): RegistryRow[] {
     throw invalid('реестр должен быть списком записей о файлах')
   }
   const records = rows.map((row) => Object.fromEntries(Object.entries(row as Record<string, unknown>)
-    .map(([key, value]) => [key, value === null || value === undefined ? '' : String(value).trim()])))
-  const missing = records.length ? REGISTRY_FIELDS.filter((field) => !(field in records[0])) : []
-  if (missing.length) throw invalid(`в реестре нет обязательных полей: ${missing.join(', ')}`)
-  const ids = records.map((row) => row.file_id ?? '')
-  if (ids.some((id) => !id)) throw invalid('в реестре есть запись без file_id')
+    .map(([key, value]) => [registryKey(key), value === null || value === undefined ? '' : String(value).trim()])))
+  if (!records.length) throw invalid('реестр не содержит записей о файлах')
+  for (const [index, row] of records.entries()) {
+    const missing: string[] = REGISTRY_FIELDS.filter((field) => !(field in row))
+    if (!('predecessor_id' in row) && !('successor_id' in row)) missing.push('predecessor_id / successor_id')
+    if (missing.length) throw invalid(`в записи ${index + 1} реестра нет обязательных полей: ${missing.join(', ')}`)
+    const empty = REGISTRY_FIELDS.filter((field) => field !== 'approval_date' && !row[field])
+    if (empty.length) throw invalid(`в записи ${index + 1} реестра не заполнены обязательные поля: ${empty.join(', ')}`)
+    if (!/^[0-9a-f]{64}$/i.test(row.sha256)) throw invalid(`в записи ${index + 1} реестра некорректный SHA-256`)
+  }
+  const ids = records.map((row) => row.file_id)
   if (new Set(ids).size !== ids.length) throw invalid('file_id в реестре повторяется')
   return records
 }
@@ -190,7 +202,8 @@ export function validateMetadata(input: Record<string, unknown>): Metadata {
     signature_status: optional('signature_status'), sheet_page_range: optional('sheet_page_range'),
     discipline: optional('discipline'), file_id: optional('file_id'),
   }
-  for (const key of ['object_id', 'document_code', 'revision'] as const) {
+  for (const key of ['object_id', 'document_code', 'revision', 'discipline', 'file_id', 'signature_status',
+    'sheet_page_range'] as const) {
     if (!metadata[key]) errors.push(`${key}: поле обязательно`)
   }
   if (!STAGES.has(metadata.stage)) errors.push('stage: стадия должна быть PD, RD или ID')

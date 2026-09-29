@@ -577,13 +577,20 @@
                 "type": "object",
                 "required": [
                   "object_id",
+                  "file_id",
                   "stage",
+                  "discipline",
                   "document_code",
                   "revision",
-                  "approval_status"
+                  "approval_status",
+                  "signature_status",
+                  "sheet_page_range"
                 ],
                 "properties": {
                   "object_id": {
+                    "type": "string"
+                  },
+                  "file_id": {
                     "type": "string"
                   },
                   "stage": {
@@ -593,6 +600,9 @@
                       "RD",
                       "ID"
                     ]
+                  },
+                  "discipline": {
+                    "type": "string"
                   },
                   "document_code": {
                     "type": "string"
@@ -620,20 +630,10 @@
                     "nullable": true
                   },
                   "signature_status": {
-                    "type": "string",
-                    "nullable": true
+                    "type": "string"
                   },
                   "sheet_page_range": {
-                    "type": "string",
-                    "nullable": true
-                  },
-                  "discipline": {
-                    "type": "string",
-                    "nullable": true
-                  },
-                  "file_id": {
-                    "type": "string",
-                    "nullable": true
+                    "type": "string"
                   }
                 }
               }

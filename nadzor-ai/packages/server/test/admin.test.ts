@@ -36,7 +36,7 @@ describe('вход и роли (ТЗ 12, п.1–2)', () => {
 })
 
 describe('журнал аудита (ТЗ 12, п.4)', () => {
-  it('изменение записано с пользователем, IP и агентом; журнал только дополняется', async () => {
+  it('изменение записано с пользователем, IP и User-Agent; журнал только дополняется', async () => {
     const admin = await s.login()
     await s.call('POST', '/api/v1/admin/users', admin, { login: 'u1', password: 'password-123', role: 'inspector' },
       { 'user-agent': 'проверка', 'x-forwarded-for': '10.0.0.7' })

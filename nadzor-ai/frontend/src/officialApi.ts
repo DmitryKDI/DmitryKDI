@@ -49,7 +49,9 @@ export interface OfficialParameter {
 
 export interface OfficialDocumentMetadata {
   object_id: string
+  file_id: string | null
   stage: OfficialStage
+  discipline: string | null
   document_code: string
   revision: string
   approval_status: ApprovalStatus

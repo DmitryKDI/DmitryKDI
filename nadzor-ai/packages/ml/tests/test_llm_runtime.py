@@ -257,8 +257,7 @@ def test_cache_hit_miss_metrics_are_recorded(monkeypatch):
     snapshot = metrics.snapshot()
     assert snapshot["result_cache_hits"] == 1, "второй вызов взят из кэша"
     # Один запрос, а не два: второй вызов взят из кэша и сети не касался.
-    # Прежнее «2» считало ещё и авторизацию облачного провайдера — у
-    # локальной модели её нет.
+    # Локальная модель не требует отдельного запроса авторизации.
     assert snapshot["requests"] == 1, "в сеть ушёл только первый вызов"
     # Проверка: к чату обращались только один раз (второй — кэш)
     chat_calls = sum(1 for url, _ in calls if url.endswith("/chat/completions"))

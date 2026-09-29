@@ -15,7 +15,7 @@ import * as protocol from './protocol.js'
 import type { Json, SnapshotItem } from './protocol.js'
 
 export const STAGES = ['PD', 'RD', 'ID'] as const
-export const DECISION_STATUSES = new Set(['CANDIDATE', 'CONFIRMED_VIOLATION', 'NEGATIVE_VERIFIED',
+export const DECISION_STATUSES = new Set(['CONFIRMED_VIOLATION', 'NEGATIVE_VERIFIED',
   'CLARIFICATION_REQUIRED'])
 
 export interface ProcessRow {
@@ -252,12 +252,12 @@ export function suspicions(ctx: Context, processId: number): Json[] {
     SuspicionRow[]).map(suspicionDict)
 }
 
-/** Для перевода в CANDIDATE: источники с координатами в ПД и в РД/ИД (ТЗ 9.5). */
+/** Для перевода в CANDIDATE: источники с координатами в двух сопоставляемых стадиях (ТЗ 9.5). */
 export function hasCoordinates(evidence: Json[]): boolean {
   const stages = new Set(evidence.filter((item) => item.bbox !== undefined && item.bbox !== null &&
     item.document_id !== undefined && item.document_id !== null && item.page !== undefined &&
     item.page !== null).map((item) => item.stage))
-  return stages.has('PD') && (stages.has('RD') || stages.has('ID'))
+  return STAGES.filter((stage) => stages.has(stage)).length >= 2
 }
 
 export function reviewSuspicion(ctx: Context, processId: number, suspicionId: number, input: {
@@ -283,7 +283,7 @@ export function reviewSuspicion(ctx: Context, processId: number, suspicionId: nu
   }
   const evidence = input.evidence ?? fromJson<Json[]>(row.evidence, [])
   if (input.action === 'promote' && !hasCoordinates(evidence)) {
-    throw invalid('для перевода в кандидаты нужны источники с листом и координатами в ПД и в РД или ИД')
+    throw invalid('для перевода в кандидаты нужны источники с листом и координатами в двух сопоставляемых стадиях')
   }
   const inspectorComment = [reasonCode, comment].filter(Boolean).join(' ')
   ctx.db.transaction(() => {

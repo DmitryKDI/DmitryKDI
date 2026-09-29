@@ -84,14 +84,17 @@ describe('решения по гипотезам (ТЗ 9.5)', () => {
 
   it('в кандидаты — только с координатами, нарушение — решением инспектора', async () => {
     const token = await s.as('inspector')
+    const pd = await pdf(['PD'])
+    const rd = await pdf(['RD'])
     const body = multipart([
-      { name: 'files', filename: 'pd.pdf', data: await pdf(['PD']) },
-      { name: 'files', filename: 'rd.pdf', data: await pdf(['RD']) },
+      { name: 'files', filename: 'pd.pdf', data: pd },
+      { name: 'files', filename: 'rd.pdf', data: rd },
       { name: 'registry', filename: 'r.json', data: registry([
         { file_id: 'PD-S', file_name: 'pd.pdf', object_id: 'OBJ-S', doc_stage: 'PD', discipline: 'АР',
           document_code: 'S-PD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-10' },
         { file_id: 'RD-S', file_name: 'rd.pdf', object_id: 'OBJ-S', doc_stage: 'RD', discipline: 'АР',
-          document_code: 'S-RD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-11' }]) },
+          document_code: 'S-RD', revision: '1', approval_status: 'APPROVED', approval_date: '2026-01-11' }],
+      { 'pd.pdf': pd, 'rd.pdf': rd }) },
     ])
     const processId = (await s.call('POST', '/api/v1/documents/upload', token, body.payload, body.headers))
       .json().process_id
@@ -119,5 +122,13 @@ describe('решения по гипотезам (ТЗ 9.5)', () => {
     expect((await s.call('POST', url, token, { action: 'dismiss', comment: 'x' })).statusCode).toBe(409)
     status = (await s.call('GET', `/api/v1/processes/${processId}/status`, token)).json()
     expect(status.status).toBe('COMPLETED')
+  })
+
+  it('координаты РД и ИД достаточны для сценария RD_ID_ONLY', async () => {
+    const { hasCoordinates } = await import('../src/domain/processes.js')
+    expect(hasCoordinates([
+      { stage: 'RD', document_id: 1, page: 2, bbox: [0.1, 0.1, 0.2, 0.2] },
+      { stage: 'ID', document_id: 2, page: 3, bbox: [0.2, 0.2, 0.3, 0.3] },
+    ])).toBe(true)
   })
 })

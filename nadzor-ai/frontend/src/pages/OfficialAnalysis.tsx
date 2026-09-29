@@ -35,7 +35,11 @@ const APPROVALS: Array<{ value: ApprovalStatus; label: string }> = [
   { value: 'CANCELLED', label: 'Отменён' },
 ]
 
-type MetadataDraft = Omit<OfficialDocumentMetadata, 'stage' | 'predecessor_id'> & { predecessor_id: string }
+type MetadataDraft = Omit<OfficialDocumentMetadata, 'stage' | 'predecessor_id' | 'file_id' | 'discipline'> & {
+  predecessor_id: string
+  file_id: string
+  discipline: string
+}
 
 const SYNC_TITLES: Record<string, string> = {
   NOT_SENT: 'не выполнялась',
@@ -48,8 +52,8 @@ const SYNC_TITLES: Record<string, string> = {
 
 function blankMetadata(): MetadataDraft {
   return {
-    object_id: '', document_code: '', revision: '', approval_status: 'DRAFT', approval_date: null,
-    predecessor_id: '', signature_status: null, sheet_page_range: null,
+    object_id: '', file_id: '', discipline: '', document_code: '', revision: '', approval_status: 'DRAFT',
+    approval_date: null, predecessor_id: '', signature_status: null, sheet_page_range: null,
   }
 }
 
@@ -93,13 +97,14 @@ function FileStage({
   const apply = (key: keyof MetadataDraft, value: string) => setDraft((current) => ({ ...current, [key]: value }))
   const approved = draft.approval_status === 'APPROVED' || draft.approval_status === 'FOR_CONSTRUCTION'
   const valid = Boolean(
-    draft.object_id.trim() && draft.document_code.trim() && draft.revision.trim()
+    draft.object_id.trim() && draft.file_id.trim() && draft.discipline.trim() && draft.document_code.trim()
+    && draft.revision.trim() && draft.signature_status?.trim() && draft.sheet_page_range?.trim()
     && (!approved || draft.approval_date),
   )
 
   const upload = async (files: FileList | null) => {
     if (!files?.length || !valid) {
-      if (!valid) setError('Укажите объект, шифр, редакцию и дату утверждения, когда она обязательна.')
+      if (!valid) setError('Заполните обязательные поля карточки документа и дату утверждения, когда она нужна.')
       return
     }
     if (files.length > 1) {
@@ -133,6 +138,14 @@ function FileStage({
           <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.object_id}
             onChange={(event) => apply('object_id', event.target.value)} placeholder="Идентификатор объекта" />
         </label>
+        <label className="text-xs text-ink-muted">Идентификатор файла *
+          <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.file_id}
+            onChange={(event) => apply('file_id', event.target.value)} placeholder="Уникальный file_id" />
+        </label>
+        <label className="text-xs text-ink-muted">Раздел / марка *
+          <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.discipline}
+            onChange={(event) => apply('discipline', event.target.value)} placeholder="Например, АР" />
+        </label>
         <label className="text-xs text-ink-muted">Шифр документа *
           <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.document_code}
             onChange={(event) => apply('document_code', event.target.value)} placeholder="Шифр" />
@@ -151,7 +164,7 @@ function FileStage({
           <input type="date" className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.approval_date ?? ''}
             onChange={(event) => apply('approval_date', event.target.value)} />
         </label>
-        <label className="text-xs text-ink-muted">Подпись / ЭП
+        <label className="text-xs text-ink-muted">Подпись / ЭП *
           <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.signature_status ?? ''}
             onChange={(event) => apply('signature_status', event.target.value)} placeholder="Не задано" />
         </label>
@@ -166,7 +179,7 @@ function FileStage({
           </select>
         </label>
       </div>
-      <label className="mt-2 block text-xs text-ink-muted">Листы или диапазон листов
+      <label className="mt-2 block text-xs text-ink-muted">Листы или диапазон листов *
         <input className="mt-1 w-full rounded-lg border border-surface-line px-2 py-1.5 text-sm" value={draft.sheet_page_range ?? ''}
           onChange={(event) => apply('sheet_page_range', event.target.value)} placeholder="Не задано" />
       </label>
@@ -192,7 +205,9 @@ function FileStage({
               <Chip tone={statusTone(document.status)}>{document.status}</Chip>
             </div>
             <div className="mt-2 flex gap-3"><button className="text-xs text-accent hover:underline" type="button" onClick={() => {
-              setDraft({ ...document.metadata, predecessor_id: document.metadata.predecessor_id?.toString() ?? '' })
+              setDraft({ ...document.metadata, file_id: document.metadata.file_id ?? '',
+                discipline: document.metadata.discipline ?? '',
+                predecessor_id: document.metadata.predecessor_id?.toString() ?? '' })
               setOpenEditor(openEditor === document.id ? null : document.id)
             }}>Изменить метаданные</button><button className="text-xs text-critical hover:underline" type="button" disabled={busy}
               onClick={() => void onDeleted(document.id)}>Удалить</button></div>

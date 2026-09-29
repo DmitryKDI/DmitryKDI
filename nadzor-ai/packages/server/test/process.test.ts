@@ -4,6 +4,7 @@
  * финализация → передача в ИАИС «РиН».
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 import { QUEUE_INSPECT, QUEUE_PARSE, type InspectTask } from '../src/queue/contracts.js'
 import { answerInspect, answerParse, check, multipart, pdf, registry, stand, type Stand } from './helpers.js'
 
@@ -22,10 +23,12 @@ function rows(object = 'OBJ-1', suffix = '') {
 
 async function uploadPackage(token: string, extra: { name: string; filename?: string; data: Buffer | string }[] = [],
   registryRows = rows()) {
+  const pd = await pdf(['PD'])
+  const rd = await pdf(['RD'])
   const body = multipart([
-    { name: 'files', filename: 'pd.pdf', data: await pdf(['PD']) },
-    { name: 'files', filename: 'rd.pdf', data: await pdf(['RD']) },
-    { name: 'registry', filename: 'registry.json', data: registry(registryRows) },
+    { name: 'files', filename: 'pd.pdf', data: pd },
+    { name: 'files', filename: 'rd.pdf', data: rd },
+    { name: 'registry', filename: 'registry.json', data: registry(registryRows, { 'pd.pdf': pd, 'rd.pdf': rd }) },
     ...extra,
   ])
   return s.call('POST', '/api/v1/documents/upload', token, body.payload, body.headers)
@@ -97,18 +100,20 @@ describe('внешний контракт /api/v1', () => {
   it('запрещает перезапись file_id другим содержимым и связывает редакции', async () => {
     const token = await s.as('inspector')
     await uploadPackage(token)
+    const otherPdf = await pdf(['другое содержимое'])
     const other = multipart([
-      { name: 'files', filename: 'pd.pdf', data: await pdf(['другое содержимое']) },
-      { name: 'registry', filename: 'r.json', data: registry([rows()[0]]) },
+      { name: 'files', filename: 'pd.pdf', data: otherPdf },
+      { name: 'registry', filename: 'r.json', data: registry([rows()[0]], { 'pd.pdf': otherPdf }) },
     ])
     const response = await s.call('POST', '/api/v1/documents/upload', token, other.payload, other.headers)
     expect(response.statusCode).toBe(422)
     expect(JSON.stringify(response.json())).toMatch(/перезапись запрещена/)
 
+    const nextPdf = await pdf(['новая редакция'])
     const next = multipart([
-      { name: 'files', filename: 'pd2.pdf', data: await pdf(['новая редакция']) },
+      { name: 'files', filename: 'pd2.pdf', data: nextPdf },
       { name: 'registry', filename: 'r.json', data: registry([{ ...rows()[0], file_id: 'PD-2', file_name: 'pd2.pdf',
-        revision: '2', predecessor_id: 'PD-1' }]) },
+        revision: '2', predecessor_id: 'PD-1' }], { 'pd2.pdf': nextPdf }) },
     ])
     const linked = await s.call('POST', '/api/v1/documents/upload', token, next.payload, next.headers)
     expect(linked.statusCode).toBe(200)
@@ -122,13 +127,27 @@ describe('внешний контракт /api/v1', () => {
 
   it('реестр в CSV (с «;») и в XLSX читается', async () => {
     const token = await s.as('inspector')
-    const header = 'file_id;file_name;object_id;doc_stage;discipline;document_code;revision;approval_status;approval_date'
-    const csv = `${header}\nPD-9;pd.pdf;OBJ-9;PD;АР;C-1;1;APPROVED;2026-01-01\n`
-    const body = multipart([{ name: 'files', filename: 'pd.pdf', data: await pdf() },
+    const data = await pdf()
+    const digest = createHash('sha256').update(data).digest('hex')
+    const header = 'file_id;file_name;SHA-256;object_id;doc_stage;discipline;document_code;revision;approval_status;approval_date;sheet_page_range;predecessor_id;successor_id;signature_status'
+    const csv = `${header}\nPD-9;pd.pdf;${digest};OBJ-9;PD;АР;C-1;1;APPROVED;2026-01-01;ALL;;;PRESENT\n`
+    const body = multipart([{ name: 'files', filename: 'pd.pdf', data },
       { name: 'registry', filename: 'r.csv', data: csv }])
     const response = await s.call('POST', '/api/v1/documents/upload', token, body.payload, body.headers)
     expect(response.statusCode).toBe(200)
     expect(response.json().accepted[0].stage).toBe('PD')
+  })
+
+  it('реестр без обязательных полей и контрольной суммы отклоняется', async () => {
+    const token = await s.as('inspector')
+    const data = await pdf()
+    const body = multipart([{ name: 'files', filename: 'pd.pdf', data },
+      { name: 'registry', filename: 'r.json', data: Buffer.from(JSON.stringify([{ file_id: 'PD-9',
+        file_name: 'pd.pdf', object_id: 'OBJ-9', doc_stage: 'PD', discipline: 'АР', document_code: 'C-1',
+        revision: '1', approval_status: 'APPROVED' }])) }])
+    const response = await s.call('POST', '/api/v1/documents/upload', token, body.payload, body.headers)
+    expect(response.statusCode).toBe(422)
+    expect(response.body).toMatch(/обязательных полей/)
   })
 
   it('решения: кодированная причина, полные доказательства, версия, финализация и отмена', async () => {
@@ -143,6 +162,8 @@ describe('внешний контракт /api/v1', () => {
       .statusCode).toBe(422)
     expect((await decide({ finding_id: 'M-004:matrix', status: 'CONFIRMED_VIOLATION', reason: 'да', expected_version: 0 }))
       .json().detail).toMatch(/полного комплекта доказательств/)
+    expect((await decide({ finding_id: 'M-001:matrix', status: 'CANDIDATE', reason: 'оставить', expected_version: 0 }))
+      .statusCode).toBe(422)
     const first = await decide({ finding_id: 'M-001:matrix', status: 'CONFIRMED_VIOLATION', reason: 'подтверждаю',
       expected_version: 0 })
     expect(first.json()).toMatchObject({ status: 'VERIFYING', version: 1 })
@@ -195,11 +216,12 @@ describe('внешний контракт /api/v1', () => {
     const pid = (await uploadPackage(inspector)).json().process_id
     await answerParse(s)
     await answerInspect(s, [check('M-001', 'NEGATIVE_VERIFIED')])
+    const idPdf = await pdf(['ИД'])
     const more = multipart([
-      { name: 'files', filename: 'id.pdf', data: await pdf(['ИД']) },
+      { name: 'files', filename: 'id.pdf', data: idPdf },
       { name: 'registry', filename: 'r.json', data: registry([{ file_id: 'ID-1', file_name: 'id.pdf',
         object_id: 'OBJ-1', doc_stage: 'ID', discipline: 'АР', document_code: 'X-ID', revision: '1',
-        approval_status: 'APPROVED', approval_date: '2026-03-01' }]) },
+        approval_status: 'APPROVED', approval_date: '2026-03-01' }], { 'id.pdf': idPdf }) },
       { name: 'process_id', data: String(pid) },
     ])
     const reload = await s.call('POST', '/api/v1/documents/upload', inspector, more.payload, more.headers)
@@ -225,7 +247,7 @@ describe('внешний контракт /api/v1', () => {
       calls += 1
       return new Response('temporary', { status: 503 })
     } })
-    s.ctx.config.rinUrl = 'http://rin-gateway:8443/receive'
+    s.ctx.config.rinUrl = 'https://rin-gateway:8443/receive'
     const inspector = await s.as('inspector')
     const pid = (await uploadPackage(inspector)).json().process_id
     await answerParse(s)
@@ -252,7 +274,7 @@ describe('внешний контракт /api/v1', () => {
 
   it('адрес РиН вне контура отклоняется до отправки', async () => {
     const { isLocalUrl } = await import('../src/domain/rin.js')
-    expect(isLocalUrl('http://rin-gateway:8443/x', [])).toBe(true)
+    expect(isLocalUrl('http://rin-gateway:8443/x', [])).toBe(false)
     expect(isLocalUrl('https://10.1.2.3/x', [])).toBe(true)
     expect(isLocalUrl('https://example.com/x', [])).toBe(false)
     expect(isLocalUrl('https://gateway.city.local/x', ['gateway.city.local'])).toBe(true)

@@ -43,12 +43,13 @@ export function documentRoutes(app: FastifyInstance, ctx: Context): void {
   app.put('/api/v1/documents/:document_id/metadata', {
     ...verify, schema: { tags: ['documents'], summary: 'Карточка документа: стадия, шифр, редакция, утверждение',
       params: params({ document_id: id }),
-      body: { type: 'object', required: ['object_id', 'stage', 'document_code', 'revision', 'approval_status'],
-        properties: { object_id: text, stage: { type: 'string', enum: statusValues.stage }, document_code: text,
+      body: { type: 'object', required: ['object_id', 'file_id', 'stage', 'discipline', 'document_code', 'revision',
+        'approval_status', 'signature_status', 'sheet_page_range'],
+        properties: { object_id: text, file_id: text, stage: { type: 'string', enum: statusValues.stage },
+          discipline: text, document_code: text,
           revision: text, approval_status: { type: 'string', enum: statusValues.approval },
           approval_date: { anyOf: [date, { type: 'null' }] }, predecessor_id: { type: ['integer', 'null'] },
-          signature_status: { type: ['string', 'null'] }, sheet_page_range: { type: ['string', 'null'] },
-          discipline: { type: ['string', 'null'] }, file_id: { type: ['string', 'null'] } } } },
+          signature_status: text, sheet_page_range: text } } },
   }, async (request) => {
     let metadata
     try {

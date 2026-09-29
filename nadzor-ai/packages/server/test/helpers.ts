@@ -4,6 +4,7 @@
  * который отвечает на задачи так, как ответил бы воркер.
  */
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify'
@@ -165,6 +166,10 @@ export async function answerInspect(s: Stand, checks: Record<string, unknown>[],
   return tasks
 }
 
-export function registry(rows: Record<string, string>[]): Buffer {
-  return Buffer.from(JSON.stringify(rows))
+export function registry(rows: Record<string, string>[], files: Record<string, Buffer>): Buffer {
+  return Buffer.from(JSON.stringify(rows.map((row) => ({
+    approval_date: '', sheet_page_range: 'ALL', predecessor_id: '', successor_id: '',
+    signature_status: 'PRESENT', ...row,
+    sha256: createHash('sha256').update(files[row.file_name]).digest('hex'),
+  }))))
 }

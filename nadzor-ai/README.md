@@ -52,8 +52,8 @@ docker compose up -d             # нужен GPU и веса в ./models
 включая настройки стенда (1× H100, 24 ядра, 640 ГБ ОЗУ, общий GPU), —
 [docs/ЗАПУСК.md](docs/ЗАПУСК.md).
 
-Интерфейс — `http://стенд:5173` (HTTPS `:5443` с сертификатом в `./certs`),
-API — `http://стенд:8010/api/v1`, схема — `/api/v1/openapi.json` и
+Интерфейс — `https://стенд:5443`, API — `https://стенд:5443/api/v1`
+(TLS 1.3; сертификат и ключ находятся в `./certs`), схема — `/api/v1/openapi.json` и
 [docs/openapi.json](docs/openapi.json). Первый вход — `admin` / `admin`
 (задаётся в `.env`).
 
@@ -169,15 +169,12 @@ make openapi        # docs/openapi.json
 
 | Файл | О чём |
 |---|---|
-| [CLAUDE.md](CLAUDE.md) | правила работы с кодом и соответствие модулей ТЗ |
-| [CONTEXT.md](CONTEXT.md) | текущий этап |
 | [docs/ЗАПУСК.md](docs/ЗАПУСК.md) | развёртывание, стенд, переменные |
 | [docs/СТРУКТУРА-ПРОГРАММЫ.md](docs/СТРУКТУРА-ПРОГРАММЫ.md) | устройство простыми словами |
 | [docs/ПРИЁМКА.md](docs/ПРИЁМКА.md) | приёмка качества по эталону (ТЗ 14) |
 | [docs/threat-model.md](docs/threat-model.md) | модель угроз |
 | [docs/import-substitution.md](docs/import-substitution.md) | импортозамещение и лицензии |
 | [docs/integration-questions.md](docs/integration-questions.md) | вопросы к владельцам смежных систем |
-| [docs/PRILOZHENIE-G-ISTORIYA.md](docs/PRILOZHENIE-G-ISTORIYA.md) | журнал находок прежних этапов |
 
 ## Правовая модель и ограничения
 

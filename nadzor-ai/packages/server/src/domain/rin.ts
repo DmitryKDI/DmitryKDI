@@ -40,12 +40,14 @@ function privateIpv4(host: string): boolean {
 
 /** Адрес внутри контура: петля, частная сеть, имя сервиса или явно разрешённое имя. */
 export function isLocalUrl(url: string, allowed: string[]): boolean {
-  let host: string
+  let parsed: URL
   try {
-    host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    parsed = new URL(url)
   } catch {
     return false
   }
+  if (parsed.protocol !== 'https:') return false
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (!host) return false
   if (host === 'localhost' || allowed.includes(host)) return true
   const version = isIP(host)
@@ -69,8 +71,8 @@ export async function send(ctx: Context, pack: unknown, key: string): Promise<Sy
   const url = ctx.config.rinUrl
   if (!url) return { status: LOCAL_ONLY, detail: 'передача не включена: адрес приёма (INSPECTOR_RIN_URL) не задан', retryable: false }
   if (!isLocalUrl(url, ctx.config.allowedHosts)) {
-    return { status: SEND_REFUSED, detail: 'адрес приёма вне контура: разрешены имена сервисов, частные ' +
-      'сети и имена из INSPECTOR_ALLOWED_HOSTS', retryable: false }
+    return { status: SEND_REFUSED, detail: 'адрес приёма должен использовать HTTPS и находиться внутри контура: ' +
+      'разрешены имена сервисов, частные сети и имена из INSPECTOR_ALLOWED_HOSTS', retryable: false }
   }
   const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Idempotency-Key': key }
   if (ctx.config.rinToken) headers.Authorization = `Bearer ${ctx.config.rinToken}`

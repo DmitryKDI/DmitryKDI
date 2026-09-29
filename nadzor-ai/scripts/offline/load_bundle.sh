@@ -36,6 +36,6 @@ docker run --rm -v inspector-ai_clamav-db:/target -v "$ROOT/bundle/clamav:/sourc
 
 echo "4/4 Запуск"
 INSPECTOR_MODEL_DIR="$MODEL_DIR" docker compose up -d --no-build
-echo "Интерфейс: http://localhost:5173 (HTTPS 5443 с сертификатом в ./certs)"
-echo "API: http://localhost:8010/api/v1, схема: /api/v1/openapi.json"
+echo "Интерфейс: https://localhost:5443"
+echo "API: https://localhost:5443/api/v1, схема: /api/v1/openapi.json"
 echo "Первый запуск модели — несколько минут (загрузка весов в GPU): docker compose ps"
